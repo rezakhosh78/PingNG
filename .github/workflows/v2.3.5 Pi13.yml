@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Tag name for release (e.g. v2.3.5)'
+        description: 'Tag name for release (e.g. v2.3.5-Pi13)'
         required: true
-        default: 'v2.3.5'
+        default: 'v2.3.5-Pi13'
         type: string
 
 permissions:
@@ -57,7 +57,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag_name || github.ref_name }}
-          name: PingNG Release ${{ inputs.tag_name || github.ref_name }}
+          name: PingNG ${{ inputs.tag_name || github.ref_name }}
           files: |
             app/build/outputs/apk/fdroid/release/PingNG_*.apk
           draft: false
