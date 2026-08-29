@@ -111,38 +111,6 @@ To open it:
 2. Quickly tap **Powered By ReZa Kh** three times.
 3. Use **Search**, **Copy**, **Share**, or **Clear** from the log screen.
 
-## 🧰 Build from source
-
-### Requirements
-
-- A recent Android Studio release compatible with the project
-- The JDK version required by the project
-- Android SDK and NDK
-- The CMake version declared by the project
-- Internet access during the first dependency sync
-
-Open the **project root folder** in Android Studio. Do not open the `app` directory by itself.
-
-Select the `playstoreDebug` build variant, then use **Build → Build APK(s)**, or run:
-
-```bash
-./gradlew assemblePlaystoreDebug
-```
-
-On Windows:
-
-```bat
-gradlew.bat assemblePlaystoreDebug
-```
-
-The generated APK can be found at:
-
-```text
-app/build/outputs/apk/playstore/debug/
-```
-
-> `local.properties` is intentionally not distributed. Android Studio creates it using the Android SDK path on your machine.
-
 ## ✅ Verification notes
 
 - Desync settings are stored per configuration and injected into the selected connection path.
