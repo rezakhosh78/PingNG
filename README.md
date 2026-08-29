@@ -101,16 +101,6 @@ Per-profile Desync is available for:
 
 `VMess` · `VLESS` · `Shadowsocks` · `SOCKS` · `HTTP` · `Trojan`
 
-## 🧾 Hidden diagnostics
-
-The log viewer stays out of the navigation drawer to keep the interface uncluttered.
-
-To open it:
-
-1. Go to **About**.
-2. Quickly tap **Powered By ReZa Kh** three times.
-3. Use **Search**, **Copy**, **Share**, or **Clear** from the log screen.
-
 ## ✅ Verification notes
 
 - Desync settings are stored per configuration and injected into the selected connection path.
