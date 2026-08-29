@@ -124,6 +124,6 @@ Use this project only in accordance with the laws of your country and the terms 
 
 <div align="center">
 
-Made with ❤️ for Android
+Made with ❤️ for Iranian people
 
 </div>
