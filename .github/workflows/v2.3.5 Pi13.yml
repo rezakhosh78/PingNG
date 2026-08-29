@@ -5,6 +5,15 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for release (e.g. v2.3.5)'
+        required: true
+        default: 'v2.3.5'
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
   build-release:
@@ -38,10 +47,17 @@ jobs:
           RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleFdroidRelease
 
-      - name: Upload APKs to GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload APKs as Artifact
+        uses: actions/upload-artifact@v4
         with:
+          name: PingNG-Release-APKs
+          path: app/build/outputs/apk/fdroid/release/PingNG_*.apk
+
+      - name: Create Release and Upload APKs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name || github.ref_name }}
+          name: PingNG Release ${{ inputs.tag_name || github.ref_name }}
           files: |
             app/build/outputs/apk/fdroid/release/PingNG_*.apk
           draft: false
