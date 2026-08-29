@@ -2,7 +2,7 @@
 
 # 🚀 PingNG
 
-### A v2rayNG fork with native Android Desync
+### A v2rayNG fork with Desync Engine
 
 Control connection behavior per profile, customize TLS, and troubleshoot from one clean Android client.
 
@@ -36,7 +36,7 @@ PingNG keeps the familiar v2rayNG experience and adds a native, profile-aware De
 | Hidden copyable diagnostic logs | — | ✅ |
 | Dedicated name and unified app icon | — | ✅ |
 
-## 🛡️ Native Android Desync
+## 🛡️ Desync Engine
 
 The Desync engine runs natively on Android and does not require root access. Tap a configuration to select and edit the Desync profile that belongs to it.
 
@@ -55,7 +55,7 @@ The Desync engine runs natively on Android and does not require root access. Tap
 
 - `Split`
 - `Disorder`
-- `Fake SNI`
+- `Fake SNI(SNI Spoofing`
 - `Out of Band`
 - `Disorder + Out of Band`
 
@@ -72,7 +72,7 @@ flowchart LR
 
 If Desync is enabled, the engine must start and attach to the connection successfully. Otherwise, the VPN does not start. This prevents the connection from silently continuing without the selected Desync behavior.
 
-## 🎲 Random multi-domain Fake SNI
+## 🎲 Random multi-domain Fake SNI(SNI Spoofing)
 
 Add multiple domains to **Fake SNI**, separated by commas:
 
