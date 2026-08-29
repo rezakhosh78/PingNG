@@ -33,8 +33,7 @@ PingNG keeps the familiar v2rayNG experience and adds a native, profile-aware De
 | Strict fail-closed Desync startup | — | ✅ |
 | `unsafe` TLS fingerprint | — | ✅ |
 | Editable Cipher Suites | — | ✅ |
-| Hidden copyable diagnostic logs | — | ✅ |
-| Dedicated name and unified app icon | — | ✅ |
+
 
 ## 🛡️ Desync Engine
 
