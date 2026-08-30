@@ -88,8 +88,8 @@ PingNG automatically:
 
 ## 🔐 Extended TLS controls
 
-- Adds `unsafe` to the available TLS fingerprint options.
-- Provides an editable **Cipher Suites** field.
+- Adds `unsafe` to the available TLS fingerprint options(PattNG).
+- Provides an editable **Cipher Suites** field(PattNG).
 - Stores Cipher Suites with the selected profile.
 - Applies the value to the generated Xray configuration.
 - Preserves the value during supported import, export, and sharing flows.
