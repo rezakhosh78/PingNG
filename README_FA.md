@@ -31,7 +31,7 @@ PingNG تجربه‌ی آشنای v2rayNG را حفظ می‌کند و یک لا
 | ویرایشگر هوشمند پارامترهای Custom | — | ✅ |
 | چند Fake SNI با انتخاب تصادفی | — | ✅ |
 | اجرای سخت‌گیرانه و توقف هنگام خطای Desync | — | ✅ |
-| Fingerprint از نوع `unsafe` | — | ✅ |
+| Fingerprint (PattNG) از نوع `unsafe` | — | ✅ |
 | تنظیم Cipher Suites (PattNG)| — | ✅ |
 
 ## 🛡️ Native Android Desync
