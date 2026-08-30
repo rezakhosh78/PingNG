@@ -31,8 +31,8 @@ PingNG keeps the familiar v2rayNG experience and adds a native, profile-aware De
 | Smart custom parameter editor | — | ✅ |
 | Random multi-domain Fake SNI | — | ✅ |
 | Strict fail-closed Desync startup | — | ✅ |
-| `unsafe` TLS fingerprint | — | ✅ |
-| Editable Cipher Suites | — | ✅ |
+| `unsafe` TLS fingerprint (PattNG) | — | ✅ |
+| Editable Cipher Suites (PattNG) | — | ✅ |
 
 
 ## 🛡️ Desync Engine
@@ -111,7 +111,7 @@ Testing the APK on multiple Android versions, device vendors, and network condit
 
 ## 🙏 Credits
 
-- Based on [2dust/v2rayNG](https://github.com/2dust/v2rayNG)
+- Based on [2dust/v2rayNG](https://github.com/2dust/v2rayNG) & PattNG
 - PingNG development and interface: **ReZa Kh**
 - TLS improvements were inspired by contributions from the v2rayNG community.
 
