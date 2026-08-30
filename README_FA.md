@@ -87,9 +87,8 @@ PingNG به‌صورت خودکار:
 
 ## 🔐 کنترل‌های تکمیلی TLS
 
-- گزینه‌ی `unsafe` به Fingerprintهای TLS اضافه شده است.
-- فیلد **Cipher Suites** قابل ویرایش است.
-- Cipher Suites همراه پروفایل انتخاب‌شده ذخیره می‌شود.
+- گزینه‌ی `unsafe` به Fingerprintهای TLS اضافه شده است (PattNG)
+- فیلد **Cipher Suites** قابل ویرایش است (PattNG)
 - مقدار آن به کانفیگ تولیدشده‌ی Xray اعمال می‌شود.
 - در مسیرهای پشتیبانی‌شده‌ی Import، Export و Share حفظ می‌شود.
 
