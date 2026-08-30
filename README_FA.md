@@ -53,7 +53,7 @@ PingNG تجربه‌ی آشنای v2rayNG را حفظ می‌کند و یک لا
 
 - `Split`
 - `Disorder`
-- `Fake SNI(SNI Spoofing)`
+- `Fake SNI`
 - `Out of Band`
 - `Disorder + Out of Band`
 
