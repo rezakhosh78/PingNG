@@ -54,7 +54,7 @@ The Desync engine runs natively on Android and does not require root access. Tap
 
 - `Split`
 - `Disorder`
-- `Fake SNI(SNI Spoofing`
+- `Fake SNI`
 - `Out of Band`
 - `Disorder + Out of Band`
 
