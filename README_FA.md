@@ -32,7 +32,7 @@ PingNG تجربه‌ی آشنای v2rayNG را حفظ می‌کند و یک لا
 | چند Fake SNI با انتخاب تصادفی | — | ✅ |
 | اجرای سخت‌گیرانه و توقف هنگام خطای Desync | — | ✅ |
 | Fingerprint از نوع `unsafe` | — | ✅ |
-| تنظیم Cipher Suites | — | ✅ |
+| تنظیم Cipher Suites (PattNG)| — | ✅ |
 
 ## 🛡️ Native Android Desync
 
@@ -109,7 +109,7 @@ PingNG به‌صورت خودکار:
 
 ## 🙏 قدردانی
 
-- بر پایه‌ی پروژه‌ی [2dust/v2rayNG](https://github.com/2dust/v2rayNG)
+- بر پایه‌ی پروژه‌ی و PattNG [2dust/v2rayNG](https://github.com/2dust/v2rayNG)
 - توسعه‌ی PingNG و رابط اختصاصی: **ReZa Kh**
 - توسعه‌های TLS با الهام از مشارکت‌های جامعه‌ی v2rayNG انجام شده‌اند.
 
