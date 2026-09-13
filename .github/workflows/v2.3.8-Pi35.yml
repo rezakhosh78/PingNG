@@ -52,10 +52,10 @@ jobs:
             exit 1
           fi
 
-      - name: Build Play Store release APKs
+      - name: Build Fdroid release APKs
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:assemblePlaystoreRelease --no-daemon --stacktrace
+          ./gradlew :app:assembleFdroidRelease --no-daemon --stacktrace
 
       - name: Collect APKs
         id: collect-apks
@@ -75,7 +75,7 @@ jobs:
       - name: Prepare release notes
         run: |
           cat > release-notes.md <<'EOF'
-          ## 🚀 Changes `v2.3.8-Pi35`
+          ## 🚀 Changes since `v2.3.8-Pi35`
 
           ### 🇮🇷 تغییرات
 
