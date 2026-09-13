@@ -75,12 +75,12 @@ jobs:
       - name: Prepare release notes
         run: |
           cat > release-notes.md <<'EOF'
-          ## 🚀 Changes since `v2.3.5-Pi13`
+          ## 🚀 Changes `v2.3.8-Pi35`
 
           ### 🇮🇷 تغییرات
 
           - 📢 نمایش بنر `Notice` برای همهٔ لینک‌های Subscription
-          - 📅 نمایش تاریخ انقضا با تقویم شمسی عددی
+          - 📅 نمایش تاریخ انقضا با تقویم شمسی 
           - 📊 اضافه شدن گراف ترافیک
           - 🎨 تغییر خودکار تم بر اساس پالت رنگی گوشی
           - 🔍 اضافه شدن بخش `Find Desync Setting` به هر کانفیگ
