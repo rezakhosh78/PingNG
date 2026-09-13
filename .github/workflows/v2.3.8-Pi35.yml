@@ -1,0 +1,130 @@
+name: Build and Release PingNG
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Git tag for this release, for example v2.3.8-Pi35"
+        required: true
+        default: "v2.3.8-Pi35"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build APK and create GitHub Release
+    runs-on: ubuntu-latest
+
+    env:
+      RELEASE_TITLE: "PingNG v2.3.8-Pi35"
+      TAG_NAME: ${{ inputs.tag_name }}
+
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Configure Android SDK path
+        run: |
+          printf 'sdk.dir=%s\n' "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
+
+      - name: Validate release tag
+        run: |
+          if [[ ! "$TAG_NAME" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "Invalid tag name: $TAG_NAME"
+            exit 1
+          fi
+
+      - name: Build Fdroid release APKs
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleFdroidRelease --no-daemon --stacktrace
+
+      - name: Collect APKs
+        id: collect-apks
+        run: |
+          mkdir -p release-assets
+          mapfile -t APK_FILES < <(find app/build/outputs/apk -type f -name '*.apk' | sort)
+          if [ "${#APK_FILES[@]}" -eq 0 ]; then
+            echo "No APK files were produced."
+            exit 1
+          fi
+          for apk in "${APK_FILES[@]}"; do
+            cp "$apk" release-assets/
+          done
+          printf 'Built APKs:\n'
+          find release-assets -maxdepth 1 -type f -name '*.apk' -print
+
+      - name: Prepare release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## 🚀 Changes since `v2.3.8-Pi35`
+
+          ### 🇮🇷 تغییرات
+
+          - 📢 نمایش بنر `Notice` برای همهٔ لینک‌های Subscription
+          - 📅 نمایش تاریخ انقضا با تقویم شمسی 
+          - 📊 اضافه شدن گراف ترافیک
+          - 🎨 تغییر خودکار تم بر اساس پالت رنگی گوشی
+          - 🔍 اضافه شدن بخش `Find Desync Setting` به هر کانفیگ
+          - 🛠️ اضافه شدن بخش `Find Final Mask Setting` به هر کانفیگ
+          - 🛡️ اضافه شدن Psiphon به هر کانفیگ برای تغییر IP به کشور دلخواه
+          - 🏳️ نمایش پرچم کشور بر اساس IP کانفیگ
+          - 🔗 امکان استفادهٔ همزمان از Desync، Final Mask و Psiphon در هر کانفیگ
+          - 🌐 اضافه شدن قابلیت `Connect through an HTTP proxy` برای Chain کردن PingNG با سایر VPNها
+          - ⚡ به‌روزرسانی هستهٔ Xray به نسخهٔ `v26.9.9`
+
+          ### 🇬🇧 Changes
+
+          - 📢 Added a `Notice` banner for all subscription links
+          - 📅 Added numeric Persian calendar expiration dates
+          - 📊 Added traffic usage graph
+          - 🎨 Added dynamic theming based on the device color palette
+          - 🔍 Added `Find Desync Setting` to each configuration
+          - 🛠️ Added `Find Final Mask Setting` to each configuration
+          - 🛡️ Added per-configuration Psiphon support to change the IP to a selected country
+          - 🏳️ Added country flag display based on the configuration’s IP address
+          - 🔗 Enabled simultaneous use of Desync, Final Mask, and Psiphon in each configuration
+          - 🌐 Added `Connect through an HTTP proxy` to chain PingNG with other VPNs
+          - ⚡ Updated the Xray core to `v26.9.9`
+          EOF
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PingNG-${{ env.TAG_NAME }}-APKs
+          path: release-assets/*.apk
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release edit "$TAG_NAME" \
+              --title "$RELEASE_TITLE" \
+              --notes-file release-notes.md
+            gh release upload "$TAG_NAME" release-assets/*.apk --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/*.apk \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes-file release-notes.md
+          fi
