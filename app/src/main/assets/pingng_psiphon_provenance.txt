@@ -1,0 +1,13 @@
+PingNG Psiphon runtime
+
+Source project: https://github.com/shirokhorshid/shirokhorshid-android
+Tunnel core: https://github.com/shirokhorshid/psiphon-tunnel-core
+Runtime release: v2026.05.24-a3b91cf
+
+The embedded Psiphon client/core is used as a separate optional layer.
+The selected PingNG profile is started first; Psiphon is then started in
+local-proxy mode through that profile and the final TUN route is reloaded
+through Psiphon's local SOCKS listener after it reports Connected.
+
+Psiphon is GPL-3.0 licensed. See the upstream repositories for the complete
+license and source code.
