@@ -33,6 +33,12 @@ PingNG keeps the familiar v2rayNG experience and adds a native, profile-aware De
 | Strict fail-closed Desync startup | — | ✅ |
 | `unsafe` TLS fingerprint (PattNG) | — | ✅ |
 | Editable Cipher Suites (PattNG) | — | ✅ |
+| Psiphon Over Xray | — | ✅ |
+| traffic usage graph | — | ✅ |
+| `Find Desync Setting` to each configuration | — | ✅ |
+| `Find Final Mask Setting` to each configuration | — | ✅ |
+| Connect through an HTTP proxy | — | ✅ |
+
 
 
 ## 🛡️ Desync Engine
