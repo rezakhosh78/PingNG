@@ -77,12 +77,13 @@ if (!isValidAar(libV2rayFile)) {
 
 android {
     namespace = "com.v2ray.ang"
-    compileSdk = 37
+    compileSdk = 35
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.pingng.android"
         minSdk = 24
-        targetSdk = 37
+        targetSdk = 35
         versionCode = 751
         // v2rayNG 2.3.8-compatible PingNG build with the Pi35 feature set.
         versionName = "v2.3.8-Pi35"
