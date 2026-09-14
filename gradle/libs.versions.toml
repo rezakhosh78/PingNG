@@ -11,16 +11,17 @@ activity = "1.9.3"
 appcompat = "1.7.1"
 mmkvStatic = "1.3.16"
 gson = "2.14.0"
-okhttp = "5.4.0"
+okhttp = "4.12.0" # دانگرید شد تا از خطای API 36 جلوگیری شود
 kotlinxCoroutines = "1.11.0"
 core = "3.5.4"
-workRuntimeKtx = "2.11.2"
+workRuntimeKtx = "2.9.1" # دانگرید شد
 lifecycleViewmodelKtx = "2.8.7"
 mockitoMockitoInline = "5.2.0"
 camerax = "1.4.1"
-composeBom = "2026.06.01"
+composeBom = "2024.09.00" # دانگرید شد تا نسخه‌های Activity و Lifecycle را به زور ارتقا ندهد
 reorderable = "3.1.0"
 coil = "2.7.0"
+
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
@@ -58,6 +59,7 @@ androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-toolin
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycleViewmodelKtx" }
 coil-compose = { module = "io.coil-kt:coil-compose", version.ref = "coil" }
+
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
