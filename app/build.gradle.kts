@@ -77,7 +77,11 @@ if (!isValidAar(libV2rayFile)) {
 android {
     namespace = "com.v2ray.ang"
     compileSdk = 35
-
+    java {
+        toolchain {
+            languageVersion.set(JavaLanguageVersion.of(17))
+        }
+    }
     defaultConfig {
         applicationId = "com.pingng.android"
         minSdk = 24
@@ -133,7 +137,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            jniLibs.srcDirs("libs")
+            jniLibs.directories.add(layout.projectDirectory.dir("libs"))
         }
     }
 
