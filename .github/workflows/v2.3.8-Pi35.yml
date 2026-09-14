@@ -94,8 +94,9 @@ jobs:
           umask 077
           keystore_path="$RUNNER_TEMP/pingng-release.jks"
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+          echo "KEYSTORE-DIAGNOSTIC-V3"
           keytool -list -keystore "$keystore_path" \
-            -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
+            -storepass:env KEYSTORE_PASSWORD -alias "$KEY_ALIAS"
           echo "KEYSTORE_PATH=$keystore_path" >> "$GITHUB_ENV"
 
       - name: Build F-Droid release APKs
