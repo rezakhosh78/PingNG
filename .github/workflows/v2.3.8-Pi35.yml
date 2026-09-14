@@ -75,7 +75,7 @@ jobs:
       - name: Prepare release notes
         run: |
           cat > release-notes.md <<'EOF'
-          ## 🚀 Changes `v2.3.8-Pi35`
+          ## 🚀 Changes since `v2.3.5-Pi13`
 
           ### 🇮🇷 تغییرات
 
