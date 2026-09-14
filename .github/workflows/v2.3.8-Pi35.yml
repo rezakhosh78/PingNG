@@ -58,7 +58,7 @@ jobs:
         run: |
           set -euo pipefail
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "cmake;3.22.1"
+          sdkmanager "platforms;android-37" "build-tools;37.0.0" "cmake;3.22.1"
 
       - name: Configure Android SDK path
         shell: bash
