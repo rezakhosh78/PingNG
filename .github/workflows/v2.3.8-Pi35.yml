@@ -1,177 +1,130 @@
-name: Build and Release F-Droid APK
+name: Build and Release PingNG
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'GitHub Release tag (for example v2.3.8-Pi35); source is the ref selected above'
+        description: "Git tag for this release, for example v2.3.8-Pi35"
         required: true
-        default: 'v2.3.8-Pi35'
+        default: "v2.3.8-Pi35"
         type: string
 
 permissions:
   contents: write
 
-env:
-  RELEASE_TITLE: 'PingNG v2.3.8-Pi35'
-  ANDROID_PLATFORM: 'android-35'
-  ANDROID_BUILD_TOOLS: '35.0.0'
-
 jobs:
-  build-release:
-    name: Build, sign, and publish F-Droid APKs
+  build-and-release:
+    name: Build APK and create GitHub Release
     runs-on: ubuntu-latest
+
     env:
-      TAG_NAME: ${{ inputs.tag_name || github.ref_name }}
+      RELEASE_TITLE: "PingNG v2.3.8-Pi35"
+      TAG_NAME: ${{ inputs.tag_name }}
 
     steps:
-      - name: Check out the selected source ref
+      - name: Checkout selected branch
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
-          fetch-depth: 0
-
-      - name: Validate release tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! "$TAG_NAME" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-            echo "Invalid tag name: $TAG_NAME"
-            exit 1
-          fi
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
-          cache: gradle
+          java-version: "17"
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK 35
-        shell: bash
+      - name: Install Android SDK packages
         run: |
-          set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-37" "build-tools;37.0.0" "cmake;3.22.1"
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Configure Android SDK path
-        shell: bash
-        run: printf 'sdk.dir=%s\n' "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
-
-      - name: Grant Gradle wrapper permission
-        run: chmod +x ./gradlew
-
-      - name: Validate signing secrets
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          set -euo pipefail
-          for secret_name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
-            if [[ -z "${!secret_name}" ]]; then
-              echo "Missing repository secret: $secret_name"
-              exit 1
-            fi
-          done
+          printf 'sdk.dir=%s\n' "${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
 
-      - name: Decode and validate release keystore
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      - name: Validate release tag
         run: |
-          set -euo pipefail
-          umask 077
-          keystore_path="$RUNNER_TEMP/pingng-release.jks"
-          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
-          echo "KEYSTORE-DIAGNOSTIC-V3"
-          keytool -list -keystore "$keystore_path" \
-            -storepass:env KEYSTORE_PASSWORD -alias "$KEY_ALIAS"
-          echo "KEYSTORE_PATH=$keystore_path" >> "$GITHUB_ENV"
-
-      - name: Build F-Droid release APKs
-        run: ./gradlew :app:assembleFdroidRelease --no-daemon --stacktrace
-
-      - name: Align, sign, and verify every APK
-        shell: bash
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          set -euo pipefail
-          android_sdk="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-          build_tools="$android_sdk/build-tools/$ANDROID_BUILD_TOOLS"
-          zipalign="$build_tools/zipalign"
-          apksigner="$build_tools/apksigner"
-          mkdir -p release-assets
-
-          mapfile -d '' apk_files < <(find app/build/outputs/apk/fdroid/release -type f -name '*.apk' -print0 | sort -z)
-          if [[ "${#apk_files[@]}" -eq 0 ]]; then
-            echo 'Gradle did not produce any F-Droid APK.'
+          if [[ ! "$TAG_NAME" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "Invalid tag name: $TAG_NAME"
             exit 1
           fi
 
-          for apk in "${apk_files[@]}"; do
-            aligned="$RUNNER_TEMP/$(basename "$apk").aligned.apk"
-            signed="release-assets/$(basename "$apk")"
-            "$zipalign" -p -f 4 "$apk" "$aligned"
-            "$apksigner" sign \
-              --ks "$KEYSTORE_PATH" \
-              --ks-key-alias "$KEY_ALIAS" \
-              --ks-pass "env:KEYSTORE_PASSWORD" \
-              --key-pass "env:KEY_PASSWORD" \
-              --out "$signed" "$aligned"
-            "$apksigner" verify --verbose "$signed"
-            "$zipalign" -c -P 4 -v 4 "$signed"
+      - name: Build Play Store release APKs
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assemblePlaystoreRelease --no-daemon --stacktrace
+
+      - name: Collect APKs
+        id: collect-apks
+        run: |
+          mkdir -p release-assets
+          mapfile -t APK_FILES < <(find app/build/outputs/apk -type f -name '*.apk' | sort)
+          if [ "${#APK_FILES[@]}" -eq 0 ]; then
+            echo "No APK files were produced."
+            exit 1
+          fi
+          for apk in "${APK_FILES[@]}"; do
+            cp "$apk" release-assets/
           done
+          printf 'Built APKs:\n'
+          find release-assets -maxdepth 1 -type f -name '*.apk' -print
 
-          sha256sum release-assets/*.apk > release-assets/SHA256SUMS
-          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+      - name: Prepare release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## 🚀 Changes `v2.3.8-Pi35`
 
-      - name: Upload signed APK artifact
+          ### 🇮🇷 تغییرات
+
+          - 📢 نمایش بنر `Notice` برای همهٔ لینک‌های Subscription
+          - 📅 نمایش تاریخ انقضا با تقویم شمسی 
+          - 📊 اضافه شدن گراف ترافیک
+          - 🎨 تغییر خودکار تم بر اساس پالت رنگی گوشی
+          - 🔍 اضافه شدن بخش `Find Desync Setting` به هر کانفیگ
+          - 🛠️ اضافه شدن بخش `Find Final Mask Setting` به هر کانفیگ
+          - 🛡️ اضافه شدن Psiphon به هر کانفیگ برای تغییر IP به کشور دلخواه
+          - 🏳️ نمایش پرچم کشور بر اساس IP کانفیگ
+          - 🔗 امکان استفادهٔ همزمان از Desync، Final Mask و Psiphon در هر کانفیگ
+          - 🌐 اضافه شدن قابلیت `Connect through an HTTP proxy` برای Chain کردن PingNG با سایر VPNها
+          - ⚡ به‌روزرسانی هستهٔ Xray به نسخهٔ `v26.9.9`
+
+          ### 🇬🇧 Changes
+
+          - 📢 Added a `Notice` banner for all subscription links
+          - 📅 Added numeric Persian calendar expiration dates
+          - 📊 Added traffic usage graph
+          - 🎨 Added dynamic theming based on the device color palette
+          - 🔍 Added `Find Desync Setting` to each configuration
+          - 🛠️ Added `Find Final Mask Setting` to each configuration
+          - 🛡️ Added per-configuration Psiphon support to change the IP to a selected country
+          - 🏳️ Added country flag display based on the configuration’s IP address
+          - 🔗 Enabled simultaneous use of Desync, Final Mask, and Psiphon in each configuration
+          - 🌐 Added `Connect through an HTTP proxy` to chain PingNG with other VPNs
+          - ⚡ Updated the Xray core to `v26.9.9`
+          EOF
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PingNG-${{ env.TAG_NAME }}-F-Droid-signed
-          path: release-assets/*
+          name: PingNG-${{ env.TAG_NAME }}-APKs
+          path: release-assets/*.apk
           if-no-files-found: error
 
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -euo pipefail
-          notes_file="$RUNNER_TEMP/release-notes.md"
-          cat > "$notes_file" <<EOF
-          ## PingNG v2.3.8-Pi35
-
-          F-Droid flavor, built with Android SDK 35 and signed with the repository release keystore.
-
-          - Application ID: \`com.pingng.android.fdroid\`
-          - APK Signature Scheme: APK Signature Scheme v2/v3 (verified by \`apksigner\`)
-          - Source ref: \`$GITHUB_REF\`
-          - SHA-256 checksums: \`SHA256SUMS\`
-          EOF
-
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release edit "$TAG_NAME" \
               --title "$RELEASE_TITLE" \
-              --notes-file "$notes_file"
-            gh release upload "$TAG_NAME" release-assets/* --clobber
+              --notes-file release-notes.md
+            gh release upload "$TAG_NAME" release-assets/*.apk --clobber
           else
-            gh release create "$TAG_NAME" release-assets/* \
+            gh release create "$TAG_NAME" release-assets/*.apk \
               --target "$GITHUB_SHA" \
               --title "$RELEASE_TITLE" \
-              --notes-file "$notes_file"
+              --notes-file release-notes.md
           fi
