@@ -26,26 +26,7 @@ if (tasks.findByName("prepareKotlinBuildScriptModel") == null) {
 val xrayAndroidLibVersion = providers.gradleProperty("XRAY_ANDROID_LIB_VERSION")
     .orElse("26.9.9")
     .get()
-val androidCompileSdk = providers.gradleProperty("ANDROID_COMPILE_SDK")
-    .map { it.toInt() }
-    .orElse(37)
-    .get()
-val androidTargetSdk = providers.gradleProperty("ANDROID_TARGET_SDK")
-    .map { it.toInt() }
-    .orElse(37)
-    .get()
 val libV2rayFile = layout.projectDirectory.file("libs/libv2ray.aar").asFile
-
-val releaseKeystorePath = providers.gradleProperty("releaseKeystorePath").orNull
-val releaseStorePassword = providers.gradleProperty("releaseStorePassword").orNull
-val releaseKeyAlias = providers.gradleProperty("releaseKeyAlias").orNull
-val releaseKeyPassword = providers.gradleProperty("releaseKeyPassword").orNull
-val hasReleaseSigning = listOf(
-    releaseKeystorePath,
-    releaseStorePassword,
-    releaseKeyAlias,
-    releaseKeyPassword,
-).all { !it.isNullOrBlank() }
 
 fun isValidAar(file: java.io.File): Boolean = try {
     if (!file.isFile || file.length() <= 1024) {
@@ -96,22 +77,20 @@ if (!isValidAar(libV2rayFile)) {
 
 android {
     namespace = "com.v2ray.ang"
-    compileSdk = androidCompileSdk
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.pingng.android"
         minSdk = 24
-        targetSdk = androidTargetSdk
+        targetSdk = 37
         versionCode = 751
         // v2rayNG 2.3.8-compatible PingNG build with the Pi35 feature set.
         versionName = "v2.3.8-Pi35"
 
         val abiFilterList = (properties["ABI_FILTERS"] as? String)?.split(';')
-        val universalApkOnly = (properties["UNIVERSAL_APK_ONLY"] as? String)
-            ?.toBooleanStrictOrNull() == true
         splits {
             abi {
-                isEnable = !universalApkOnly
+                isEnable = true
                 reset()
                 if (!abiFilterList.isNullOrEmpty()) {
                     include(*abiFilterList.toTypedArray())
@@ -123,7 +102,7 @@ android {
                         "x86"
                     )
                 }
-                isUniversalApk = !universalApkOnly && abiFilterList.isNullOrEmpty()
+                isUniversalApk = abiFilterList.isNullOrEmpty()
             }
         }
 
@@ -131,23 +110,9 @@ android {
 
     }
 
-    signingConfigs {
-        if (hasReleaseSigning) {
-            create("githubRelease") {
-                storeFile = file(releaseKeystorePath!!)
-                storePassword = releaseStorePassword
-                keyAlias = releaseKeyAlias
-                keyPassword = releaseKeyPassword
-            }
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false
-            if (hasReleaseSigning) {
-                signingConfig = signingConfigs.getByName("githubRelease")
-            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
