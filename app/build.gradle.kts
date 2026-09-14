@@ -4,7 +4,6 @@ import java.util.zip.ZipFile
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     id("com.jaredsburrows.license")
 }
@@ -78,7 +77,6 @@ if (!isValidAar(libV2rayFile)) {
 android {
     namespace = "com.v2ray.ang"
     compileSdk = 35
-    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "com.pingng.android"
@@ -108,7 +106,6 @@ android {
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-
     }
 
     buildTypes {
@@ -165,7 +162,6 @@ android {
                 .map { it as com.android.build.gradle.internal.api.ApkVariantOutputImpl }
                 .forEach { output ->
                     val abi = output.getFilter("ABI") ?: "universal"
-                    // Removed the -fdroid suffix from here
                     output.outputFileName = "PingNG_${variant.versionName}_${abi}.apk"
                     if (versionCodes.containsKey(abi)) {
                         output.versionCodeOverride =
@@ -229,7 +225,6 @@ android {
             useLegacyPackaging = true
         }
     }
-
 }
 
 dependencies {
