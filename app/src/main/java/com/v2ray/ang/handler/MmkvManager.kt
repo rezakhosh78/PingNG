@@ -344,7 +344,9 @@ object MmkvManager {
             val usedOldGuids = mutableSetOf<String>()
             val profilesToPersist = linkedMapOf<String, ProfileItem>()
             val rawConfigsByPersistedGuid = mutableMapOf<String, String>()
-            profiles.forEach { (generatedGuid, rawIncoming) ->
+            profiles.entries.forEachIndexed { incomingIndex, entry ->
+                val generatedGuid = entry.key
+                val rawIncoming = entry.value
                 val incoming = rawIncoming.copy(
                     subscriptionId = rawIncoming.subscriptionId.ifBlank { subscriptionId }
                 )
@@ -353,7 +355,11 @@ object MmkvManager {
                 } else {
                     oldProfiles.firstOrNull { (oldGuid, old) ->
                         oldGuid !in usedOldGuids && sameSubscriptionProfile(old, incoming)
-                    }
+                    } ?: oldProfiles
+                        .getOrNull(incomingIndex)
+                        ?.takeIf { (oldGuid, _) ->
+                            profiles.size == oldProfiles.size && oldGuid !in usedOldGuids
+                        }
                 }
                 val persistedGuid = matching?.first ?: generatedGuid
                 matching?.first?.let(usedOldGuids::add)
