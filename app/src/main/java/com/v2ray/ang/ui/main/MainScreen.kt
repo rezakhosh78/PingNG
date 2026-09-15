@@ -16,6 +16,7 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.v2ray.ang.dto.PsiphonStatus
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.ui.compose.QRCodeDialog
 import com.v2ray.ang.extension.delay
@@ -42,7 +44,8 @@ fun MainScreen(
     val uiState by mainViewModel.uiState.collectAsStateWithLifecycle()
     val groups = uiState.groups
     val isLoading by mainViewModel.isLoading.collectAsStateWithLifecycle()
-    val isRunning = uiState.isRunning
+    val isRunning = uiState.isRunning || uiState.isStarting ||
+        uiState.psiphonStates[uiState.selectedGuid] == PsiphonStatus.CONNECTING
     val displayText = mainViewModel.formatStatus(uiState.status)
     val countryCode = (uiState.status as? MainStatus.ConnectionTest)?.result?.countryCode
     val ipAddress = (uiState.status as? MainStatus.ConnectionTest)?.result?.ipAddress
@@ -68,7 +71,6 @@ fun MainScreen(
         initialPage = 0,
         pageCount = { groups.size.coerceAtLeast(1) }
     )
-
     val lazyListStates = remember { mutableStateMapOf<String, LazyListState>() }
     val lazyGridStates = remember { mutableStateMapOf<String, LazyGridState>() }
 
@@ -272,7 +274,8 @@ fun MainScreen(
                     ) { page ->
                         val group = groups.getOrNull(page) ?: return@HorizontalPager
 
-                        GroupPagerPage(
+                        key(group.id) {
+                            GroupPagerPage(
                             groupId = group.id,
                             notice = group.notice,
                             supportUrl = group.supportUrl,
@@ -314,7 +317,8 @@ fun MainScreen(
                                 end = 0.dp,
                                 bottom = 80.dp
                             )
-                        )
+                            )
+                        }
                     }
                 }
             }

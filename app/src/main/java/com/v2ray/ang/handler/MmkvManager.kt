@@ -383,15 +383,28 @@ object MmkvManager {
                 }
             }
 
+            // Keep the published order on subscription refresh. Rebuilding the
+            // index with add(0, ...) moved every visible item and made the lazy
+            // list jump during an update. Existing profiles stay in their old
+            // order; only newly received profiles are appended.
+            val existingOrder = decodeServerList(subscriptionId).toList()
+            val replacementGuids = profilesToPersist.keys.toSet()
             val serverList = if (append) {
-                decodeServerList(subscriptionId)
+                existingOrder.toMutableList()
             } else {
-                mutableListOf()
+                existingOrder.filter { it in replacementGuids }.toMutableList()
             }
             val indexedServers = serverList.toHashSet()
-            profilesToPersist.keys.forEach { guid ->
-                if (indexedServers.add(guid)) {
-                    serverList.add(0, guid)
+            if (!append && serverList.isEmpty()) {
+                // Preserve the original subscription order for a first import
+                // or a complete replacement where no old GUID can be reused.
+                serverList.addAll(profilesToPersist.keys.reversed())
+                indexedServers.addAll(serverList)
+            } else {
+                profilesToPersist.keys.forEach { guid ->
+                    if (indexedServers.add(guid)) {
+                        serverList.add(guid)
+                    }
                 }
             }
             requireStorageWrite(
@@ -999,6 +1012,9 @@ object MmkvManager {
     fun decodeSettingsBool(key: String, defaultValue: Boolean): Boolean {
         return settingsStorage.decodeBool(key, defaultValue)
     }
+
+    /** Returns whether a setting has an explicitly stored value. */
+    fun hasSetting(key: String): Boolean = settingsStorage.allKeys()?.contains(key) == true
 
     /**
      * Decodes the settings string set.

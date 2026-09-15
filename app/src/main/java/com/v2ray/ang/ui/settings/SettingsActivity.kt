@@ -112,7 +112,11 @@ fun SettingsScreen(
 
     var hevTunLogLevel by rememberMmkvString(AppConfig.PREF_HEV_TUNNEL_LOGLEVEL, "warning")
     var hevTunRwTimeout by rememberMmkvString(AppConfig.PREF_HEV_TUNNEL_RW_TIMEOUT, "")
-    var useHevTun by rememberMmkvBool(AppConfig.PREF_USE_HEV_TUNNEL, false)
+    // Persist this switch synchronously below because the VPN service can be
+    // started immediately after the settings screen is closed.
+    var useHevTun by remember {
+        mutableStateOf(MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, true))
+    }
 
     var enableLocalProxy by rememberMmkvBool(AppConfig.PREF_ENABLE_LOCAL_PROXY, true)
     var socksPort by rememberMmkvString(AppConfig.PREF_SOCKS_PORT, "")
@@ -349,9 +353,11 @@ fun SettingsScreen(
                     summary = stringResource(R.string.summary_pref_use_hev_tunnel),
                     checked = useHevTun,
                     enabled = isVpn,
-                    onCheckedChange = {
-                        useHevTun = it
-                        if (it && !enableLocalProxy) {
+                    onCheckedChange = { enabled ->
+                        useHevTun = enabled
+                        MmkvManager.encodeSettings(AppConfig.PREF_USE_HEV_TUNNEL, enabled)
+                        SettingsChangeManager.notifySettingChanged(AppConfig.PREF_USE_HEV_TUNNEL)
+                        if (enabled && !enableLocalProxy) {
                             enableLocalProxy = true
                         }
                     }

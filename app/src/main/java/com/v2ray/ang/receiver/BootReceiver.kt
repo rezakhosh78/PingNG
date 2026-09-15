@@ -45,6 +45,9 @@ class BootReceiver : BroadcastReceiver() {
             }
         }
 
+        // Clear periodic subscription work even when auto-start is disabled.
+        SubscriptionUpdater.cancelAll(context)
+
         if (!MmkvManager.decodeStartOnBoot()) {
             LogUtil.i(AppConfig.TAG, "BootReceiver: Auto-start on boot is disabled")
             return
@@ -57,6 +60,5 @@ class BootReceiver : BroadcastReceiver() {
 
         LogUtil.i(AppConfig.TAG, "BootReceiver: Starting V2Ray service")
         LauncherManager.startService(context)
-        SubscriptionUpdater.sync(context)
     }
 }

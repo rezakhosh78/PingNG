@@ -429,7 +429,8 @@ object SettingsManager {
      */
     fun isUsingHevTun(): Boolean {
         val requested = MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, false)
-        return requested && TProxyService.isNativeAvailable()
+        if (!requested || !isVpnMode()) return false
+        return TProxyService.isNativeAvailable()
     }
 
     /**
@@ -483,6 +484,9 @@ object SettingsManager {
         ensureDefaultValue(AppConfig.PREF_DOMESTIC_DNS, AppConfig.DNS_DIRECT)
         ensureDefaultValue(AppConfig.PREF_DELAY_TEST_URL, AppConfig.DELAY_TEST_URL)
         ensureDefaultValue(AppConfig.PREF_IP_API_URL, AppConfig.IP_API_URL)
+        if (!MmkvManager.hasSetting(AppConfig.PREF_USE_HEV_TUNNEL)) {
+            MmkvManager.encodeSettings(AppConfig.PREF_USE_HEV_TUNNEL, true)
+        }
         ensureDefaultValue(AppConfig.PREF_HEV_TUNNEL_RW_TIMEOUT, AppConfig.HEVTUN_RW_TIMEOUT)
         ensureDefaultValue(AppConfig.PREF_MUX_CONCURRENCY, "8")
         ensureDefaultValue(AppConfig.PREF_MUX_XUDP_CONCURRENCY, "8")

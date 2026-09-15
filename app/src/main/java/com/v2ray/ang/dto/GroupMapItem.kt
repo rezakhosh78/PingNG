@@ -13,6 +13,6 @@ data class GroupMapItem(
     var trafficUsedRequests: Long = -1,
     /** True only for a real subscription URL; false for Default and All groups. */
     var hasSubscriptionLink: Boolean = false,
-    /** Worker subscriptions get a visible quota track even when no quota header is returned. */
+    /** Worker and bundled ServerLess subscriptions get a visible quota track even when no quota header is returned. */
     var isWorkerSubscription: Boolean = false,
 )

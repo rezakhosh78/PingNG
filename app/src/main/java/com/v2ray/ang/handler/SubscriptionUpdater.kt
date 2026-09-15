@@ -12,8 +12,6 @@ import androidx.work.multiprocess.RemoteWorkManager
 import androidx.work.workDataOf
 import com.v2ray.ang.AngApplication
 import com.v2ray.ang.AppConfig
-import com.v2ray.ang.dto.SubscriptionUpdateMessage
-import com.v2ray.ang.helper.MessageHelper
 import com.v2ray.ang.util.LogUtil
 import java.util.concurrent.TimeUnit
 
@@ -35,25 +33,10 @@ object SubscriptionUpdater {
         context: Context = AngApplication.application,
         forceReschedule: Boolean = false
     ) {
-        val existingWorkPolicy =
-            if (forceReschedule) {
-                ExistingPeriodicWorkPolicy.REPLACE
-            } else {
-                ExistingPeriodicWorkPolicy.KEEP
-            }
-
-        MmkvManager.decodeSubscriptions()
-            .filter { it.subscription.autoUpdate && it.subscription.url.isNotEmpty() }
-            .forEach { sub ->
-                scheduleOne(
-                    context = context,
-                    subId = sub.guid,
-                    existingWorkPolicy = existingWorkPolicy
-                )
-            }
+        cancelAll(context)
         LogUtil.i(
             AppConfig.TAG,
-            "SubscriptionUpdater: sync complete forceReschedule=$forceReschedule"
+            "SubscriptionUpdater: automatic updates disabled; cleared scheduled work"
         )
     }
 
@@ -62,23 +45,7 @@ object SubscriptionUpdater {
      * Call from: SubEditActivity after saving, after a manual update (to reset the timer).
      */
     fun syncOne(context: Context = AngApplication.application, subId: String) {
-        scheduleOne(
-            context = context,
-            subId = subId,
-            existingWorkPolicy = ExistingPeriodicWorkPolicy.REPLACE
-        )
-    }
-
-    /** Starts an immediate update for every configured subscription on app entry. */
-    fun updateAllNow(context: Context = AngApplication.application) {
-        val subIds = MmkvManager.decodeSubscriptions()
-            .filter { it.subscription.enabled && it.subscription.url.isNotBlank() }
-            .map { it.guid }
-        if (subIds.isEmpty()) return
-        MessageHelper.sendMsg2SubscriptionService(
-            context,
-            SubscriptionUpdateMessage(AppConfig.MSG_SUB_UPDATE_START, true, subIds)
-        )
+        cancelOne(context, subId)
     }
 
     /**
@@ -90,6 +57,13 @@ object SubscriptionUpdater {
             .cancelUniqueWork(taskName(subId))
     }
 
+    /** Cancels periodic jobs, including jobs created by earlier app versions. */
+    fun cancelAll(context: Context = AngApplication.application) {
+        RemoteWorkManager.getInstance(context)
+            .cancelAllWorkByTag(AppConfig.SUBSCRIPTION_UPDATE_TASK_NAME)
+        LogUtil.i(AppConfig.TAG, "SubscriptionUpdater: all automatic tasks cancelled")
+    }
+
     /**
      * Update the last updated timestamp and reschedule the task.
      * This is used to reset the periodic timer and prevent rapid rescheduling loops.
@@ -98,7 +72,7 @@ object SubscriptionUpdater {
         val subItem = MmkvManager.decodeSubscription(subId) ?: return
         subItem.lastUpdated = System.currentTimeMillis()
         MmkvManager.encodeSubscription(subId, subItem)
-        syncOne(context, subId)
+        cancelOne(context, subId)
     }
 
     // -------------------------------------------------------------------------
@@ -188,12 +162,9 @@ object SubscriptionUpdater {
                 return Result.success()
             }
 
-            updateLastUpdatedAndReschedule(applicationContext, subId)
-
-            MessageHelper.sendMsg2SubscriptionService(
-                applicationContext,
-                SubscriptionUpdateMessage(AppConfig.MSG_SUB_UPDATE_START, true, listOf(subId))
-            )
+            // A stale worker from an older installation must not refresh the
+            // subscription while automatic updates are disabled.
+            cancelOne(applicationContext, subId)
 
             return Result.success()
         }

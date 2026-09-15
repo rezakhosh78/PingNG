@@ -20,6 +20,8 @@ import com.v2ray.ang.core.PingNgDiagnostics
 import com.v2ray.ang.core.PingNgDesyncTuner
 import com.v2ray.ang.core.PingNgDesyncTuner.SearchFamily
 import com.v2ray.ang.dto.entities.ProfileItem
+import com.v2ray.ang.dto.entities.SubscriptionCache
+import com.v2ray.ang.dto.entities.SubscriptionItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.enums.PermissionType
 import com.v2ray.ang.extension.toast
@@ -29,7 +31,6 @@ import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsChangeManager
 import com.v2ray.ang.handler.SettingsManager
-import com.v2ray.ang.handler.SubscriptionUpdater
 import com.v2ray.ang.ui.AboutActivity
 import com.v2ray.ang.ui.backup.BackupActivity
 import com.v2ray.ang.ui.base.HelperBaseComponentActivity
@@ -82,6 +83,7 @@ class MainActivity : HelperBaseComponentActivity() {
                 startV2Ray()
             } else {
                 LogUtil.w(AppConfig.TAG, "VPN permission was denied or canceled")
+                mainViewModel.setServiceStartPending(false)
             }
         }
 
@@ -119,13 +121,6 @@ class MainActivity : HelperBaseComponentActivity() {
         checkAndRequestPermission(PermissionType.POST_NOTIFICATIONS) {}
     }
 
-    override fun onStart() {
-        super.onStart()
-        // Refresh subscription payloads, including provider notices, on every return
-        // to the foreground. The service performs the work off the UI thread.
-        SubscriptionUpdater.updateAllNow(this)
-    }
-
     @Composable
     override fun ScreenContent() {
         BackHandler { moveTaskToBack(false) }
@@ -138,6 +133,7 @@ class MainActivity : HelperBaseComponentActivity() {
                     MainAction.ImportQRcode -> importQRcode()
                     MainAction.ImportClipboard -> importClipboard()
                     MainAction.ImportConfigLocal -> importConfigLocal()
+                    MainAction.AddServerLess -> addServerLessSubscription()
                     is MainAction.ImportManually -> importManually(action.type)
                     MainAction.RestartService -> LauncherManager.restartServiceOrStart(this, ::requestServiceStart)
                     MainAction.LocateSelectedServer -> mainViewModel.triggerLocateSelectedServer()
@@ -186,9 +182,14 @@ class MainActivity : HelperBaseComponentActivity() {
             LauncherManager.stopService(this)
             return
         }
-        if (mainViewModel.uiState.value.isRunning) {
+        val state = mainViewModel.uiState.value
+        if (state.isRunning || state.isStarting ||
+            state.psiphonStates[state.selectedGuid] == com.v2ray.ang.dto.PsiphonStatus.CONNECTING
+        ) {
+            mainViewModel.setServiceStartPending(false)
             LauncherManager.stopService(this)
         } else {
+            mainViewModel.setServiceStartPending(true)
             requestServiceStart()
         }
     }
@@ -222,6 +223,7 @@ class MainActivity : HelperBaseComponentActivity() {
     private fun startV2Ray() {
         if (mainViewModel.uiState.value.selectedGuid.isNullOrEmpty()) {
             LogUtil.w(AppConfig.TAG, "Start canceled because no configuration is selected")
+            mainViewModel.setServiceStartPending(false)
             toast(R.string.title_file_chooser)
             return
         }
@@ -286,6 +288,38 @@ class MainActivity : HelperBaseComponentActivity() {
                     }
                 } catch (e: Exception) {
                     LogUtil.e(AppConfig.TAG, "Failed to read content from URI", e)
+                }
+            }
+        }
+    }
+
+    private fun addServerLessSubscription() {
+        val existing = MmkvManager.decodeSubscriptions().firstOrNull {
+            it.subscription.url == AppConfig.SERVERLESS_SUBSCRIPTION_URL
+        }
+        val subscriptionId = existing?.guid ?: AppConfig.SERVERLESS_SUBSCRIPTION_ID
+        val subscription = existing?.subscription ?: SubscriptionItem(
+            remarks = AppConfig.SERVERLESS_SUBSCRIPTION_REMARKS,
+            url = AppConfig.SERVERLESS_SUBSCRIPTION_URL,
+            enabled = true,
+            autoUpdate = false,
+        )
+
+        if (existing == null) {
+            MmkvManager.encodeSubscription(subscriptionId, subscription)
+            mainViewModel.onAction(MainAction.RefreshGroups)
+        }
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = AngConfigManager.updateConfigViaSub(
+                SubscriptionCache(subscriptionId, subscription)
+            )
+            withContext(Dispatchers.Main) {
+                mainViewModel.onAction(MainAction.RefreshGroups)
+                if (result.successCount > 0) {
+                    toastSuccess(R.string.toast_serverless_subscription_added)
+                } else {
+                    toastError(R.string.toast_serverless_subscription_failed)
                 }
             }
         }

@@ -230,7 +230,9 @@ class MainRepository(
     }
 
     override fun syncSubscriptions() {
-        SubscriptionUpdater.sync(app)
+        // Refreshes are explicit. Cancel periodic jobs left by older builds so
+        // returning to the app cannot mutate the server list or its scroll state.
+        SubscriptionUpdater.cancelAll(app)
     }
 
     override fun initAssets() {

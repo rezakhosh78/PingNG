@@ -232,6 +232,7 @@ class MainViewModel(
             MainAction.ImportQRcode,
             MainAction.ImportClipboard,
             MainAction.ImportConfigLocal,
+            MainAction.AddServerLess,
             is MainAction.ImportManually,
             MainAction.RestartService,
             MainAction.LocateSelectedServer,
@@ -267,6 +268,11 @@ class MainViewModel(
                 doubleColumnDisplay = dataSource.getDoubleColumnDisplay()
             )
         }
+    }
+
+    /** Keeps the connect button cancellable while the foreground service starts. */
+    fun setServiceStartPending(pending: Boolean) {
+        _uiState.update { it.copy(isStarting = pending) }
     }
 
     // ---------- Group & server loading ----------
@@ -410,7 +416,9 @@ class MainViewModel(
                         trafficUsedRequests = if (it.guid.isEmpty()) -1 else it.subscription.trafficUsedRequests,
                         hasSubscriptionLink = it.guid.isNotEmpty() && it.subscription.url.isNotBlank(),
                         isWorkerSubscription = it.guid.isNotEmpty() &&
-                            SubscriptionNoticeParser.isWorkerSubscription(it.subscription.url),
+                            (SubscriptionNoticeParser.isWorkerSubscription(it.subscription.url) ||
+                                it.subscription.url.substringBefore('#') ==
+                                AppConfig.SERVERLESS_SUBSCRIPTION_URL.substringBefore('#')),
                     )
                 }
                 val selectedGroup = resolveSelectedGroup(groups)
@@ -857,6 +865,7 @@ class MainViewModel(
         _uiState.update { state ->
             state.copy(
                 isRunning = running,
+                isStarting = false,
                 status = if (!clearTestingText && state.isTesting) state.status
                 else if (running) MainStatus.Connected else MainStatus.Disconnected
             )

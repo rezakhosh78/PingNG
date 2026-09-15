@@ -103,7 +103,7 @@ class SubEditActivity : BaseComponentActivity() {
         }
 
         MmkvManager.encodeSubscription(editSubId, subItem)
-        SubscriptionUpdater.syncOne(subId = editSubId)
+        SubscriptionUpdater.cancelOne(subId = editSubId)
         SettingsChangeManager.makeSetupGroupTab()
         toastSuccess(R.string.toast_success)
         finish()

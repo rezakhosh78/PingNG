@@ -121,6 +121,7 @@ fun GroupPagerPage(
     }
     val servers by serverFlow.collectAsStateWithLifecycle()
     val canReorder = groupId.isNotEmpty() && searchQuery.isEmpty()
+
     Column(modifier = Modifier.fillMaxSize()) {
         if (hasSubscriptionLink) SubscriptionNoticeBanner(notice)
         SubscriptionMetadataRow(
@@ -209,14 +210,15 @@ private fun SubscriptionMetadataRow(
     val isRequestQuota = trafficTotalRequests > 0L && trafficUsedRequests >= 0L
     val hasByteQuota = trafficTotalBytes >= 0L && trafficUsedBytes >= 0L
     val hasUsage = isRequestQuota || hasByteQuota
-    // Some worker.dev endpoints do not expose their Cloudflare quota in the
-    // response. Keep the worker row visually occupied until real counters are
-    // available, without pretending that a numeric quota was received.
+    // Some worker/ServerLess endpoints do not expose a quota header. Keep the
+    // row visually occupied until real counters are available, without
+    // pretending that a numeric quota was received.
     val hasWorkerPlaceholder = isWorkerSubscription && !hasUsage
     val shouldShowUsage = hasUsage || hasWorkerPlaceholder
     // -1 means that the provider did not advertise an expiry. Zero is an
     // explicit never-expire value and must be rendered as ∞. Worker links
-    // default to never expiring when the provider omits an expiry.
+    // default to never expiring when the provider omits an expiry. The same
+    // default is used for the bundled ServerLess subscription.
     val displayExpirationEpochSeconds = if (isWorkerSubscription && expirationEpochSeconds < 0L) {
         0L
     } else {
@@ -305,12 +307,21 @@ private fun SubscriptionMetadataRow(
                                 )
                             }
                             expirationText?.let {
-                                Text(
-                                    text = it,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.End,
-                                )
+                                val isPersian = context.resources.configuration.locales[0].language == "fa"
+                                CompositionLocalProvider(
+                                    LocalLayoutDirection provides if (isPersian) {
+                                        LayoutDirection.Rtl
+                                    } else {
+                                        LayoutDirection.Ltr
+                                    }
+                                ) {
+                                    Text(
+                                        text = it,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.End,
+                                    )
+                                }
                             }
                         }
                     }
@@ -361,22 +372,42 @@ private fun formatExpirationDate(epochSeconds: Long, context: android.content.Co
         Instant.ofEpochSecond(epochSeconds).atZone(ZoneId.systemDefault()).toLocalDate()
     }.getOrNull() ?: return "-"
     val jalali = gregorianToJalali(date.year, date.monthValue, date.dayOfMonth)
-    val monthName = when (jalali[1]) {
-        1 -> "Farvardin"
-        2 -> "Ordibehesht"
-        3 -> "Khordad"
-        4 -> "Tir"
-        5 -> "Mordad"
-        6 -> "Shahrivar"
-        7 -> "Mehr"
-        8 -> "Aban"
-        9 -> "Azar"
-        10 -> "Dey"
-        11 -> "Bahman"
-        12 -> "Esfand"
-        else -> return "-"
+    if (jalali[1] !in 1..12) return "-"
+    val isPersian = context.resources.configuration.locales[0].language == "fa"
+    val month = if (isPersian) {
+        when (jalali[1]) {
+            1 -> "فروردین"
+            2 -> "اردیبهشت"
+            3 -> "خرداد"
+            4 -> "تیر"
+            5 -> "مرداد"
+            6 -> "شهریور"
+            7 -> "مهر"
+            8 -> "آبان"
+            9 -> "آذر"
+            10 -> "دی"
+            11 -> "بهمن"
+            12 -> "اسفند"
+            else -> return "-"
+        }
+    } else {
+        when (jalali[1]) {
+            1 -> "Farvardin"
+            2 -> "Ordibehesht"
+            3 -> "Khordad"
+            4 -> "Tir"
+            5 -> "Mordad"
+            6 -> "Shahrivar"
+            7 -> "Mehr"
+            8 -> "Aban"
+            9 -> "Azar"
+            10 -> "Dey"
+            11 -> "Bahman"
+            12 -> "Esfand"
+            else -> return "-"
+        }
     }
-    return "${jalali[2]} $monthName ${jalali[0]}"
+    return "${jalali[2]} $month ${jalali[0]}"
 }
 
 private fun gregorianToJalali(gy: Int, gm: Int, gd: Int): IntArray {

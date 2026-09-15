@@ -21,6 +21,7 @@ data class MainUiState(
     val selectedGroupId: String = "",
     val selectedGuid: String? = null,
     val isRunning: Boolean = false,
+    val isStarting: Boolean = false,
     val isTesting: Boolean = false,
     val status: MainStatus = MainStatus.Disconnected,
     val psiphonStates: Map<String, String> = emptyMap(),
@@ -52,6 +53,7 @@ sealed interface MainAction {
     data object ImportQRcode : MainAction
     data object ImportClipboard : MainAction
     data object ImportConfigLocal : MainAction
+    data object AddServerLess : MainAction
     data class ImportManually(val type: Int) : MainAction
     data object RestartService : MainAction
     data object LocateSelectedServer : MainAction

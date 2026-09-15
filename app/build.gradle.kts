@@ -84,8 +84,8 @@ android {
         minSdk = 24
         targetSdk = 37
         versionCode = 751
-        // v2rayNG 2.3.8-compatible PingNG build with the Pi35 feature set.
-        versionName = "v2.3.8-Pi35"
+        // v2rayNG 2.3.8-compatible PingNG build with the Pi36 feature set.
+        versionName = "v2.3.8-Pi36"
 
         val abiFilterList = (properties["ABI_FILTERS"] as? String)?.split(';')
         splits {
