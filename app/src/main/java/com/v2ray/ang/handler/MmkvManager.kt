@@ -335,39 +335,19 @@ object MmkvManager {
                 null
             }
 
-            // Reuse the previous GUID whenever a refreshed subscription entry
-            // represents the same server. This keeps editor/search history and
-            // local overrides attached to the visible profile.
-            val oldProfiles = replacedServers.mapNotNull { oldGuid ->
-                decodeServerConfig(oldGuid)?.let { oldGuid to it }
-            }
-            val usedOldGuids = mutableSetOf<String>()
+            // v2rayNG replaces a subscription batch with fresh profile GUIDs
+            // after parsing succeeds. This makes the subscription payload the
+            // source of truth: changed addresses, ports, credentials and
+            // transport fields cannot be masked by a stale local profile.
             val profilesToPersist = linkedMapOf<String, ProfileItem>()
             val rawConfigsByPersistedGuid = mutableMapOf<String, String>()
-            profiles.entries.forEachIndexed { incomingIndex, entry ->
-                val generatedGuid = entry.key
-                val rawIncoming = entry.value
+            profiles.forEach { (generatedGuid, rawIncoming) ->
                 val incoming = rawIncoming.copy(
                     subscriptionId = rawIncoming.subscriptionId.ifBlank { subscriptionId }
                 )
-                val matching = if (append) {
-                    null
-                } else {
-                    oldProfiles.firstOrNull { (oldGuid, old) ->
-                        oldGuid !in usedOldGuids && sameSubscriptionProfile(old, incoming)
-                    } ?: oldProfiles
-                        .getOrNull(incomingIndex)
-                        ?.takeIf { (oldGuid, _) ->
-                            profiles.size == oldProfiles.size && oldGuid !in usedOldGuids
-                        }
-                }
-                val persistedGuid = matching?.first ?: generatedGuid
-                matching?.first?.let(usedOldGuids::add)
-                profilesToPersist[persistedGuid] = matching?.let {
-                    SubscriptionProfileOverrides.apply(it.first, incoming)
-                } ?: incoming
+                profilesToPersist[generatedGuid] = incoming
                 rawConfigs[generatedGuid]?.let { raw ->
-                    rawConfigsByPersistedGuid[persistedGuid] = raw
+                    rawConfigsByPersistedGuid[generatedGuid] = raw
                 }
             }
             val replacementSelection = ProfileReplacement.findSelectedReplacement(
@@ -389,28 +369,20 @@ object MmkvManager {
                 }
             }
 
-            // Keep the published order on subscription refresh. Rebuilding the
-            // index with add(0, ...) moved every visible item and made the lazy
-            // list jump during an update. Existing profiles stay in their old
-            // order; only newly received profiles are appended.
+            // v2rayNG parses the source in reverse order and inserts each new
+            // GUID at index zero. Keep that exact two-step behavior so the
+            // final index matches the provider's order, including when nodes
+            // are inserted, removed or moved by the subscription server.
             val existingOrder = decodeServerList(subscriptionId).toList()
-            val replacementGuids = profilesToPersist.keys.toSet()
             val serverList = if (append) {
                 existingOrder.toMutableList()
             } else {
-                existingOrder.filter { it in replacementGuids }.toMutableList()
+                mutableListOf()
             }
             val indexedServers = serverList.toHashSet()
-            if (!append && serverList.isEmpty()) {
-                // Preserve the original subscription order for a first import
-                // or a complete replacement where no old GUID can be reused.
-                serverList.addAll(profilesToPersist.keys.reversed())
-                indexedServers.addAll(serverList)
-            } else {
-                profilesToPersist.keys.forEach { guid ->
-                    if (indexedServers.add(guid)) {
-                        serverList.add(guid)
-                    }
+            profilesToPersist.keys.forEach { guid ->
+                if (indexedServers.add(guid)) {
+                    serverList.add(0, guid)
                 }
             }
             requireStorageWrite(
@@ -435,24 +407,6 @@ object MmkvManager {
             )
             removeProfilePayloads(removablePayloads)
         }
-    }
-
-    private fun sameSubscriptionProfile(left: ProfileItem, right: ProfileItem): Boolean {
-        fun same(a: String?, b: String?): Boolean =
-            !a.isNullOrBlank() && !b.isNullOrBlank() &&
-                a.trim().equals(b.trim(), ignoreCase = true)
-
-        val exact = same(left.remarks, right.remarks) &&
-            same(left.server, right.server) &&
-            same(left.serverPort, right.serverPort) &&
-            same(left.password, right.password)
-        if (exact) return true
-        if (same(left.remarks, right.remarks)) return true
-        if (same(left.server, right.server) &&
-            same(left.serverPort, right.serverPort) &&
-            same(left.password, right.password)
-        ) return true
-        return same(left.server, right.server) && same(left.serverPort, right.serverPort)
     }
 
     /**

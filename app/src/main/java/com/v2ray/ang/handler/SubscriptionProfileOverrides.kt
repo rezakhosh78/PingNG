@@ -64,7 +64,13 @@ object SubscriptionProfileOverrides {
 
         // Subscription ownership belongs to the refreshed subscription
         // payload. Never let an old/local override clear or replace it.
-        val keys = (base.keySet() + edited.keySet()).toSet() - "subscriptionId"
+        // In particular, the provider may change a node's address or port;
+        // those fields must always come from the fresh subscription payload.
+        val keys = (base.keySet() + edited.keySet()).toSet() - setOf(
+            "subscriptionId",
+            "server",
+            "serverPort",
+        )
         keys.forEach { key ->
             val before = base.get(key)?.toString()
             val after = edited.get(key)?.toString()
