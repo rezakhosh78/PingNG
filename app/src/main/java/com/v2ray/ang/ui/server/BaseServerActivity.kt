@@ -80,7 +80,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
     protected val subscriptionId by lazy { intent.getStringExtra("subscriptionId") }
 
     protected lateinit var initialConfig: ProfileItem
-    private var finalMaskSearchJob: Job? = null
+    protected var finalMaskSearchJob: Job? = null
     private var desyncSearchJob: Job? = null
     private var pendingDesyncApply: Pair<String, String>? = null
     /** GUID created for a new editor draft while an in-place search is running. */
@@ -120,7 +120,9 @@ abstract class BaseServerActivity : BaseComponentActivity() {
 
     @Composable
     protected fun CommonBasicFields(
-        state: ServerUiState
+        state: ServerUiState,
+        onEndpointChanged: (() -> Unit)? = null,
+        afterRemarks: (@Composable () -> Unit)? = null,
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             FormTextField(
@@ -128,15 +130,16 @@ abstract class BaseServerActivity : BaseComponentActivity() {
                 state.remarks,
                 { state.remarks = it }
             )
+            afterRemarks?.invoke()
             FormTextField(
                 stringResource(R.string.server_lab_address),
                 state.address,
-                { state.address = it }
+                { state.address = it; onEndpointChanged?.invoke() }
             )
             FormTextField(
                 stringResource(R.string.server_lab_port),
                 state.port,
-                { state.port = it },
+                { state.port = it; onEndpointChanged?.invoke() },
                 keyboardType = KeyboardType.Number
             )
         }
@@ -279,7 +282,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         }
     }
 
-    private fun runFinalMaskSearch(
+    protected fun runFinalMaskSearch(
         config: ProfileItem,
         candidates: List<FinalMaskCandidate>,
         onResult: (FinalMaskCandidate, Long) -> Unit,
@@ -452,29 +455,20 @@ abstract class BaseServerActivity : BaseComponentActivity() {
 
     @Composable
     protected fun PsiphonFields(state: ServerUiState) {
-        Column {
-            SettingsSwitchItem(
-                title = stringResource(R.string.pingng_psiphon_enabled),
-                checked = state.psiphonEnabled,
-                onCheckedChange = { state.psiphonEnabled = it }
-            )
-            Text(
-                text = stringResource(R.string.pingng_psiphon_short_hint),
-                modifier = androidx.compose.ui.Modifier.padding(horizontal = 16.dp),
-                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-            )
-            if (state.psiphonEnabled) {
-                FormDropdownField(
-                    label = stringResource(R.string.pingng_psiphon_region),
-                    value = PsiphonRegions.displayName(state.psiphonRegion),
-                    options = PsiphonRegions.displayOptions(),
-                    onValueChange = { state.psiphonRegion = PsiphonRegions.codeOf(it) },
-                    supportingText = stringResource(R.string.pingng_psiphon_region_summary)
-                )
-            }
-        }
+        PsiphonEditorFields(
+            enabled = state.psiphonEnabled,
+            region = state.psiphonRegion,
+            onEnabledChange = { state.psiphonEnabled = it },
+            onRegionChange = { state.psiphonRegion = it },
+            mode = state.psiphonMode,
+            onModeChange = { state.psiphonMode = it },
+            cdnIps = state.psiphonCdnIps,
+            onCdnIpsChange = { state.psiphonCdnIps = it },
+            cdnSni = state.psiphonCdnSni,
+            onCdnSniChange = { state.psiphonCdnSni = it },
+            cdnSets = state.psiphonCdnSets,
+            onCdnSetsChange = { state.psiphonCdnSets = it },
+        )
     }
 
     protected fun validateBasicConfig(state: ServerUiState): Boolean {
@@ -551,6 +545,12 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         if (!validateProtocolConfig(config)) return null
 
         config.description = AngConfigManager.generateDescription(config)
+        // Dedicated WARP WireGuard profiles are regular WireGuard outbounds at
+        // runtime, but need a durable marker so the WARP endpoint tester and
+        // editor are restored after reload/import.
+        if (initialConfig.description == com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION) {
+            config.description = com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION
+        }
         if (config.subscriptionId.isEmpty() && !subscriptionId.isNullOrEmpty()) {
             config.subscriptionId = subscriptionId.orEmpty()
         }
@@ -583,6 +583,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
 
         pendingDesyncApply = null
         val original = MmkvManager.decodeServerConfig(guid) ?: profile
+        val isWarpMasque = com.v2ray.ang.core.WarpMasqueConfig.isDescription(profile.description)
         val generated = PingNgDesyncTuner.generate(profile, advanced, family)
         val candidates = generated
             .take(maxProfiles.coerceIn(1, generated.size.coerceAtLeast(1)))
@@ -617,18 +618,38 @@ abstract class BaseServerActivity : BaseComponentActivity() {
                             )
                         )
                         withContext(Dispatchers.Main) {
-                            if (proxyStarted) {
+                            if (isWarpMasque && proxyStarted) {
+                                // The Go MASQUE process keeps its outer TLS
+                                // socket open. Reconfigure changes only the
+                                // native listener, so every candidate needs
+                                // a fresh real MASQUE handshake.
+                                LauncherManager.stopService(this@BaseServerActivity)
+                            } else if (proxyStarted) {
                                 LauncherManager.reconfigureProxyOnlyService(this@BaseServerActivity, guid)
-                            } else {
-                                LauncherManager.startProxyOnlyService(this@BaseServerActivity, guid)
-                                proxyStarted = true
                             }
                         }
+                        if (isWarpMasque && proxyStarted) kotlinx.coroutines.delay(700L)
+                        if (!proxyStarted || isWarpMasque) {
+                            withContext(Dispatchers.Main) {
+                                LauncherManager.startProxyOnlyService(this@BaseServerActivity, guid)
+                            }
+                            proxyStarted = true
+                        }
                         kotlinx.coroutines.delay(if (index == 0) 1200L else 850L)
-                        val delayMillis = SpeedtestManager.liveTunnelDelay(
-                            SettingsManager.getDelayTestUrl(),
-                            timeoutMs = 2500,
-                        )
+                        val testUrl = if (isWarpMasque) {
+                            "http://cp.cloudflare.com/generate_204"
+                        } else SettingsManager.getDelayTestUrl()
+                        var delayMillis = -1L
+                        repeat(if (isWarpMasque) 4 else 1) { attempt ->
+                            currentCoroutineContext().ensureActive()
+                            if (delayMillis < 0L) {
+                                if (attempt > 0) kotlinx.coroutines.delay(650L)
+                                delayMillis = SpeedtestManager.liveTunnelDelay(
+                                    testUrl,
+                                    timeoutMs = if (isWarpMasque) 3000 else 2500,
+                                )
+                            }
+                        }
                         if (delayMillis >= 0L) {
                             successful += candidate to delayMillis
                             DesyncSearchHistory.save(guid, listOf(candidate to delayMillis), family, advanced)
@@ -716,6 +737,13 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         if (!validateProtocolConfig(config)) return false
 
         config.description = AngConfigManager.generateDescription(config)
+        // A WARP WireGuard profile is stored as a normal WireGuard outbound,
+        // so keep its marker across save; MainActivity needs it to reopen the
+        // WARP editor and run endpoint discovery before connecting.
+        if (initialConfig.description == com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION) {
+            config.description = com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION
+            if (config.remarks.isBlank()) config.remarks = "WARP WireGuard"
+        }
         if (config.subscriptionId.isEmpty() && !subscriptionId.isNullOrEmpty()) {
             config.subscriptionId = subscriptionId.orEmpty()
         }

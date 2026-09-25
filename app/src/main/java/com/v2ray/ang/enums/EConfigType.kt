@@ -15,6 +15,8 @@ enum class EConfigType(val value: Int, val protocolScheme: String) {
     HYSTERIA2(9, AppConfig.HYSTERIA2),
     HYSTERIA(900, AppConfig.HYSTERIA),
     HTTP(10, AppConfig.HTTP),
+    /** Cloudflare WARP MASQUE over TCP/HTTP2, backed by the standalone core. */
+    WARP(11, AppConfig.WARP),
     POLICYGROUP(101, AppConfig.CUSTOM),
     PROXYCHAIN(102, AppConfig.CUSTOM);
 

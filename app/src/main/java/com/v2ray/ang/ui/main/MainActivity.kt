@@ -19,6 +19,10 @@ import com.v2ray.ang.core.PingNgCompat
 import com.v2ray.ang.core.PingNgDiagnostics
 import com.v2ray.ang.core.PingNgDesyncTuner
 import com.v2ray.ang.core.PingNgDesyncTuner.SearchFamily
+import com.v2ray.ang.core.WarpEndpointTester
+import com.v2ray.ang.core.WarpMasqueBridge
+import com.v2ray.ang.core.WarpPlusConfig
+import com.v2ray.ang.core.WarpWireGuardEndpointTester
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.entities.SubscriptionCache
 import com.v2ray.ang.dto.entities.SubscriptionItem
@@ -49,6 +53,9 @@ import com.v2ray.ang.ui.server.ServerTrojanActivity
 import com.v2ray.ang.ui.server.ServerVlessActivity
 import com.v2ray.ang.ui.server.ServerVmessActivity
 import com.v2ray.ang.ui.server.ServerWireguardActivity
+import com.v2ray.ang.ui.server.WarpInWarpActivity
+import com.v2ray.ang.ui.server.WarpMasqueActivity
+import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.service.DesyncSearchKeepAliveService
 import com.v2ray.ang.ui.settings.SettingsActivity
 import com.v2ray.ang.ui.subscription.SubSettingActivity
@@ -56,6 +63,7 @@ import com.v2ray.ang.ui.userasset.UserAssetActivity
 import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
@@ -71,6 +79,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class MainActivity : HelperBaseComponentActivity() {
 
     private var desyncTunerJob: Job? = null
+    private var warpEndpointTestJob: Job? = null
 
     private val mainViewModel: MainViewModel by viewModels {
         MainViewModel.Factory(application, MainRepository(application as AngApplication))
@@ -134,6 +143,9 @@ class MainActivity : HelperBaseComponentActivity() {
                     MainAction.ImportClipboard -> importClipboard()
                     MainAction.ImportConfigLocal -> importConfigLocal()
                     MainAction.AddServerLess -> addServerLessSubscription()
+                    MainAction.AddWarpMasque -> addWarpMasque()
+                    MainAction.AddWarpWireGuard -> addWarpWireGuard()
+                    MainAction.AddWarpInWarp -> addWarpInWarp()
                     is MainAction.ImportManually -> importManually(action.type)
                     MainAction.RestartService -> LauncherManager.restartServiceOrStart(this, ::requestServiceStart)
                     MainAction.LocateSelectedServer -> mainViewModel.triggerLocateSelectedServer()
@@ -177,6 +189,17 @@ class MainActivity : HelperBaseComponentActivity() {
     }
 
     private fun handleFabAction() {
+        if (warpEndpointTestJob?.isActive == true) {
+            warpEndpointTestJob?.cancel()
+            mainViewModel.setServiceStartPending(false)
+            mainViewModel.clearEndpointSearchProgress()
+            // Endpoint verification may have already started the core/VPN.
+            // Cancel the Android service too; cancelling the UI coroutine
+            // alone leaves the native probe and VPN foreground service alive.
+            LauncherManager.stopService(this)
+            toast("WARP endpoint test canceled")
+            return
+        }
         if (desyncTunerJob?.isActive == true) {
             cancelDesyncSearch()
             LauncherManager.stopService(this)
@@ -187,9 +210,16 @@ class MainActivity : HelperBaseComponentActivity() {
             state.psiphonStates[state.selectedGuid] == com.v2ray.ang.dto.PsiphonStatus.CONNECTING
         ) {
             mainViewModel.setServiceStartPending(false)
+            state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
+                ?.takeIf { it.configType == EConfigType.WARP }
+                ?.let { WarpMasqueBridge.cancelStartup() }
             LauncherManager.stopService(this)
         } else {
-            mainViewModel.setServiceStartPending(true)
+            val selected = state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
+            mainViewModel.setServiceStartPending(
+                pending = true,
+                searchingWarp = selected?.configType == EConfigType.WARP,
+            )
             requestServiceStart()
         }
     }
@@ -221,10 +251,110 @@ class MainActivity : HelperBaseComponentActivity() {
     }
 
     private fun startV2Ray() {
-        if (mainViewModel.uiState.value.selectedGuid.isNullOrEmpty()) {
+        val guid = mainViewModel.uiState.value.selectedGuid
+        if (guid.isNullOrEmpty()) {
             LogUtil.w(AppConfig.TAG, "Start canceled because no configuration is selected")
             mainViewModel.setServiceStartPending(false)
             toast(R.string.title_file_chooser)
+            return
+        }
+        val selected = MmkvManager.decodeServerConfig(guid)
+        if (WarpWireGuardConfig.isProfile(selected)) {
+            if (WarpWireGuardConfig.normalizeMode(selected?.warpEndpointTestMode) == WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM) {
+                startV2RayNow()
+                return
+            }
+            if (warpEndpointTestJob?.isActive == true) return
+            warpEndpointTestJob = lifecycleScope.launch {
+                try {
+                    toast("Testing WARP WireGuard endpoint…")
+                    mainViewModel.setEndpointSearchProgress("WARP WireGuard: starting")
+                    val found = withContext(Dispatchers.IO) {
+                        WarpWireGuardEndpointTester.testAndSelect(applicationContext, guid) { progress ->
+                            withContext(Dispatchers.Main.immediate) {
+                                mainViewModel.setEndpointSearchProgress(progress)
+                            }
+                        }
+                    }
+                    if (!found) {
+                        mainViewModel.setServiceStartPending(false)
+                        mainViewModel.clearEndpointSearchProgress()
+                        toast("No working WARP WireGuard endpoint was found")
+                    } else {
+                        mainViewModel.reloadServerList()
+                        toast("WARP WireGuard endpoint selected")
+                        startV2RayNow()
+                    }
+                } catch (error: CancellationException) {
+                    mainViewModel.setServiceStartPending(false)
+                    mainViewModel.clearEndpointSearchProgress()
+                    throw error
+                } catch (error: Throwable) {
+                    mainViewModel.setServiceStartPending(false)
+                    mainViewModel.clearEndpointSearchProgress()
+                    LogUtil.e(AppConfig.TAG, "WARP WireGuard endpoint test failed", error)
+                    toast("WARP WireGuard endpoint test failed")
+                } finally {
+                    warpEndpointTestJob = null
+                }
+            }
+            return
+        }
+        if (selected != null && WarpPlusConfig.isDescription(selected.description)) {
+            if (selected.warpSkipEndpointTestOnce == true) {
+                // Keep the pair that was selected while finding FinalMask.
+                MmkvManager.encodeServerConfig(
+                    guid,
+                    selected.copy(warpSkipEndpointTestOnce = false),
+                )
+                startV2RayNow()
+                return
+            }
+            if (warpEndpointTestJob?.isActive == true) return
+            warpEndpointTestJob = lifecycleScope.launch {
+                try {
+                    toast("Testing WARP Plus endpoints…")
+                    mainViewModel.setEndpointSearchProgress("WARP Plus: starting")
+                    val selectedEndpoint = withContext(Dispatchers.IO) {
+                        WarpEndpointTester.testAndSelect(applicationContext, guid) { progress ->
+                            withContext(Dispatchers.Main.immediate) {
+                                mainViewModel.setEndpointSearchProgress(progress)
+                            }
+                        }
+                    }
+                    if (!selectedEndpoint) {
+                        mainViewModel.setServiceStartPending(false)
+                        mainViewModel.clearEndpointSearchProgress()
+                        toast("No working WARP Plus endpoint was found")
+                    } else {
+                        // The tester persists the selected pair on the parent profile.
+                        // Refresh the visible row before the service starts so the
+                        // chosen endpoint is immediately visible on the main page.
+                        mainViewModel.reloadServerList()
+                        toast("WARP Plus endpoint selected")
+                        startV2RayNow()
+                    }
+                } catch (error: CancellationException) {
+                    mainViewModel.setServiceStartPending(false)
+                    mainViewModel.clearEndpointSearchProgress()
+                    throw error
+                } catch (error: Throwable) {
+                    mainViewModel.setServiceStartPending(false)
+                    mainViewModel.clearEndpointSearchProgress()
+                    LogUtil.e(AppConfig.TAG, "WARP Plus endpoint test failed", error)
+                    toast("WARP Plus endpoint test failed")
+                } finally {
+                    warpEndpointTestJob = null
+                }
+            }
+            return
+        }
+        startV2RayNow()
+    }
+
+    private fun startV2RayNow() {
+        if (mainViewModel.uiState.value.selectedGuid.isNullOrEmpty()) {
+            mainViewModel.setServiceStartPending(false)
             return
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN &&
@@ -252,6 +382,28 @@ class MainActivity : HelperBaseComponentActivity() {
             }
         }.apply {
             putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+        }
+        profileEditorLauncher.launch(intent)
+    }
+
+    private fun addWarpInWarp() {
+        val intent = Intent(this, WarpInWarpActivity::class.java).apply {
+            putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+        }
+        profileEditorLauncher.launch(intent)
+    }
+
+    private fun addWarpMasque() {
+        val intent = Intent(this, WarpMasqueActivity::class.java).apply {
+            putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+        }
+        profileEditorLauncher.launch(intent)
+    }
+
+    private fun addWarpWireGuard() {
+        val intent = Intent(this, ServerWireguardActivity::class.java).apply {
+            putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+            putExtra("warpWireGuard", true)
         }
         profileEditorLauncher.launch(intent)
     }
@@ -329,7 +481,11 @@ class MainActivity : HelperBaseComponentActivity() {
         val activityClass = when (profile.configType) {
             EConfigType.CUSTOM -> ServerCustomConfigActivity::class.java
             EConfigType.POLICYGROUP -> ServerGroupActivity::class.java
-            EConfigType.PROXYCHAIN -> ServerProxyChainActivity::class.java
+            EConfigType.PROXYCHAIN -> if (isWarpInWarpProfile(guid, profile)) {
+                WarpInWarpActivity::class.java
+            } else {
+                ServerProxyChainActivity::class.java
+            }
             EConfigType.VMESS -> ServerVmessActivity::class.java
             EConfigType.VLESS -> ServerVlessActivity::class.java
             EConfigType.SHADOWSOCKS -> ServerShadowsocksActivity::class.java
@@ -338,6 +494,7 @@ class MainActivity : HelperBaseComponentActivity() {
             EConfigType.TROJAN -> ServerTrojanActivity::class.java
             EConfigType.WIREGUARD -> ServerWireguardActivity::class.java
             EConfigType.HYSTERIA2 -> ServerHysteria2Activity::class.java
+            EConfigType.WARP -> WarpMasqueActivity::class.java
             else -> ServerHttpActivity::class.java
         }
         val intent = Intent(this, activityClass).apply {
@@ -345,8 +502,23 @@ class MainActivity : HelperBaseComponentActivity() {
             putExtra("isRunning", mainViewModel.uiState.value.isRunning)
             putExtra("createConfigType", profile.configType.value)
             putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+            putExtra("warpWireGuard", WarpWireGuardConfig.isProfile(profile))
         }
         profileEditorLauncher.launch(intent)
+    }
+
+    private fun isWarpInWarpProfile(guid: String, profile: ProfileItem): Boolean {
+        // The marker is the durable identity of generated WARP Plus profiles.
+        // The old managedBy-only check misclassified profiles after import,
+        // backup restore, or older builds and opened the generic Proxy Chain
+        // editor instead of the WARP Plus editor.
+        if (WarpPlusConfig.isDescription(profile.description)) return true
+
+        return profile.proxyChainProfiles.orEmpty().split(",")
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .mapNotNull { SettingsManager.getServerViaRemarks(it) }
+            .count { it.managedBy == guid && it.configType == EConfigType.WIREGUARD } >= 2
     }
 
     private fun saveDesync(action: MainAction.SaveDesync) {

@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import com.v2ray.ang.R
 import com.v2ray.ang.core.PingNgCompat
 import com.v2ray.ang.core.PingNgDesyncTuner
+import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.PingNgDesyncTuner.SearchFamily
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.ui.compose.FormDropdownField
@@ -105,7 +106,11 @@ fun DesyncSearchDialog(
             .sorted()
     }
     var requestedCount by remember(selectedGuid, includeAdvanced, searchFamily) {
-        mutableStateOf(availableCount.coerceAtLeast(1))
+        mutableStateOf(
+            if (WarpMasqueConfig.isDescription(selected?.second?.description)) {
+                availableCount.coerceIn(1, 25)
+            } else availableCount.coerceAtLeast(1)
+        )
     }
     var workerCount by remember(selectedGuid) { mutableStateOf(4) }
     val liveResultsState = rememberLazyListState()

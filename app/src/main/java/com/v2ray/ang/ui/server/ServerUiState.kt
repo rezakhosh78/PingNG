@@ -23,6 +23,10 @@ class ServerUiState(
     pingNgDesyncArgs: String = "",
     psiphonEnabled: Boolean = false,
     psiphonRegion: String = "ANY",
+    psiphonMode: String = "auto",
+    psiphonCdnIps: String = "",
+    psiphonCdnSni: String = "",
+    psiphonCdnSets: String = "",
     password: String = "",
     method: String = "",
     flow: String = "",
@@ -76,6 +80,10 @@ class ServerUiState(
     var pingNgDesyncArgs by mutableStateOf(pingNgDesyncArgs)
     var psiphonEnabled by mutableStateOf(psiphonEnabled)
     var psiphonRegion by mutableStateOf(psiphonRegion)
+    var psiphonMode by mutableStateOf(psiphonMode)
+    var psiphonCdnIps by mutableStateOf(psiphonCdnIps)
+    var psiphonCdnSni by mutableStateOf(psiphonCdnSni)
+    var psiphonCdnSets by mutableStateOf(psiphonCdnSets)
     var password by mutableStateOf(password)
     var method by mutableStateOf(method)
     var flow by mutableStateOf(flow)
@@ -144,6 +152,10 @@ class ServerUiState(
             pingNgDesyncArgs = if (supportsDesync) pingNgDesyncArgs.nullIfBlank() else null,
             psiphonEnabled = psiphonEnabled,
             psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase(),
+            psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase(),
+            psiphonCdnIps = psiphonCdnIps.nullIfBlank(),
+            psiphonCdnSni = psiphonCdnSni.nullIfBlank(),
+            psiphonCdnSets = psiphonCdnSets.nullIfBlank(),
             password = password,
             method = when {
                 isVmess || isShadowsocks -> method
@@ -213,6 +225,10 @@ class ServerUiState(
                 pingNgDesyncArgs = initialConfig.pingNgDesyncArgs ?: "",
                 psiphonEnabled = initialConfig.psiphonEnabled,
                 psiphonRegion = initialConfig.psiphonRegion.orEmpty().ifBlank { "ANY" },
+                psiphonMode = initialConfig.psiphonMode.orEmpty().ifBlank { "auto" },
+                psiphonCdnIps = initialConfig.psiphonCdnIps.orEmpty(),
+                psiphonCdnSni = initialConfig.psiphonCdnSni.orEmpty(),
+                psiphonCdnSets = initialConfig.psiphonCdnSets.orEmpty(),
                 password = initialConfig.password ?: "",
                 method = initialConfig.method ?: "",
                 flow = initialConfig.flow ?: "",

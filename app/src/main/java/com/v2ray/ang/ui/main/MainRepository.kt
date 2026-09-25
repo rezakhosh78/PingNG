@@ -155,9 +155,13 @@ class MainRepository(
 
     override fun getServerGuidList(groupId: String): List<String> =
         if (groupId.isEmpty()) {
-            MmkvManager.decodeAllServerList()
+            MmkvManager.decodeAllServerList().filter { guid ->
+                MmkvManager.decodeServerConfig(guid)?.managedBy.isNullOrBlank()
+            }
         } else {
-            MmkvManager.decodeServerList(groupId)
+            MmkvManager.decodeServerList(groupId).filter { guid ->
+                MmkvManager.decodeServerConfig(guid)?.managedBy.isNullOrBlank()
+            }
         }
 
     override fun decodeServerConfig(guid: String): ProfileItem? =

@@ -189,8 +189,9 @@ object CoreConfigContextBuilder {
                 .filter { it.server.isNotNullEmpty() }
                 .filter { Utils.isPureIpAddress(it.server!!) || Utils.isValidUrl(it.server!!) }
                 .filter { !it.configType.isComplexType() }
+                // The stored order is the dial order: the first hop carries user
+                // traffic and dials the next hop through sockopt.dialerProxy.
                 .toList()
-                .reversed()
         } catch (e: Exception) {
             LogUtil.e(AppConfig.TAG, "Failed to resolve proxy chain profiles for '${config.remarks}'", e)
             return listOf(config)

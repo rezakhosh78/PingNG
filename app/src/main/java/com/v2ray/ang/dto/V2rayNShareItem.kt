@@ -89,6 +89,7 @@ data class V2rayNShareItem(
             // 8 -> EConfigType.TUIC
             9 -> EConfigType.WIREGUARD
             10 -> EConfigType.HTTP
+            11 -> EConfigType.WARP
             101 -> EConfigType.POLICYGROUP
             102 -> EConfigType.PROXYCHAIN
             else -> error("Unknown ConfigType: $ConfigType")
@@ -103,6 +104,9 @@ data class V2rayNShareItem(
             remarks = Remarks.orEmpty(),
             server = Address.orEmpty(),
             serverPort = Port.toString(),
+            warpMasqueEndpointCandidates = if (configType == EConfigType.WARP) {
+                com.v2ray.ang.core.WarpMasqueConfig.DEFAULT_ENDPOINTS
+            } else null,
             password = Password.orEmpty(),
             method = when (configType) {
                 EConfigType.VMESS -> ProtoExtraObj?.VmessSecurity.orEmpty()

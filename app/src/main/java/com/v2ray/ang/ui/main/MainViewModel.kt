@@ -159,6 +159,7 @@ class MainViewModel(
         MainStatus.Disconnected -> dataSource.getString(R.string.connection_not_connected)
         MainStatus.Connected -> dataSource.getString(R.string.connection_connected)
         MainStatus.Testing -> dataSource.getString(R.string.connection_test_testing)
+        MainStatus.WarpSearching -> dataSource.getString(R.string.warp_endpoint_searching)
         is MainStatus.TestProgress -> dataSource.getString(
             R.string.connection_running_task_left,
             status.progress
@@ -171,6 +172,10 @@ class MainViewModel(
         val status = if (result.delayMillis >= 0) {
             val delay = dataSource.getString(R.string.server_test_delay_value, result.delayMillis)
             dataSource.getString(R.string.connection_test_available, delay)
+        } else if (!result.ipAddress.isNullOrBlank()) {
+            // Delay URLs can be blocked while the tunnel itself is healthy. An
+            // independently verified exit IP is positive tunnel evidence.
+            dataSource.getString(R.string.connection_tunnel_active_delay_unavailable)
         } else {
             val detail = result.errorMessage.ifBlank {
                 dataSource.getString(R.string.connection_test_empty_message)
@@ -233,6 +238,9 @@ class MainViewModel(
             MainAction.ImportClipboard,
             MainAction.ImportConfigLocal,
             MainAction.AddServerLess,
+            MainAction.AddWarpMasque,
+            MainAction.AddWarpWireGuard,
+            MainAction.AddWarpInWarp,
             is MainAction.ImportManually,
             MainAction.RestartService,
             MainAction.LocateSelectedServer,
@@ -271,8 +279,31 @@ class MainViewModel(
     }
 
     /** Keeps the connect button cancellable while the foreground service starts. */
-    fun setServiceStartPending(pending: Boolean) {
-        _uiState.update { it.copy(isStarting = pending) }
+    fun setServiceStartPending(pending: Boolean, searchingWarp: Boolean = false) {
+        _uiState.update { state ->
+            state.copy(
+                isStarting = pending,
+                status = when {
+                    pending && searchingWarp -> MainStatus.WarpSearching
+                    !pending && state.status == MainStatus.WarpSearching -> MainStatus.Disconnected
+                    else -> state.status
+                },
+            )
+        }
+    }
+
+    fun setEndpointSearchProgress(progress: String) {
+        _uiState.update { it.copy(status = MainStatus.TestProgress(progress)) }
+    }
+
+    fun clearEndpointSearchProgress() {
+        _uiState.update { current ->
+            if (current.status is MainStatus.TestProgress) {
+                current.copy(status = if (current.isRunning) MainStatus.Connected else MainStatus.Disconnected)
+            } else {
+                current
+            }
+        }
     }
 
     // ---------- Group & server loading ----------

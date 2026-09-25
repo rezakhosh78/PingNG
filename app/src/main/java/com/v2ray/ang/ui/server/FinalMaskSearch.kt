@@ -99,12 +99,13 @@ object FinalMaskSearch {
 @Composable
 fun FinalMaskSearchDialog(
     guid: String,
+    candidateSource: () -> List<FinalMaskCandidate> = { FinalMaskSearch.candidates() },
     onSearch: (List<FinalMaskCandidate>, (FinalMaskCandidate, Long) -> Unit, (Int) -> Unit, () -> Unit) -> Unit,
     onCancelSearch: () -> Unit,
     onApply: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val candidates = remember { FinalMaskSearch.candidates() }
+    val candidates = remember { candidateSource() }
     var history by remember(guid) { mutableStateOf(FinalMaskSearch.load(guid)) }
     var searching by remember { mutableStateOf(false) }
     var testedProfiles by remember { mutableStateOf(0) }

@@ -68,6 +68,14 @@ fun downloadValidAar(target: java.io.File, url: String): Boolean {
     return false
 }
 
+// The standalone MASQUE core is bundled under an app-owned name. Keeping the
+// executable in the project makes Android builds deterministic and offline.
+val warpMasqueBinary = layout.projectDirectory.file("libs/arm64-v8a/libwarpmasque.so").asFile
+
+check(warpMasqueBinary.isFile && warpMasqueBinary.length() > 1024 * 1024) {
+    "WARP MASQUE core is missing from app/libs/arm64-v8a"
+}
+
 if (!isValidAar(libV2rayFile)) {
     check(downloadValidAar(
         libV2rayFile,
@@ -83,9 +91,11 @@ android {
         applicationId = "com.pingng.android"
         minSdk = 24
         targetSdk = 37
-        versionCode = 751
-        // v2rayNG 2.3.8-compatible PingNG build with the Pi36 feature set.
-        versionName = "v2.3.8-Pi36"
+        versionCode = 752
+        // v2rayNG 2.3.9-compatible PingNG build with the Pi39 feature set.
+        // Keep the project-specific version code so installs upgrade cleanly
+        // from the previous Pi37 builds.
+        versionName = "v2.3.9-Pi38"
 
         val abiFilterList = (properties["ABI_FILTERS"] as? String)?.split(';')
         splits {
@@ -205,6 +215,12 @@ android {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
             version = "3.22.1"
+            // Keep Ninja's generated object paths short on Windows even when
+            // the project itself is checked out in a deeply nested folder.
+            buildStagingDirectory = File(
+                System.getProperty("java.io.tmpdir"),
+                "pingng-cmake-${Integer.toUnsignedString(rootProject.projectDir.absolutePath.hashCode(), 36)}"
+            )
         }
     }
 

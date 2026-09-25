@@ -25,7 +25,8 @@ object PingNgCompat {
         EConfigType.SHADOWSOCKS,
         EConfigType.SOCKS,
         EConfigType.HTTP,
-        EConfigType.TROJAN -> true
+        EConfigType.TROJAN,
+        EConfigType.WARP -> true
         else -> false
     }
 

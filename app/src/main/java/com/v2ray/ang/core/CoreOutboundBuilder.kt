@@ -32,6 +32,7 @@ object CoreOutboundBuilder {
             EConfigType.WIREGUARD -> toOutboundWireguard(profileItem)
             EConfigType.HYSTERIA2 -> toOutboundHysteria2(profileItem)
             EConfigType.HTTP -> toOutboundHttp(profileItem)
+            EConfigType.WARP -> toOutboundWarpMasque(profileItem)
             else -> null
         }
 
@@ -258,7 +259,14 @@ object CoreOutboundBuilder {
             wireguard.peers?.firstOrNull()?.let { peer ->
                 peer.publicKey = profileItem.publicKey.orEmpty()
                 peer.preSharedKey = profileItem.preSharedKey?.nullIfBlank()
-                peer.endpoint = Utils.getIpv6Address(profileItem.server) + ":${profileItem.serverPort}"
+                peer.keepAlive = profileItem.warpKeepAlive
+                // Older generated WARP children could have persisted serverPort=0.
+                // Cloudflare WireGuard uses UDP 2408 by default; keep those profiles
+                // usable at runtime even before the editor is opened and saved again.
+                val endpointPort = profileItem.serverPort?.toIntOrNull()
+                    ?.takeIf { it in 1..65535 }
+                    ?: 2408
+                peer.endpoint = Utils.getIpv6Address(profileItem.server) + ":$endpointPort"
             }
             wireguard.mtu = profileItem.mtu
             wireguard.reserved = profileItem.reserved?.takeIf { it.isNotBlank() }?.split(",")?.filter { it.isNotBlank() }?.map { it.trim().toInt() }
@@ -270,6 +278,27 @@ object CoreOutboundBuilder {
                 updateOutboundFinalMask(it, profileItem)
                 it.network = null
             }
+        }
+        return outboundBean
+    }
+
+    /**
+     * WARP MASQUE is provided by the standalone MASQUE core. Xray remains the
+     * traffic dispatcher and sends the selected profile to its loopback SOCKS5
+     * listener; it must never be represented as a WireGuard/UDP endpoint.
+     */
+    private fun toOutboundWarpMasque(profileItem: ProfileItem): OutboundBean? {
+        val outboundBean = createInitOutbound(EConfigType.SOCKS) ?: return null
+        outboundBean.settings?.let { settings ->
+            val bindAddress = profileItem.warpMasqueSocksBind?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: WarpMasqueConfig.DEFAULT_SOCKS_BIND
+            settings.address = when (bindAddress) {
+                "0.0.0.0", "::", "[::]" -> WarpMasqueConfig.DEFAULT_SOCKS_BIND
+                else -> bindAddress.removePrefix("[").removeSuffix("]")
+            }
+            settings.port = (profileItem.warpMasqueSocksPort ?: WarpMasqueConfig.DEFAULT_SOCKS_PORT)
+                .coerceIn(1, 65535)
         }
         return outboundBean
     }

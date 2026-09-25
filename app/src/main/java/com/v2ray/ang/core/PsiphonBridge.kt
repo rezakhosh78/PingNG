@@ -13,7 +13,9 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.helper.MessageHelper
+import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.util.LogUtil
 import java.io.File
 import java.lang.reflect.InvocationHandler
@@ -43,6 +45,27 @@ object PsiphonBridge {
     private const val NATIVE_NAME = "libpingng_psiphon.so"
     private const val UPSTREAM_TAG = "pingng-psiphon-upstream"
     private const val EGRESS_TAG = "pingng-psiphon-egress"
+
+    // Psiphon is always chained through PingNG's local HTTP upstream. Keep
+    // the fallback path's protocol selection identical to the isolated
+    // runtime service and the reference chained Psiphon mode.
+    private val CHAINED_TUNNEL_PROTOCOLS = listOf(
+        "SSH",
+        "OSSH",
+        "TLS-OSSH",
+        "UNFRONTED-MEEK-OSSH",
+        "UNFRONTED-MEEK-HTTPS-OSSH",
+        "UNFRONTED-MEEK-SESSION-TICKET-OSSH",
+        "SHADOWSOCKS-OSSH",
+        "FRONTED-MEEK-OSSH",
+        "FRONTED-MEEK-CDN-OSSH",
+        "FRONTED-MEEK-HTTP-OSSH",
+        "FRONTED-MEEK-CDN-HTTP-OSSH",
+    )
+    private val CDN_TUNNEL_PROTOCOLS = listOf(
+        "FRONTED-MEEK-CDN-OSSH",
+        "FRONTED-MEEK-CDN-HTTP-OSSH",
+    )
 
     @Volatile private var tunnel: Any? = null
     @Volatile private var loader: DexClassLoader? = null
@@ -90,7 +113,27 @@ object PsiphonBridge {
         }
 
         val outbounds = root.getAsJsonArray("outbounds") ?: JsonArray().also { root.add("outbounds", it) }
-        val upstreamOutbound = outbounds.firstOrNull {
+        // When Psiphon is enabled on WARP MASQUE, MASQUE is the upstream hop
+        // for Psiphon's HTTP bootstrap. Once Psiphon reports a live SOCKS
+        // listener, user TCP traffic must be routed to Psiphon so its exit IP
+        // is visible to websites. Keeping the old MASQUE catch-all here made
+        // Psiphon appear connected while every user request still exited via
+        // WARP.
+        val warpMasqueUpstream = profile.configType == EConfigType.WARP &&
+            WarpMasqueConfig.isDescription(profile.description)
+        if (warpMasqueUpstream) {
+            PingNgDiagnostics.record("Psiphon enabled on WARP MASQUE; Psiphon will be final TCP egress")
+        }
+        val isWarpPlus = WarpPlusConfig.isDescription(profile.description)
+        // WARP Plus is a generated two-hop chain. Do not let the first
+        // incidental outbound (for example a DNS or fallback entry) become
+        // Psiphon's upstream; the inner WARP tag is the only valid upstream
+        // for this profile.
+        val upstreamOutbound = if (isWarpPlus && outbounds.any {
+                it.isJsonObject && it.asJsonObject.get("tag")?.asString == "proxy"
+            }) {
+            "proxy"
+        } else outbounds.firstOrNull {
             it.isJsonObject && it.asJsonObject.get("tag")?.asString?.let(::isUsableOutbound) == true
         }?.asJsonObject?.get("tag")?.asString ?: "proxy"
 
@@ -119,6 +162,8 @@ object PsiphonBridge {
                     addProperty("tag", EGRESS_TAG)
                     addProperty("protocol", "socks")
                     add("settings", JsonObject().apply {
+                        addProperty("version", "5")
+                        addProperty("udp", false)
                         add("servers", JsonArray().also { servers ->
                             servers.add(JsonObject().apply {
                                 addProperty("address", "127.0.0.1")
@@ -126,27 +171,68 @@ object PsiphonBridge {
                             })
                         })
                     })
+                    // Keep the local Psiphon hop TCP-only and IPv4. This is
+                    // especially important for WARP Plus where the generated
+                    // chain may otherwise inherit an unsuitable UDP/IPv6
+                    // dial path from the WireGuard outbounds.
+                    add("streamSettings", JsonObject().apply {
+                        addProperty("network", "tcp")
+                        add("sockopt", JsonObject().apply {
+                            addProperty("domainStrategy", "UseIPv4")
+                        })
+                    })
                 })
             }
             val finalRules = JsonArray()
-            // The embedded Psiphon SOCKS listener is a TCP proxy. DNS and other
-            // UDP requests must stay on Xray's normal outbound, otherwise the
-            // TUN can appear connected while domain-based sites cannot resolve
-            // (and QUIC can keep retrying forever).
+            // Custom JSON files do not necessarily call their TUN/mixed inbound
+            // "tun". Route every user-facing inbound explicitly; otherwise the
+            // Psiphon switch appears enabled but traffic keeps using the old
+            // route. UDP stays on Xray because Psiphon's listener is TCP-only.
+            val userInboundTags = inbounds.mapNotNull { inbound ->
+                inbound.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("tag")?.takeIf { it.isJsonPrimitive }?.asString
+                    ?.takeUnless { it == UPSTREAM_TAG }
+            }.distinct().ifEmpty { listOf("tun") }
+            // Keep DNS interception ahead of the Psiphon catch-all. The
+            // generic UDP rule below used to win over CoreConfigManager's
+            // UDP/53 -> dns-out rule, so DNS was sent to the WARP SOCKS hop
+            // and browsers failed while cached-IP apps such as Telegram kept
+            // working. Only add this rule when the prepared config really has
+            // a DNS outbound; custom configs without one must retain their
+            // original behavior instead of referencing a missing tag.
+            val hasDnsOutbound = outbounds.any {
+                it.isJsonObject &&
+                    it.asJsonObject.get("tag")?.takeIf { tag -> tag.isJsonPrimitive }?.asString == "dns-out" &&
+                    it.asJsonObject.get("protocol")?.takeIf { protocol -> protocol.isJsonPrimitive }
+                        ?.asString?.equals("dns", ignoreCase = true) == true
+            }
+            if (hasDnsOutbound) {
+                finalRules.add(JsonObject().apply {
+                    addProperty("type", "field")
+                    add("inboundTag", JsonArray().also { tags -> userInboundTags.forEach(tags::add) })
+                    addProperty("network", "udp")
+                    addProperty("port", "53")
+                    addProperty("outboundTag", "dns-out")
+                })
+                PingNgDiagnostics.record("Psiphon DNS interception: UDP/53 -> dns-out")
+            }
             finalRules.add(JsonObject().apply {
                 addProperty("type", "field")
-                add("inboundTag", JsonArray().also { it.add("tun") })
-                add("network", JsonArray().also { it.add("udp") })
+                add("inboundTag", JsonArray().also { tags -> userInboundTags.forEach(tags::add) })
+                addProperty("network", "udp")
                 addProperty("outboundTag", upstreamOutbound)
             })
             finalRules.add(JsonObject().apply {
                 addProperty("type", "field")
-                add("inboundTag", JsonArray().also { it.add("tun") })
-                add("network", JsonArray().also { it.add("tcp") })
+                add("inboundTag", JsonArray().also { tags -> userInboundTags.forEach(tags::add) })
+                addProperty("network", "tcp")
                 addProperty("outboundTag", EGRESS_TAG)
             })
             rules.forEach(finalRules::add)
             routing.add("rules", finalRules)
+            PingNgDiagnostics.record(
+                "Psiphon final route applied: TCP -> $EGRESS_TAG; upstream -> $upstreamOutbound",
+            )
         } else {
             routing.add("rules", rules)
         }
@@ -165,6 +251,10 @@ object PsiphonBridge {
                 .setAction(AppConfig.PSIPHON_RUNTIME_START)
                 .putExtra(AppConfig.EXTRA_PSIPHON_GUID, guid)
                 .putExtra(AppConfig.EXTRA_PSIPHON_REGION, selectedRegion(profile))
+                .putExtra(AppConfig.EXTRA_PSIPHON_MODE, profile.psiphonMode.orEmpty().ifBlank { "auto" })
+                .putExtra(AppConfig.EXTRA_PSIPHON_CDN_IPS, profile.psiphonCdnIps.orEmpty())
+                .putExtra(AppConfig.EXTRA_PSIPHON_CDN_SNI, profile.psiphonCdnSni.orEmpty())
+                .putExtra(AppConfig.EXTRA_PSIPHON_CDN_SETS, profile.psiphonCdnSets.orEmpty())
                 .putExtra(AppConfig.EXTRA_PSIPHON_UPSTREAM_PORT, upstreamHttpPort)
             ContextCompat.startForegroundService(service, intent)
         } catch (e: Throwable) {
@@ -240,12 +330,19 @@ object PsiphonBridge {
                 publishStatus(PsiphonStatus.CONNECTING, guid, context)
             }
             PsiphonStatus.CONNECTED -> {
-                socksPort = intent.getIntExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, 0)
+                val reportedPort = intent.getIntExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, 0)
+                val duplicateConnected = connected && socksPort == reportedPort &&
+                    reportedPort in 1..65535
+                socksPort = reportedPort
                 connected = socksPort in 1..65535
-                routeApplied.set(false)
                 PingNgDiagnostics.record("Psiphon is working; SOCKS=127.0.0.1:$socksPort")
                 publishStatus(PsiphonStatus.CONNECTED, guid, context)
-                if (connected && routeApplied.compareAndSet(false, true)) {
+                // The runtime can emit CONNECTED more than once for the same
+                // SOCKS listener. Rebuilding Xray for every duplicate tears
+                // down active sockets and makes WARP Plus appear connected
+                // while every website request times out.
+                if (!duplicateConnected) routeApplied.set(false)
+                if (connected && !duplicateConnected && routeApplied.compareAndSet(false, true)) {
                     CoreServiceManager.onPsiphonConnected()
                 }
             }
@@ -451,7 +548,14 @@ object PsiphonBridge {
             .takeUnless { it.isBlank() || it == "ANY" || it == "AUTO" }.orEmpty()
         root.addProperty("EgressRegion", region)
         root.addProperty("TunnelWholeDevice", 0)
-        root.addProperty("UpstreamProxyUrl", "http://127.0.0.1:$upstreamHttpPort")
+        val configuredProxy = SettingsManager.getConnectHttpProxy()
+        val upstreamProxyUrl = configuredProxy?.asHttpUrl() ?: "http://127.0.0.1:$upstreamHttpPort"
+        root.addProperty("UpstreamProxyUrl", upstreamProxyUrl)
+        if (configuredProxy != null) {
+            PingNgDiagnostics.record(
+                "Connect through HTTP proxy: Psiphon upstream set to ${configuredProxy.host}:${configuredProxy.port}",
+            )
+        }
         val dataRoot = File(service.filesDir, "pingng-psiphon").apply { mkdirs() }
         val dataStore = File(dataRoot, "datastore").apply { mkdirs() }
         val oslDirectory = File(service.filesDir, "osl").apply { mkdirs() }
@@ -462,7 +566,42 @@ object PsiphonBridge {
         root.addProperty("MigrateRemoteServerListDownloadFilename", File(service.filesDir, "remote_server_list").absolutePath)
         root.addProperty("EstablishTunnelTimeoutSeconds", 0)
         root.addProperty("UpstreamProxyAllowAllServerEntrySources", true)
+        applyTunnelProtocolMode(root, profile.psiphonMode.orEmpty())
+        addCdnFrontingConfig(root, profile)
         return root.toString()
+    }
+
+    /** Restricts Psiphon to the selected shape when it is chained upstream. */
+    private fun applyTunnelProtocolMode(root: JsonObject, mode: String) {
+        val normalized = mode.trim().lowercase(Locale.ROOT)
+        val protocols = when (normalized) {
+            "cdn" -> CDN_TUNNEL_PROTOCOLS
+            "direct" -> CHAINED_TUNNEL_PROTOCOLS.filterNot { it.startsWith("FRONTED-") }
+            else -> CHAINED_TUNNEL_PROTOCOLS
+        }
+        root.add("LimitTunnelProtocols", JsonArray().also { values -> protocols.forEach(values::add) })
+        if (normalized == "cdn" || normalized == "direct") {
+            root.addProperty("DisableTactics", true)
+        }
+    }
+
+    /** Applies the same CDN fronting fields to the in-process fallback path. */
+    private fun addCdnFrontingConfig(root: JsonObject, profile: ProfileItem) {
+        if (profile.psiphonMode.orEmpty().equals("direct", ignoreCase = true)) return
+        fun candidates(raw: String): List<String> = raw.split(',', ';', ' ', '\t', '\n', '\r')
+            .map(String::trim).filter(String::isNotBlank)
+        val ips = candidates(profile.psiphonCdnIps.orEmpty())
+        val sni = candidates(profile.psiphonCdnSni.orEmpty())
+        val sets = candidates(profile.psiphonCdnSets.orEmpty())
+        if (!profile.psiphonMode.orEmpty().equals("cdn", ignoreCase = true) && ips.isEmpty() && sni.isEmpty() && sets.isEmpty()) return
+        if (ips.isNotEmpty()) {
+            root.add("FrontedMeekCDNScanSpec", JsonObject().apply {
+                add("IPCandidates", JsonArray().also { values -> ips.forEach(values::add) })
+                if (sni.isNotEmpty()) add("SNIServerNames", JsonArray().also { values -> sni.forEach(values::add) })
+            })
+        }
+        if (ips.isEmpty() || sets.isNotEmpty()) root.addProperty("FrontedMeekCDNScanUseBuiltInSpec", true)
+        if (sets.isNotEmpty()) root.add("FrontedMeekCDNScanBuiltInSets", JsonArray().also { values -> sets.forEach(values::add) })
     }
 
     private fun isUsableOutbound(tag: String): Boolean = tag !in setOf(

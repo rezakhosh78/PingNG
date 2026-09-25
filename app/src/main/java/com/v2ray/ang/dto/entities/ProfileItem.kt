@@ -19,6 +19,16 @@ data class ProfileItem(
     var pingNgDesyncArgs: String? = null,
     var psiphonEnabled: Boolean = false,
     var psiphonRegion: String? = "ANY",
+    /** Psiphon transport selection: auto, cdn (CDN fronting), or direct. */
+    var psiphonMode: String? = "auto",
+    /** Optional user-supplied CDN edge IPs used by the Psiphon fronting scan. */
+    var psiphonCdnIps: String? = null,
+    /** Optional SNI/server names paired with [psiphonCdnIps]. */
+    var psiphonCdnSni: String? = null,
+    /** Built-in Psiphon CDN edge lists to scan, comma-separated; null means all. */
+    var psiphonCdnSets: String? = null,
+    /** Non-visible component owned by a generated composite profile. */
+    var managedBy: String? = null,
     /** Last verified egress country; kept with this profile instead of UI-only state. */
     var lastExitCountryCode: String? = null,
     /** Last verified egress IP, kept with the profile for stable display. */
@@ -66,6 +76,43 @@ data class ProfileItem(
     var localAddress: String? = null,
     var reserved: String? = null,
     var mtu: Int? = null,
+    var warpKeepAlive: Int? = null,
+    var warpEndpointCandidates: String? = null,
+    var warpEndpointTestEnabled: Boolean? = null,
+    var warpEndpointTestMode: String? = null,
+    /** FinalMask selected for Fast mode; null keeps the default fallback. */
+    var warpFastFinalMask: String? = null,
+    /** FinalMask selected for Medium/Slow mode; null keeps the default fallback. */
+    var warpAllFinalMask: String? = null,
+    var warpFinalMaskEnabled: Boolean? = null,
+    var warpInnerEndpointCandidates: String? = null,
+    var warpOuterEndpointCandidates: String? = null,
+    /** Last endpoint pair selected by the WARP Plus endpoint tester. */
+    var warpSelectedEndpoint: String? = null,
+    /** Last single-hop WARP WireGuard endpoint selected by its tester. */
+    var warpWireGuardSelectedEndpoint: String? = null,
+    /** Proxy profile used to register new WARP accounts (WireGuard, Plus, or MASQUE); null means Auto. */
+    var warpRegistrationProxyGuid: String? = null,
+    /** Internal MASQUE carrier bundled for WARP registration; never publish in profile lists. */
+    var warpRegistrationInternalProxy: Boolean? = null,
+    /** Skip one automatic endpoint retest after a FinalMask result is applied. */
+    var warpSkipEndpointTestOnce: Boolean? = null,
+    /** Candidate IPv4 endpoints for the WARP MASQUE/HTTP2 core. */
+    var warpMasqueEndpointCandidates: String? = null,
+    /** Last MASQUE endpoint selected by the fast endpoint probe. */
+    var warpMasqueSelectedEndpoint: String? = null,
+    /** User-editable MASQUE registration and transport settings. */
+    var warpMasqueDeviceName: String? = null,
+    var warpMasquePrimaryEndpoint: String? = null,
+    var warpMasqueEndpointPort: Int? = null,
+    var warpMasqueEndpointMode: String? = null,
+    var warpMasqueSni: String? = null,
+    var warpMasqueHttp2Enabled: Boolean? = null,
+    var warpMasqueSocksBind: String? = null,
+    var warpMasqueSocksPort: Int? = null,
+    var warpMasqueDns: String? = null,
+    /** Optional complete MASQUE JSON, useful when registration is blocked. */
+    var warpMasqueConfigJson: String? = null,
 
     var obfsPassword: String? = null,
     var portHopping: String? = null,

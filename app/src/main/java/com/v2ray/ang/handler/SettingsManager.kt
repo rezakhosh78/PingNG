@@ -11,6 +11,7 @@ import com.v2ray.ang.AppConfig.GEOIP_PRIVATE
 import com.v2ray.ang.AppConfig.GEOSITE_PRIVATE
 import com.v2ray.ang.AppConfig.TAG_DIRECT
 import com.v2ray.ang.AppConfig.VPN
+import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.dto.V2rayConfig
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.entities.RulesetItem
@@ -224,6 +225,7 @@ object SettingsManager {
         return decodeAllServerList()
             .asSequence()
             .mapNotNull { guid -> decodeServerConfig(guid) }
+            .filter { it.managedBy.isNullOrBlank() }
             .filter { profile -> profile.configType !in excludeConfigTypes }
             .map { it.remarks.trim() }
             .filter { it.isNotEmpty() }
@@ -300,12 +302,19 @@ object SettingsManager {
         if (!MmkvManager.decodeSettingsBool(AppConfig.PREF_CONNECT_HTTP_PROXY, false)) {
             return null
         }
-        return HttpProxySettings.from(
+        val proxy = HttpProxySettings.from(
             hostValue = MmkvManager.decodeSettingsString(AppConfig.PREF_CONNECT_HTTP_PROXY_HOST),
             portValue = MmkvManager.decodeSettingsString(AppConfig.PREF_CONNECT_HTTP_PROXY_PORT),
             usernameValue = MmkvManager.decodeSettingsString(AppConfig.PREF_CONNECT_HTTP_PROXY_USERNAME),
             passwordValue = MmkvManager.decodeSettingsString(AppConfig.PREF_CONNECT_HTTP_PROXY_PASSWORD),
         )
+        if (proxy == null) {
+            LogUtil.w(
+                AppConfig.TAG,
+                "Connect through HTTP proxy is enabled but host/port are invalid; setting ignored",
+            )
+        }
+        return proxy
     }
 
     private fun IsDynamicSocksPort(): Boolean {
@@ -430,6 +439,17 @@ object SettingsManager {
     fun isUsingHevTun(): Boolean {
         val requested = MmkvManager.decodeSettingsBool(AppConfig.PREF_USE_HEV_TUNNEL, false)
         if (!requested || !isVpnMode()) return false
+        // MASQUE already exposes a local SOCKS data plane and is most reliable
+        // with Xray's native Android-TUN reader. HEV can report a healthy VPN
+        // interface while failing to deliver browser flows into Xray, leaving
+        // the Android key visible and only selected UDP apps working.
+        val selectedProfile = MmkvManager.getSelectServer()
+            ?.let(MmkvManager::decodeServerConfig)
+        if (selectedProfile?.configType == EConfigType.WARP &&
+            WarpMasqueConfig.isDescription(selectedProfile.description)
+        ) {
+            return false
+        }
         return TProxyService.isNativeAvailable()
     }
 

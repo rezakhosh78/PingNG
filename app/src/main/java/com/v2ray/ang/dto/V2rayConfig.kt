@@ -103,7 +103,8 @@ data class V2rayConfig(
             data class WireGuardBean(
                 var publicKey: String = "",
                 var preSharedKey: String? = null,
-                var endpoint: String = ""
+                var endpoint: String = "",
+                var keepAlive: Int? = null,
             )
         }
 
@@ -341,7 +342,7 @@ data class V2rayConfig(
         var hosts: Map<String, Any>? = null,
         val clientIp: String? = null,
         val disableCache: Boolean? = null,
-        val queryStrategy: String? = null,
+        var queryStrategy: String? = null,
         val enableParallelQuery: Boolean? = null,
         val tag: String? = null
     ) {

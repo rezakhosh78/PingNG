@@ -65,6 +65,9 @@ import java.time.ZoneId
 import java.util.Locale
 import com.v2ray.ang.R
 import com.v2ray.ang.core.PingNgCompat
+import com.v2ray.ang.core.WarpMasqueConfig
+import com.v2ray.ang.core.WarpPlusConfig
+import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.entities.ServersCache
 import com.v2ray.ang.dto.PsiphonStatus
@@ -606,8 +609,7 @@ private fun ServerItemRow(
     ServerListItem(
         remarks = profile.remarks,
         countryCode = null,
-        statistics = profile.description.nullIfBlank()
-            ?: AngConfigManager.generateDescription(profile),
+        statistics = serverStatistics(profile),
         exitInfo = exitInfo,
         typeDescription = getProtocolDescription(profile),
         testDelayMillis = serverCache.testDelayMillis,
@@ -661,7 +663,7 @@ private fun ServerItemColumn(
         ServerListItem(
             remarks = profile.remarks,
             countryCode = null,
-            statistics = profile.description.nullIfBlank() ?: AngConfigManager.generateDescription(profile),
+            statistics = serverStatistics(profile),
             exitInfo = exitInfo,
             typeDescription = getProtocolDescription(profile),
             testDelayMillis = serverCache.testDelayMillis,
@@ -889,6 +891,9 @@ fun ServerListItem(
 }
 
 private fun getProtocolDescription(profile: ProfileItem): String {
+    if (WarpWireGuardConfig.isProfile(profile)) return "WARP WireGuard"
+    if (WarpPlusConfig.isDescription(profile.description)) return "WARP PLUS"
+    if (WarpMasqueConfig.isDescription(profile.description)) return "WARP MASQUE/H2"
     if (profile.configType.isComplexType()) return profile.configType.name
     val parts = mutableListOf(profile.configType.name)
     profile.network?.let { net ->
@@ -906,9 +911,32 @@ private fun getProtocolDescription(profile: ProfileItem): String {
     return parts.joinToString(" / ")
 }
 
+private fun serverStatistics(profile: ProfileItem): String = when {
+    WarpWireGuardConfig.isProfile(profile) ->
+        profile.warpWireGuardSelectedEndpoint?.takeIf { it.isNotBlank() }
+            ?: listOfNotNull(profile.server?.takeIf { it.isNotBlank() }, profile.serverPort).joinToString(":")
+    WarpPlusConfig.isDescription(profile.description) ->
+        profile.warpSelectedEndpoint?.takeIf { it.isNotBlank() }?.let(::formatWarpEndpointDisplay).orEmpty()
+    WarpMasqueConfig.isDescription(profile.description) ->
+        profile.warpMasqueSelectedEndpoint?.takeIf { it.isNotBlank() }
+            ?: listOfNotNull(profile.server?.takeIf { it.isNotBlank() }, profile.serverPort)
+                .joinToString(":")
+    else -> profile.description.nullIfBlank() ?: AngConfigManager.generateDescription(profile)
+}
+
+private fun formatWarpEndpointDisplay(value: String): String = value
+    .split('•')
+    .map { it.trim().removePrefix("inner").removePrefix("outer").trim() }
+    .filter(String::isNotBlank)
+    .joinToString(" • ")
+
 private fun protocolPartColor(part: String): Color {
     val value = part.trim().uppercase()
     return when {
+        value.startsWith("WARP MASQUE") -> Color(0xFF00ACC1)
+        value.startsWith("WARP WIREGUARD") -> Color(0xFFFFC107)
+        value == "WARP" -> Color(0xFF00ACC1)
+        value.startsWith("WARP PLUS") -> Color(0xFFE91E63)
         value.startsWith("VLESS") -> Color(0xFF00B8D4)
         value.startsWith("VMESS") -> Color(0xFF7C4DFF)
         value.startsWith("TROJAN") -> Color(0xFFFF6D00)

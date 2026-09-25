@@ -13,6 +13,7 @@ import com.v2ray.ang.R
 import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.core.LauncherManager
 import com.v2ray.ang.handler.AppLocaleManager
+import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.helper.MessageHelper
 import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
@@ -35,7 +36,12 @@ class QSTileService : TileService() {
             qsTile?.label = getString(R.string.app_name)
         } else if (state == Tile.STATE_ACTIVE) {
             qsTile?.state = Tile.STATE_ACTIVE
-            qsTile?.label = getString(R.string.app_name)
+            val selectedName = MmkvManager.getSelectServer()
+                ?.let(MmkvManager::decodeServerConfig)
+                ?.remarks
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            qsTile?.label = selectedName ?: getString(R.string.app_name)
         }
 
         qsTile?.updateTile()

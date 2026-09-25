@@ -24,6 +24,7 @@ import com.v2ray.ang.util.Utils
 
 object CoreConfigManager {
     private const val CONNECT_HTTP_PROXY_TAG = "pingng-connect-http-proxy"
+    private const val WARP_MASQUE_RESOLVED_TAG = "pingng-warp-masque-resolved"
     private var initConfigCache: String? = null
     private var initConfigCacheWithTun: String? = null
 
@@ -198,12 +199,32 @@ object CoreConfigManager {
             )
         }
 
+        val warpMasqueResolvedTag = if (
+            WarpMasqueConfig.isDescription(primaryResolvedOutbound.profile.description)
+        ) {
+            addWarpMasqueResolvedOutbound(v2rayConfig)
+        } else {
+            null
+        }
+
         val desyncEnabled = PingNgCompat.isNativeDesyncEnabled(primaryResolvedOutbound.profile)
-        val desyncAttached = PingNgCompat.attachNativeProxy(
-            config = v2rayConfig,
-            profileItem = primaryResolvedOutbound.profile,
-            port = PingNgDesyncManager.activePort()
-        )
+        val desyncDelegatedToMasque = primaryResolvedOutbound.profile.configType == EConfigType.WARP &&
+            WarpMasqueConfig.isDescription(primaryResolvedOutbound.profile.description)
+        val desyncAttached = if (desyncDelegatedToMasque) {
+            // WARP MASQUE's remote TLS socket belongs to its external Go
+            // process. The Xray outbound here is only a local SOCKS hop;
+            // attaching Desync to it would never touch the outer ClientHello.
+            if (desyncEnabled) {
+                PingNgDiagnostics.record("WARP MASQUE Desync delegated to outer HTTP CONNECT proxy")
+            }
+            true
+        } else {
+            PingNgCompat.attachNativeProxy(
+                config = v2rayConfig,
+                profileItem = primaryResolvedOutbound.profile,
+                port = PingNgDesyncManager.activePort()
+            )
+        }
         check(!desyncEnabled || desyncAttached) {
             "Desync is enabled but could not be attached to the selected outbound"
         }
@@ -215,6 +236,104 @@ object CoreConfigManager {
         configureDns(configContext, v2rayConfig, policyGroupBalancerTags)
         configureLocalDns(configContext, v2rayConfig)
         configureRootModeDns(v2rayConfig)
+        val isWarpPlus = WarpPlusConfig.isDescription(primaryResolvedOutbound.profile.description)
+        val isWarpMasque = WarpMasqueConfig.isDescription(primaryResolvedOutbound.profile.description)
+        if (isWarpPlus || isWarpMasque) {
+            // Both WARP transports must receive every application flow. This
+            // is especially important for browsers: unlike Telegram, they
+            // create many fresh DNS/TCP/QUIC flows and must not fall through
+            // to the template's direct outbound or a global block rule. Put
+            // the WARP catch-all immediately after DNS interception.
+            v2rayConfig.routing.domainStrategy = "IPIfNonMatch"
+            val rules = v2rayConfig.routing.rules
+            val dnsRules = rules.filter { rule ->
+                rule.outboundTag == "dns-out" ||
+                    rule.inboundTag?.any { it == AppConfig.TAG_DNS || it == "dns" } == true ||
+                    (rule.port == "53" && rule.inboundTag?.any { it == "tun" || it == "socks" } == true)
+            }
+            rules.clear()
+            rules.addAll(dnsRules)
+            val inboundTags = arrayListOf("tun", "socks", "http")
+            // Android sends the device resolver's UDP packets into the VPN.
+            // If local-DNS is disabled, the generic WARP catch-all would send
+            // those packets to the MASQUE SOCKS listener instead. Telegram
+            // can still appear healthy because it mostly reuses cached IPs,
+            // while a browser cannot resolve fresh website hostnames. Always
+            // terminate inbound port-53 traffic in Xray's DNS module first.
+            if (v2rayConfig.outbounds.none { it.protocol.equals("dns", ignoreCase = true) && it.tag == "dns-out" }) {
+                v2rayConfig.outbounds.add(
+                    V2rayConfig.OutboundBean(
+                        protocol = "dns",
+                        tag = "dns-out",
+                        settings = null,
+                        streamSettings = null,
+                        mux = null,
+                    )
+                )
+            }
+            if (rules.none { it.outboundTag == "dns-out" && it.port == "53" }) {
+                rules.add(
+                    0,
+                    V2rayConfig.RoutingBean.RulesBean(
+                        network = "udp",
+                        port = "53",
+                        inboundTag = inboundTags,
+                        outboundTag = "dns-out",
+                    )
+                )
+            }
+            if (isWarpMasque && warpMasqueResolvedTag != null) {
+                // Resolve hostname-based TCP flows in Xray before handing them
+                // to the local MASQUE SOCKS listener. The listener's own DNS
+                // (1.1.1.1) is unreliable on restricted networks; literal-IP
+                // Telegram flows hid this defect.
+                rules.add(
+                    V2rayConfig.RoutingBean.RulesBean(
+                        network = "tcp",
+                        inboundTag = inboundTags,
+                        outboundTag = warpMasqueResolvedTag,
+                    )
+                )
+                // Chromium and many Android browsers open QUIC (UDP/443)
+                // before HTTPS/TCP. A failed UDP-associate can leave the page
+                // waiting instead of falling back quickly, even though the
+                // MASQUE TCP path is healthy. Reject only QUIC so browsers
+                // immediately use the working TCP path; DNS and other UDP
+                // traffic remain available through MASQUE.
+                rules.add(
+                    V2rayConfig.RoutingBean.RulesBean(
+                        network = "udp",
+                        port = "443",
+                        inboundTag = inboundTags,
+                        outboundTag = AppConfig.TAG_BLOCKED,
+                    )
+                )
+                rules.add(
+                    V2rayConfig.RoutingBean.RulesBean(
+                        network = "udp",
+                        inboundTag = inboundTags,
+                        outboundTag = AppConfig.TAG_PROXY,
+                    )
+                )
+            } else {
+                rules.add(
+                    V2rayConfig.RoutingBean.RulesBean(
+                        network = "tcp,udp",
+                        inboundTag = inboundTags,
+                        outboundTag = AppConfig.TAG_PROXY,
+                    )
+                )
+            }
+            // WARP profiles are full-device tunnels. Do not let a global
+            // routing preset or a Direct geo rule win before WARP. DNS
+            // interception and the MASQUE QUIC fallback rule remain above
+            // this catch-all rule.
+            if (isWarpMasque && warpMasqueResolvedTag != null) {
+                PingNgDiagnostics.record("WARP MASQUE UDP/443 blocked; TCP fallback forced")
+            }
+            PingNgDiagnostics.record("WARP MASQUE DNS interception: UDP/53 -> dns-out")
+            PingNgDiagnostics.record("WARP full-device routing: TCP/UDP forced to MASQUE")
+        }
 
         // (added by getDns / getCustomLocalDns) to use the balancer, then add
         // the catch-all balancer rule.
@@ -241,6 +360,38 @@ object CoreConfigManager {
         resolveOutboundDomainsToHosts(v2rayConfig)
 
         return v2rayConfig
+    }
+
+    /**
+     * Xray's SOCKS outbound forwards a hostname to the SOCKS server. The
+     * standalone MASQUE core then tries to resolve it through its own DNS,
+     * which is exactly the failing path seen in diagnostics. A Freedom
+     * outbound with UseIPv4 resolves the destination in Xray and uses the
+     * SOCKS outbound as its dialer proxy.
+     */
+    private fun addWarpMasqueResolvedOutbound(v2rayConfig: V2rayConfig): String? {
+        val masqueOutbound = v2rayConfig.outbounds.firstOrNull {
+            it.tag == AppConfig.TAG_PROXY && it.protocol.equals("socks", ignoreCase = true)
+        } ?: return null
+        if (v2rayConfig.outbounds.any { it.tag == WARP_MASQUE_RESOLVED_TAG }) {
+            return WARP_MASQUE_RESOLVED_TAG
+        }
+
+        val resolvedOutbound = V2rayConfig.OutboundBean(
+            tag = WARP_MASQUE_RESOLVED_TAG,
+            protocol = AppConfig.PROTOCOL_FREEDOM,
+            settings = null,
+            streamSettings = V2rayConfig.OutboundBean.StreamSettingsBean(
+                network = null,
+                sockopt = V2rayConfig.OutboundBean.StreamSettingsBean.SockoptBean(
+                    dialerProxy = masqueOutbound.tag,
+                    domainStrategy = "UseIPv4",
+                ),
+            ),
+            mux = null,
+        )
+        v2rayConfig.outbounds.add(resolvedOutbound)
+        return WARP_MASQUE_RESOLVED_TAG
     }
 
     /**
@@ -359,7 +510,14 @@ object CoreConfigManager {
             outbound.tag = chainTags[index]
         }
         for (i in 0 until chainOutbounds.size - 1) {
-            chainOutbounds[i].ensureSockopt().dialerProxy = chainOutbounds[i + 1].tag
+            val sockopt = chainOutbounds[i].ensureSockopt()
+            sockopt.dialerProxy = chainOutbounds[i + 1].tag
+            // ensureSockopt() creates a StreamSettingsBean whose default
+            // network is TCP. WireGuard is already UDP-based; keep the
+            // generated chain identical to Xray's working WARP examples.
+            if (chainOutbounds[i].protocol.equals(EConfigType.WIREGUARD.name, ignoreCase = true)) {
+                chainOutbounds[i].streamSettings?.network = null
+            }
         }
 
         if (prepend) {
@@ -463,12 +621,31 @@ object CoreConfigManager {
      */
     private fun configureConnectHttpProxy(v2rayConfig: V2rayConfig) {
         val proxy = SettingsManager.getConnectHttpProxy() ?: return
-        val candidates = v2rayConfig.outbounds.filter { outbound ->
+        val proxyOutbounds = v2rayConfig.outbounds.filter { outbound ->
             (outbound.tag == AppConfig.TAG_PROXY || outbound.tag.startsWith("${AppConfig.TAG_PROXY}-")) &&
-                outbound.protocol.lowercase() !in setOf("freedom", "blackhole", "dns")
+                // HTTP CONNECT is a TCP proxy. It cannot carry the UDP
+                // WireGuard handshake used by WARP, so wrapping WARP hops
+                // here creates a config that starts but never connects.
+                outbound.protocol.lowercase() !in setOf("freedom", "blackhole", "dns", "wireguard")
         }
+        val skippedWarpMasqueAdapters = proxyOutbounds.count { isWarpMasqueLoopbackAdapter(it) }
+        val candidates = proxyOutbounds.filterNot { isWarpMasqueLoopbackAdapter(it) }
         if (candidates.isEmpty()) {
-            LogUtil.w(AppConfig.TAG, "HTTP proxy is enabled but no proxy outbound was found")
+            val hasWireGuard = v2rayConfig.outbounds.any { outbound ->
+                (outbound.tag == AppConfig.TAG_PROXY || outbound.tag.startsWith("${AppConfig.TAG_PROXY}-")) &&
+                    outbound.protocol.equals(EConfigType.WIREGUARD.name, ignoreCase = true)
+            }
+            LogUtil.w(
+                AppConfig.TAG,
+                if (skippedWarpMasqueAdapters > 0) {
+                    "HTTP proxy skipped for WARP MASQUE local SOCKS adapter; " +
+                        "wrapping 127.0.0.1 would break the MASQUE data plane"
+                } else if (hasWireGuard) {
+                    "HTTP proxy skipped: WireGuard/WARP uses UDP and cannot use HTTP CONNECT"
+                } else {
+                    "HTTP proxy is enabled but no TCP proxy outbound was found"
+                },
+            )
             return
         }
 
@@ -502,23 +679,42 @@ object CoreConfigManager {
             existingTags.add(tag)
         }
         v2rayConfig.outbounds.addAll(additions)
-        LogUtil.i(AppConfig.TAG, "HTTP CONNECT proxy enabled for ${candidates.size} outbound(s): ${proxy.host}:${proxy.port}")
+        LogUtil.i(
+            AppConfig.TAG,
+            "HTTP CONNECT proxy enabled for ${candidates.size} outbound(s): ${proxy.host}:${proxy.port}" +
+                skippedWarpMasqueAdapters.takeIf { it > 0 }
+                    ?.let { "; skipped $it WARP MASQUE local adapter(s)" }.orEmpty(),
+        )
+        if (skippedWarpMasqueAdapters > 0) {
+            PingNgDiagnostics.record(
+                "Connect through HTTP proxy: WARP MASQUE local adapter bypassed; TCP node outbounds wrapped",
+            )
+        }
     }
 
     /** JSON equivalent used for user-supplied custom Xray configurations. */
     private fun configureConnectHttpProxy(json: JsonObject) {
         val proxy = SettingsManager.getConnectHttpProxy() ?: return
         val outbounds = json.get("outbounds")?.takeIf { it.isJsonArray }?.asJsonArray ?: return
-        val candidates = outbounds.toList().mapNotNull { element ->
+        val proxyOutbounds = outbounds.toList().mapNotNull { element ->
             element.takeIf { it.isJsonObject }?.asJsonObject?.takeIf { outbound ->
                 val tag = outbound.get("tag")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
                 val protocol = outbound.get("protocol")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty().lowercase()
                 (tag == AppConfig.TAG_PROXY || tag.startsWith("${AppConfig.TAG_PROXY}-")) &&
-                    protocol !in setOf("freedom", "blackhole", "dns")
+                    protocol !in setOf("freedom", "blackhole", "dns", "wireguard")
             }
         }
+        val skippedWarpMasqueAdapters = proxyOutbounds.count { isWarpMasqueLoopbackAdapter(it) }
+        val candidates = proxyOutbounds.filterNot { isWarpMasqueLoopbackAdapter(it) }
         if (candidates.isEmpty()) {
-            LogUtil.w(AppConfig.TAG, "HTTP proxy is enabled but no custom proxy outbound was found")
+            LogUtil.w(
+                AppConfig.TAG,
+                if (skippedWarpMasqueAdapters > 0) {
+                    "HTTP proxy skipped for WARP MASQUE local SOCKS adapter in custom config"
+                } else {
+                    "HTTP proxy is enabled but the custom config has no TCP proxy outbound"
+                },
+            )
             return
         }
 
@@ -556,7 +752,47 @@ object CoreConfigManager {
             outbounds.add(upstream)
             existingTags.add(tag)
         }
-        LogUtil.i(AppConfig.TAG, "HTTP CONNECT proxy enabled for custom configuration: ${proxy.host}:${proxy.port}")
+        LogUtil.i(
+            AppConfig.TAG,
+            "HTTP CONNECT proxy enabled for custom configuration: ${proxy.host}:${proxy.port}" +
+                skippedWarpMasqueAdapters.takeIf { it > 0 }
+                    ?.let { "; skipped $it WARP MASQUE local adapter(s)" }.orEmpty(),
+        )
+    }
+
+    /**
+     * WARP MASQUE's `proxy` outbound is a local SOCKS adapter owned by the
+     * standalone MASQUE process, not the remote server connection itself.
+     * Putting an HTTP CONNECT dialer in front of 127.0.0.1 sends the local
+     * adapter through the external proxy and breaks WARP/Psiphon. Normal TCP
+     * outbounds still use the setting exactly as configured.
+     */
+    private fun isWarpMasqueLoopbackAdapter(outbound: V2rayConfig.OutboundBean): Boolean {
+        if (!isSelectedWarpMasqueProfile()) return false
+        if (!outbound.protocol.equals("socks", ignoreCase = true)) return false
+        val tag = outbound.tag
+        if (tag != AppConfig.TAG_PROXY && !tag.startsWith("${AppConfig.TAG_PROXY}-")) return false
+        val address = outbound.settings?.address?.toString()?.trim()?.trim('"')?.lowercase()
+        return address == AppConfig.LOOPBACK || address == "localhost" || address == "::1"
+    }
+
+    private fun isWarpMasqueLoopbackAdapter(outbound: JsonObject): Boolean {
+        if (!isSelectedWarpMasqueProfile()) return false
+        if (!outbound.get("protocol")?.takeIf { it.isJsonPrimitive }?.asString
+                .orEmpty().equals("socks", ignoreCase = true)
+        ) return false
+        val tag = outbound.get("tag")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+        if (tag != AppConfig.TAG_PROXY && !tag.startsWith("${AppConfig.TAG_PROXY}-")) return false
+        val address = outbound.getAsJsonObject("settings")
+            ?.get("address")?.takeIf { it.isJsonPrimitive }?.asString
+            ?.trim()?.lowercase()
+        return address == AppConfig.LOOPBACK || address == "localhost" || address == "::1"
+    }
+
+    private fun isSelectedWarpMasqueProfile(): Boolean {
+        val selectedGuid = MmkvManager.getSelectServer() ?: return false
+        val profile = MmkvManager.decodeServerConfig(selectedGuid) ?: return false
+        return WarpMasqueConfig.isDescription(profile.description)
     }
 
     /**
@@ -980,14 +1216,43 @@ object CoreConfigManager {
         policyGroupBalancerTags: Map<String, String>,
     ) {
         val servers = ArrayList<Any>()
+        val isWarpPlus = WarpPlusConfig.isDescription(
+            configContext.resolvedOutbounds.firstOrNull()?.profile?.description
+        )
+        val isWarpMasque = WarpMasqueConfig.isDescription(
+            configContext.resolvedOutbounds.firstOrNull()?.profile?.description
+        )
         val remoteDns = SettingsManager.getRemoteDnsServers()
         val domesticDns = SettingsManager.getDomesticDnsServers()
 
-        remoteDns.forEach { servers.add(it) }
+        if (isWarpPlus) {
+            // Match the supplied WARP Plus template and keep endpoint DNS
+            // resolution deterministic on IPv4-only networks.
+            servers.add(
+                V2rayConfig.DnsBean.ServersBean(
+                    address = "1.1.1.1",
+                    tag = "remote-dns",
+                )
+            )
+            servers.add(
+                V2rayConfig.DnsBean.ServersBean(
+                    address = "8.8.8.8",
+                    domains = listOf("full:engage.cloudflareclient.com"),
+                    skipFallback = true,
+                )
+            )
+        } else if (isWarpMasque) {
+            // Keep the user's DNS choice, but force IPv4 resolution for the
+            // MASQUE path. This avoids browser failures caused by an IPv6
+            // answer on networks where the WARP core is using IPv4 ingress.
+            remoteDns.forEach { servers.add(it) }
+        } else {
+            remoteDns.forEach { servers.add(it) }
+        }
 
         val hosts = buildDnsHostsFromRoutingRules(configContext)
-        val cnDomesticDnsTags = buildDnsCnModeFromRoutingRules(configContext, servers, domesticDns)
-        val domesticDnsTags = buildDnsFromRoutingRules(
+        val cnDomesticDnsTags = if (isWarpPlus) mutableListOf<String>() else buildDnsCnModeFromRoutingRules(configContext, servers, domesticDns)
+        val domesticDnsTags = if (isWarpPlus) mutableListOf<String>() else buildDnsFromRoutingRules(
             configContext = configContext,
             servers = servers,
             remoteDns = remoteDns,
@@ -998,8 +1263,9 @@ object CoreConfigManager {
         v2rayConfig.dns = V2rayConfig.DnsBean(
             servers = servers,
             hosts = hosts,
+            queryStrategy = if (isWarpPlus || isWarpMasque) "UseIPv4" else null,
             tag = AppConfig.TAG_DNS,
-            enableParallelQuery = if ((domesticDns.size + remoteDns.size) > 2) true else null
+            enableParallelQuery = if (!isWarpPlus && (domesticDns.size + remoteDns.size) > 2) true else null
         )
 
         if (domesticDnsTags.isNotEmpty()) {
@@ -1180,6 +1446,20 @@ object CoreConfigManager {
         for (item in proxyOutboundList) {
             val domain = item.getServerAddress()
             if (domain.isNullOrEmpty()) {
+                continue
+            }
+
+            // WARP's WireGuard endpoint is UDP and the working WARP-in-WARP
+            // profile uses the IPv4 ingress. Avoid selecting an IPv6 endpoint
+            // on networks where IPv6 is advertised but not actually routable.
+            if (item.protocol.equals(EConfigType.WIREGUARD.name, ignoreCase = true)) {
+                val sockopt = item.ensureSockopt()
+                sockopt.domainStrategy = "UseIPv4"
+                sockopt.happyEyeballs = null
+                // ensureSockopt() creates StreamSettingsBean with the global
+                // default network (tcp). WireGuard is UDP-based; leaving that
+                // default on the outer hop breaks WARP-in-WARP return traffic.
+                item.streamSettings?.network = null
                 continue
             }
 

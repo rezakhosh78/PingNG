@@ -72,6 +72,10 @@ class ServerProxyChainActivity : BaseComponentActivity() {
     private lateinit var initialMembers: List<String>
     private var initialPsiphonEnabled: Boolean = false
     private var initialPsiphonRegion: String = "ANY"
+    private var initialPsiphonMode: String = "auto"
+    private var initialPsiphonCdnIps: String = ""
+    private var initialPsiphonCdnSni: String = ""
+    private var initialPsiphonCdnSets: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,6 +88,10 @@ class ServerProxyChainActivity : BaseComponentActivity() {
         initialMembers = config?.proxyChainProfiles?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: listOf("", "")
         initialPsiphonEnabled = config?.psiphonEnabled == true
         initialPsiphonRegion = config?.psiphonRegion.orEmpty().ifBlank { "ANY" }
+        initialPsiphonMode = config?.psiphonMode.orEmpty().ifBlank { "auto" }
+        initialPsiphonCdnIps = config?.psiphonCdnIps.orEmpty()
+        initialPsiphonCdnSni = config?.psiphonCdnSni.orEmpty()
+        initialPsiphonCdnSets = config?.psiphonCdnSets.orEmpty()
     }
 
     @Composable
@@ -95,10 +103,14 @@ class ServerProxyChainActivity : BaseComponentActivity() {
             initialMembers = initialMembers,
             initialPsiphonEnabled = initialPsiphonEnabled,
             initialPsiphonRegion = initialPsiphonRegion,
+            initialPsiphonMode = initialPsiphonMode,
+            initialPsiphonCdnIps = initialPsiphonCdnIps,
+            initialPsiphonCdnSni = initialPsiphonCdnSni,
+            initialPsiphonCdnSets = initialPsiphonCdnSets,
             allRemarks = allRemarks,
             onBackClick = { finish() },
-            onSave = { remarks, members, psiphonEnabled, psiphonRegion ->
-                saveServer(remarks, members, psiphonEnabled, psiphonRegion)
+            onSave = { remarks, members, psiphonEnabled, psiphonRegion, mode, ips, sni, sets ->
+                saveServer(remarks, members, psiphonEnabled, psiphonRegion, mode, ips, sni, sets)
             },
             onDelete = { deleteServer() }
         )
@@ -108,7 +120,11 @@ class ServerProxyChainActivity : BaseComponentActivity() {
         remarks: String,
         members: List<String>,
         psiphonEnabled: Boolean,
-        psiphonRegion: String
+        psiphonRegion: String,
+        psiphonMode: String,
+        psiphonCdnIps: String,
+        psiphonCdnSni: String,
+        psiphonCdnSets: String,
     ): Boolean {
         if (remarks.isBlank()) {
             toast(R.string.server_lab_remarks)
@@ -154,6 +170,10 @@ class ServerProxyChainActivity : BaseComponentActivity() {
             chainMembers.joinToString(",")
         config.psiphonEnabled = psiphonEnabled
         config.psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase()
+        config.psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase()
+        config.psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null }
+        config.psiphonCdnSni = psiphonCdnSni.trim().ifBlank { null }
+        config.psiphonCdnSets = psiphonCdnSets.trim().ifBlank { null }
 
         config.description =
             chainMembers.joinToString(" -> ")
@@ -214,15 +234,23 @@ fun ProxyChainScreen(
     initialMembers: List<String>,
     initialPsiphonEnabled: Boolean,
     initialPsiphonRegion: String,
+    initialPsiphonMode: String,
+    initialPsiphonCdnIps: String,
+    initialPsiphonCdnSni: String,
+    initialPsiphonCdnSets: String,
     allRemarks: List<String>,
     onBackClick: () -> Unit,
-    onSave: (String, List<String>, Boolean, String) -> Boolean,
+    onSave: (String, List<String>, Boolean, String, String, String, String, String) -> Boolean,
     onDelete: () -> Unit
 ) {
     var remarks by rememberSaveable { mutableStateOf(initialRemarks) }
     var members by rememberSaveable { mutableStateOf(initialMembers) }
     var psiphonEnabled by rememberSaveable { mutableStateOf(initialPsiphonEnabled) }
     var psiphonRegion by rememberSaveable { mutableStateOf(initialPsiphonRegion) }
+    var psiphonMode by rememberSaveable { mutableStateOf(initialPsiphonMode) }
+    var psiphonCdnIps by rememberSaveable { mutableStateOf(initialPsiphonCdnIps) }
+    var psiphonCdnSni by rememberSaveable { mutableStateOf(initialPsiphonCdnSni) }
+    var psiphonCdnSets by rememberSaveable { mutableStateOf(initialPsiphonCdnSets) }
     var memberKeys by rememberSaveable { mutableStateOf(List(initialMembers.size) { UUID.randomUUID().toString() }) }
     var showProfileDeleteConfirm by remember { mutableStateOf(false) }
     var memberToDeleteIndex by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -255,7 +283,7 @@ fun ProxyChainScreen(
                             Icon(painterResource(R.drawable.ic_delete_24dp), contentDescription = stringResource(R.string.acc_delete))
                         }
                     }
-                    IconButton(onClick = { onSave(remarks, members, psiphonEnabled, psiphonRegion) }) {
+                    IconButton(onClick = { onSave(remarks, members, psiphonEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets) }) {
                         Icon(painterResource(R.drawable.ic_fab_check), contentDescription = stringResource(R.string.acc_save))
                     }
                 }
@@ -357,7 +385,15 @@ fun ProxyChainScreen(
                     enabled = psiphonEnabled,
                     region = psiphonRegion,
                     onEnabledChange = { psiphonEnabled = it },
-                    onRegionChange = { psiphonRegion = it }
+                    onRegionChange = { psiphonRegion = it },
+                    mode = psiphonMode,
+                    onModeChange = { psiphonMode = it },
+                    cdnIps = psiphonCdnIps,
+                    onCdnIpsChange = { psiphonCdnIps = it },
+                    cdnSni = psiphonCdnSni,
+                    onCdnSniChange = { psiphonCdnSni = it },
+                    cdnSets = psiphonCdnSets,
+                    onCdnSetsChange = { psiphonCdnSets = it },
                 )
             }
         }

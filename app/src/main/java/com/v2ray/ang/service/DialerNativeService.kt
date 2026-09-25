@@ -3,6 +3,7 @@ package com.v2ray.ang.service
 import android.content.Context
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.contracts.IDialerService
+import com.v2ray.ang.handler.HttpProxyClient
 import com.v2ray.ang.util.LogUtil
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -124,7 +125,7 @@ class DialerNativeService : IDialerService {
         scope = CoroutineScope(serviceJob + Dispatchers.IO)
         if (dialerAddr.isEmpty()) return
 
-        val nativeClient = OkHttpClient.Builder()
+        val nativeClient = HttpProxyClient.apply(OkHttpClient.Builder())
             .retryOnConnectionFailure(true)
             .pingInterval(25, TimeUnit.SECONDS)
             .connectTimeout(30, TimeUnit.SECONDS)

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.ParcelFileDescriptor
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.contracts.Tun2SocksControl
+import com.v2ray.ang.core.PingNgDiagnostics
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.util.LogUtil
@@ -62,6 +63,7 @@ class TProxyService(
                 AppConfig.TAG,
                 "HEV TUN is unavailable; xray-core TUN fallback must be used (${nativeLoadFailure()})"
             )
+            PingNgDiagnostics.record("HEV TUN unavailable; using Xray TUN fallback")
             return
         }
 //        LogUtil.i(AppConfig.TAG, "Starting HevSocks5Tunnel via JNI")
@@ -75,9 +77,17 @@ class TProxyService(
 
         try {
 //            LogUtil.i(AppConfig.TAG, "TProxyStartService...")
-            TProxyStartService(configFile.absolutePath, vpnInterface.fd)
+            val started = TProxyStartService(configFile.absolutePath, vpnInterface.fd)
+            if (started) {
+                LogUtil.i(AppConfig.TAG, "HevSocks5Tunnel started; VPN traffic is attached to Xray SOCKS")
+                PingNgDiagnostics.record("HEV TUN started; forwarding VPN traffic to Xray SOCKS")
+            } else {
+                LogUtil.e(AppConfig.TAG, "HevSocks5Tunnel returned false; VPN traffic is not being forwarded")
+                PingNgDiagnostics.record("HEV TUN failed to start; VPN traffic is not being forwarded")
+            }
         } catch (e: Throwable) {
             LogUtil.e(AppConfig.TAG, "HevSocks5Tunnel failed to start", e)
+            PingNgDiagnostics.record("HEV TUN start failed", e)
         }
     }
 

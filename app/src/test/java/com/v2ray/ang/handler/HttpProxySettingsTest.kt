@@ -21,6 +21,14 @@ class HttpProxySettingsTest {
         assertEquals("::1", proxy?.host)
         assertEquals("user", proxy?.username)
         assertEquals("pass", proxy?.password)
+        assertEquals("http://user:pass@[::1]:3128", proxy?.asHttpUrl())
+    }
+
+    @Test
+    fun encodesProxyCredentialsForUpstreamUrl() {
+        val proxy = HttpProxySettings.from("proxy.example", "8080", "user@name", "p:a ss")
+
+        assertEquals("http://user%40name:p%3Aa%20ss@proxy.example:8080", proxy?.asHttpUrl())
     }
 
     @Test

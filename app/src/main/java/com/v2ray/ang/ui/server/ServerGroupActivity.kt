@@ -65,6 +65,10 @@ class ServerGroupActivity : BaseComponentActivity() {
     private lateinit var initialFallbackTag: String
     private var initialPsiphonEnabled: Boolean = false
     private var initialPsiphonRegion: String = "ANY"
+    private var initialPsiphonMode: String = "auto"
+    private var initialPsiphonCdnIps: String = ""
+    private var initialPsiphonCdnSni: String = ""
+    private var initialPsiphonCdnSets: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,6 +89,10 @@ class ServerGroupActivity : BaseComponentActivity() {
         initialFallbackTag = config?.policyGroupFallbackTag.orEmpty()
         initialPsiphonEnabled = config?.psiphonEnabled == true
         initialPsiphonRegion = config?.psiphonRegion.orEmpty().ifBlank { "ANY" }
+        initialPsiphonMode = config?.psiphonMode.orEmpty().ifBlank { "auto" }
+        initialPsiphonCdnIps = config?.psiphonCdnIps.orEmpty()
+        initialPsiphonCdnSni = config?.psiphonCdnSni.orEmpty()
+        initialPsiphonCdnSets = config?.psiphonCdnSets.orEmpty()
         initialSubIndex = if (config != null) {
             subIds.indexOf(config.policyGroupSubscriptionId ?: "").let { if (it >= 0) it else 0 }
         } else if (subscriptionId.isNotNullEmpty()) {
@@ -106,10 +114,14 @@ class ServerGroupActivity : BaseComponentActivity() {
             initialFallbackTag = initialFallbackTag,
             initialPsiphonEnabled = initialPsiphonEnabled,
             initialPsiphonRegion = initialPsiphonRegion,
+            initialPsiphonMode = initialPsiphonMode,
+            initialPsiphonCdnIps = initialPsiphonCdnIps,
+            initialPsiphonCdnSni = initialPsiphonCdnSni,
+            initialPsiphonCdnSets = initialPsiphonCdnSets,
             fallbackSuggestions = fallbackSuggestions,
             onBackClick = { finish() },
-            onSave = { remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion ->
-                saveServer(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion)
+            onSave = { remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion, mode, ips, sni, sets ->
+                saveServer(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion, mode, ips, sni, sets)
             },
             onDelete = { deleteServer() }
         )
@@ -124,6 +136,10 @@ class ServerGroupActivity : BaseComponentActivity() {
         fallbackTag: String,
         psiphonEnabled: Boolean,
         psiphonRegion: String,
+        psiphonMode: String,
+        psiphonCdnIps: String,
+        psiphonCdnSni: String,
+        psiphonCdnSets: String,
     ): Boolean {
         if (remarks.isBlank()) {
             toast(R.string.server_lab_remarks)
@@ -144,6 +160,10 @@ class ServerGroupActivity : BaseComponentActivity() {
         config.policyGroupFallbackTag = fallbackTag.trim().takeIf { it.isNotEmpty() }
         config.psiphonEnabled = psiphonEnabled
         config.psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase()
+        config.psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase()
+        config.psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null }
+        config.psiphonCdnSni = psiphonCdnSni.trim().ifBlank { null }
+        config.psiphonCdnSets = psiphonCdnSets.trim().ifBlank { null }
 
         if (
             config.subscriptionId.isEmpty() &&
@@ -238,9 +258,13 @@ fun ServerGroupScreen(
     initialFallbackTag: String,
     initialPsiphonEnabled: Boolean,
     initialPsiphonRegion: String,
+    initialPsiphonMode: String,
+    initialPsiphonCdnIps: String,
+    initialPsiphonCdnSni: String,
+    initialPsiphonCdnSets: String,
     fallbackSuggestions: List<String>,
     onBackClick: () -> Unit,
-    onSave: (String, String, Int, Int, Boolean, String, Boolean, String) -> Boolean,
+    onSave: (String, String, Int, Int, Boolean, String, Boolean, String, String, String, String, String) -> Boolean,
     onDelete: () -> Unit
 ) {
     val typeEntries = stringArrayResource(R.array.policy_group_type).toList()
@@ -253,6 +277,10 @@ fun ServerGroupScreen(
     var fallbackTag by rememberSaveable { mutableStateOf(initialFallbackTag) }
     var psiphonEnabled by rememberSaveable { mutableStateOf(initialPsiphonEnabled) }
     var psiphonRegion by rememberSaveable { mutableStateOf(initialPsiphonRegion) }
+    var psiphonMode by rememberSaveable { mutableStateOf(initialPsiphonMode) }
+    var psiphonCdnIps by rememberSaveable { mutableStateOf(initialPsiphonCdnIps) }
+    var psiphonCdnSni by rememberSaveable { mutableStateOf(initialPsiphonCdnSni) }
+    var psiphonCdnSets by rememberSaveable { mutableStateOf(initialPsiphonCdnSets) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     val showDelete = editGuid.isNotEmpty() && !isRunning
     val selectedType = typeEntries.indexOf(typeValue).coerceAtLeast(0).toString()
@@ -273,7 +301,7 @@ fun ServerGroupScreen(
                     IconButton(onClick = {
                         val typeIdx = typeEntries.indexOf(typeValue).coerceAtLeast(0)
                         val subIdx = subDisplay.indexOf(subValue).coerceAtLeast(0)
-                        onSave(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion)
+                        onSave(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets)
                     }) {
                         Icon(painterResource(R.drawable.ic_fab_check), contentDescription = stringResource(R.string.acc_save))
                     }
@@ -324,7 +352,15 @@ fun ServerGroupScreen(
                 enabled = psiphonEnabled,
                 region = psiphonRegion,
                 onEnabledChange = { psiphonEnabled = it },
-                onRegionChange = { psiphonRegion = it }
+                onRegionChange = { psiphonRegion = it },
+                mode = psiphonMode,
+                onModeChange = { psiphonMode = it },
+                cdnIps = psiphonCdnIps,
+                onCdnIpsChange = { psiphonCdnIps = it },
+                cdnSni = psiphonCdnSni,
+                onCdnSniChange = { psiphonCdnSni = it },
+                cdnSets = psiphonCdnSets,
+                onCdnSetsChange = { psiphonCdnSets = it },
             )
             NavigationBarsSpacer()
         }

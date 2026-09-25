@@ -44,6 +44,8 @@ class UrlSchemeActivity : BaseComponentActivity() {
                             parseUri(shareUrl, uri?.fragment)
                         }
 
+                        "profile" -> parseUri(intent.data?.toString(), null)
+
                         else -> {
                             toastError(R.string.toast_failure)
                         }

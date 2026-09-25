@@ -2,15 +2,22 @@ package com.v2ray.ang.ui.main
 
 import androidx.annotation.StringRes
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import com.v2ray.ang.R
+import com.v2ray.ang.core.WarpPlusConfig
+import com.v2ray.ang.core.WarpMasqueConfig
+import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.extension.isComplexType
 import com.v2ray.ang.ui.compose.AppDropdownMenuItems
 import com.v2ray.ang.ui.compose.SelectListDialog
 
-private enum class ImportMenuAction(@StringRes val labelRes: Int, val action: MainAction) {
+private enum class ImportMenuAction(@StringRes val labelRes: Int, val action: MainAction?) {
     QRCode(R.string.menu_item_import_config_qrcode, MainAction.ImportQRcode),
     Clipboard(R.string.menu_item_import_config_clipboard, MainAction.ImportClipboard),
     LocalFile(R.string.menu_item_import_config_local, MainAction.ImportConfigLocal),
@@ -24,7 +31,14 @@ private enum class ImportMenuAction(@StringRes val labelRes: Int, val action: Ma
     Trojan(R.string.menu_item_import_config_manually_trojan, MainAction.ImportManually(EConfigType.TROJAN.value)),
     WireGuard(R.string.menu_item_import_config_manually_wireguard, MainAction.ImportManually(EConfigType.WIREGUARD.value)),
     Hysteria2(R.string.menu_item_import_config_manually_hysteria2, MainAction.ImportManually(EConfigType.HYSTERIA2.value)),
+    Warp(R.string.menu_item_add_warp, null),
+    WarpInWarp(R.string.menu_item_import_config_warp_in_warp, MainAction.AddWarpInWarp),
     ServerLess(R.string.menu_item_import_config_serverless, MainAction.AddServerLess)
+}
+
+private enum class WarpTypeOption(@StringRes val labelRes: Int, val action: MainAction) {
+    Masque(R.string.menu_item_import_config_warp, MainAction.AddWarpMasque),
+    WireGuard(R.string.menu_item_import_config_warp_wireguard, MainAction.AddWarpWireGuard),
 }
 
 enum class MainMoreMenuAction(@StringRes val labelRes: Int) {
@@ -55,16 +69,40 @@ internal enum class ServerMenuAction(
 internal fun serverMenuActions(
     isComplexProfile: Boolean,
     includeManagementActions: Boolean,
+    allowDedicatedWarpSharing: Boolean = false,
 ): List<ServerMenuAction> = ServerMenuAction.entries.filter { action ->
-    (includeManagementActions || action.isShareAction) && (!isComplexProfile || action.supportsComplexProfiles)
+    (includeManagementActions || action.isShareAction) &&
+        !(allowDedicatedWarpSharing && action == ServerMenuAction.ShareFullContent) &&
+        (!isComplexProfile || action.supportsComplexProfiles || allowDedicatedWarpSharing)
 }
 
 @Composable
-fun ImportMenuContent(onAction: (MainAction) -> Unit) = AppDropdownMenuItems(
-    items = ImportMenuAction.entries,
-    labelRes = { it.labelRes },
-    onSelected = { onAction(it.action) }
-)
+fun ImportMenuContent(onAction: (MainAction) -> Unit) {
+    var showWarpTypeChooser by remember { mutableStateOf(false) }
+    AppDropdownMenuItems(
+        items = ImportMenuAction.entries,
+        labelRes = { it.labelRes },
+        onSelected = { item ->
+            if (item == ImportMenuAction.Warp) {
+                showWarpTypeChooser = true
+            } else {
+                item.action?.let(onAction)
+            }
+        }
+    )
+    if (showWarpTypeChooser) {
+        SelectListDialog(
+            options = WarpTypeOption.entries,
+            optionText = { stringResource(it.labelRes) },
+            title = stringResource(R.string.dialog_select_warp_type),
+            onSelected = { option ->
+                showWarpTypeChooser = false
+                onAction(option.action)
+            },
+            onDismiss = { showWarpTypeChooser = false },
+        )
+    }
+}
 
 @Composable
 fun MoreMenuContent(onSelected: (MainMoreMenuAction) -> Unit) = AppDropdownMenuItems(
@@ -85,6 +123,11 @@ fun ShareMethodDialog(
     val menuActions = serverMenuActions(
         isComplexProfile = profile.configType.isComplexType(),
         includeManagementActions = more,
+        allowDedicatedWarpSharing = profile.configType == EConfigType.WARP ||
+            (profile.configType == EConfigType.PROXYCHAIN &&
+                WarpPlusConfig.isDescription(profile.description)) ||
+            WarpMasqueConfig.isDescription(profile.description) ||
+            WarpWireGuardConfig.isProfile(profile),
     )
     SelectListDialog(
         options = menuActions,

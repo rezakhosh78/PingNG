@@ -7,6 +7,8 @@ import android.os.IBinder
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.core.CoreServiceManager
+import com.v2ray.ang.core.WarpMasqueBridge
+import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.handler.AppLocaleManager
 import com.v2ray.ang.handler.NotificationManager
 import com.v2ray.ang.root.RootProxyManager
@@ -31,6 +33,9 @@ import java.lang.ref.SoftReference
 class CoreRootService : Service(), ServiceControl {
 
     private var setupJob: Job? = null
+    @Volatile private var startupCancelled = false
+
+    fun isStartupCancelled(): Boolean = startupCancelled
 
     override fun onCreate() {
         super.onCreate()
@@ -46,18 +51,25 @@ class CoreRootService : Service(), ServiceControl {
             LogUtil.i(AppConfig.TAG, "StartCore-Root: Core is already running")
             return START_STICKY
         }
-
-        // Start the in-process core first (this also posts the foreground notification),
-        // then install the root routing off the main thread.
-        if (!CoreServiceManager.startCoreLoop(null)) {
-            LogUtil.e(AppConfig.TAG, "StartCore-Root: core failed to start")
-            stopService()
-            return START_NOT_STICKY
-        }
-
+        if (setupJob?.isActive == true) return START_STICKY
+        startupCancelled = false
         setupJob = CoroutineScope(Dispatchers.IO).launch {
-            if (!RootProxyManager.start(this@CoreRootService)) {
-                LogUtil.e(AppConfig.TAG, "StartCore-Root: failed to start root mode, stopping")
+            try {
+                WarpRegistrationProxy.prepareSelectedMasqueRegistration(this@CoreRootService)
+                if (startupCancelled) return@launch
+                // Keep registration and core startup off Android's service main thread.
+                if (!CoreServiceManager.startCoreLoop(null)) {
+                    LogUtil.e(AppConfig.TAG, "StartCore-Root: core failed to start")
+                    stopService()
+                    return@launch
+                }
+                if (startupCancelled) return@launch
+                if (!RootProxyManager.start(this@CoreRootService)) {
+                    LogUtil.e(AppConfig.TAG, "StartCore-Root: failed to start root mode, stopping")
+                    stopService()
+                }
+            } catch (error: Throwable) {
+                LogUtil.e(AppConfig.TAG, "StartCore-Root: WARP MASQUE startup failed", error)
                 stopService()
             }
         }
@@ -67,6 +79,8 @@ class CoreRootService : Service(), ServiceControl {
 
     override fun onDestroy() {
         super.onDestroy()
+        startupCancelled = true
+        WarpMasqueBridge.cancelStartup()
         // Wait for any in-flight async setup to finish before tearing down. The rules are
         // installed off the main thread and can take seconds (the setup script waits for the
         // tun to appear); if a stop arrives during that window, teardown would run first and

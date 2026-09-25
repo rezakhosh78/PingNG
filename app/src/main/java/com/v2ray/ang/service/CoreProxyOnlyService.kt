@@ -8,12 +8,26 @@ import com.v2ray.ang.AppConfig
 import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.core.LauncherManager
+import com.v2ray.ang.core.WarpMasqueBridge
+import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.handler.AppLocaleManager
 import com.v2ray.ang.handler.NotificationManager
 import com.v2ray.ang.util.LogUtil
 import java.lang.ref.SoftReference
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class CoreProxyOnlyService : Service(), ServiceControl {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var startupJob: Job? = null
+    @Volatile private var startupCancelled = false
+
+    fun isStartupCancelled(): Boolean = startupCancelled
+
     /**
      * Initializes the service.
      */
@@ -45,13 +59,21 @@ class CoreProxyOnlyService : Service(), ServiceControl {
             LogUtil.i(AppConfig.TAG, "StartCore-Proxy: Core is already running")
             return START_STICKY
         }
-
-        if (!CoreServiceManager.startCoreLoop(null)) {
-            LogUtil.e(AppConfig.TAG, "StartCore-Proxy: Failed to start core loop")
-            stopSelf()
-            return START_NOT_STICKY
+        if (startupJob?.isActive == true) return START_STICKY
+        startupCancelled = false
+        startupJob = serviceScope.launch {
+            try {
+                WarpRegistrationProxy.prepareSelectedMasqueRegistration(this@CoreProxyOnlyService)
+                if (startupCancelled) return@launch
+                if (!CoreServiceManager.startCoreLoop(null)) {
+                    LogUtil.e(AppConfig.TAG, "StartCore-Proxy: Failed to start core loop")
+                    stopSelf()
+                }
+            } catch (error: Throwable) {
+                LogUtil.e(AppConfig.TAG, "StartCore-Proxy: WARP MASQUE startup failed", error)
+                stopSelf()
+            }
         }
-
         return START_STICKY
     }
 
@@ -59,6 +81,10 @@ class CoreProxyOnlyService : Service(), ServiceControl {
      * Destroys the service.
      */
     override fun onDestroy() {
+        startupCancelled = true
+        WarpMasqueBridge.cancelStartup()
+        startupJob?.cancel()
+        serviceScope.cancel()
         super.onDestroy()
         CoreServiceManager.stopCoreLoop(this)
     }

@@ -8,6 +8,17 @@
     <string name="pingng_psiphon_region">Country</string>
     <string name="pingng_psiphon_region_summary">Select</string>
     <string name="pingng_psiphon_short_hint">Xray connects first, then Psiphon carries the traffic.</string>
+    <string name="pingng_psiphon_mode">Psiphon connection</string>
+    <string name="pingng_psiphon_mode_auto">Automatic</string>
+    <string name="pingng_psiphon_mode_cdn">CDN Fronting</string>
+    <string name="pingng_psiphon_mode_direct">Direct</string>
+    <string name="pingng_psiphon_mode_summary">Choose how Psiphon reaches its servers.</string>
+    <string name="pingng_psiphon_cdn_ips">CDN fronting IPs</string>
+    <string name="pingng_psiphon_cdn_sni">CDN fronting server names</string>
+    <string name="pingng_psiphon_cdn_list_hint">Comma-separated; leave blank for built-in lists</string>
+    <string name="pingng_psiphon_cdn_sets">CDN edge lists to scan</string>
+    <string name="pingng_psiphon_cdn_sets_all">All built-in Psiphon lists</string>
+    <string name="pingng_psiphon_cdn_sets_hint">Select built-in edge lists. Empty means all; custom IPs are tried first.</string>
     <string name="app_tile_first_use">Add a profile in the app before using this feature.</string>
     <string name="navigation_drawer_open">Open navigation drawer</string>
     <string name="navigation_drawer_close">Close navigation drawer</string>
@@ -15,6 +26,8 @@
     <string name="action_stop_service">Disconnect</string>
     <string name="action_ok">OK</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_save">Save</string>
+    <string name="warp_in_warp_generate_first">Generate both WARP accounts first.</string>
     <string name="migration_fail">Data migration failed!</string>
     <string name="pull_down_to_refresh">Please pull down to refresh!</string>
 
@@ -39,6 +52,11 @@
     <string name="menu_item_import_config_local">Import from a local file</string>
     <string name="menu_item_import_config_policy_group">Add [Policy group]</string>
     <string name="menu_item_import_config_proxy_chain">Add [Proxy chain]</string>
+    <string name="menu_item_import_config_warp_in_warp">Add [WARP PLUS]</string>
+    <string name="menu_item_add_warp">Add [WARP]</string>
+    <string name="menu_item_import_config_warp">WARP MASQUE/H2</string>
+    <string name="menu_item_import_config_warp_wireguard">WARP WireGuard</string>
+    <string name="dialog_select_warp_type">Select WARP type</string>
     <string name="menu_item_import_config_manually_vmess">Add [VMess]</string>
     <string name="menu_item_import_config_manually_vless">Add [VLESS]</string>
     <string name="menu_item_import_config_manually_ss">Add [Shadowsocks]</string>
@@ -211,7 +229,7 @@
     <string name="pingng_fake_data">Custom fake payload</string>
     <string name="pingng_fake_data_hint">Optional file path or escaped data beginning with :</string>
     <string name="pingng_oob_data">Custom OOB byte</string>
-    <string name="pingng_oob_data_hint">One character or escape such as \x00</string>
+    <string name="pingng_oob_data_hint">One character or hexadecimal escape such as hex 00</string>
     <string name="pingng_hosts">Host allowlist</string>
     <string name="pingng_hosts_hint">Space-separated domains; only these hosts use Desync</string>
     <string name="pingng_port_filter">Port filter</string>
@@ -293,7 +311,7 @@
     <string name="title_pref_route_only_enabled">Enable routeOnly</string>
     <string name="summary_pref_route_only_enabled">Use the sniffed domain name for routing only, and keep the target address as the IP address.</string>
     <string name="title_pref_connect_http_proxy">Connect through an HTTP proxy</string>
-    <string name="summary_pref_connect_http_proxy">Route Xray connections and app downloads through an HTTP CONNECT proxy. UDP is not supported.</string>
+    <string name="summary_pref_connect_http_proxy">Route app TCP connections and downloads through an HTTP CONNECT proxy. UDP is not supported.</string>
     <string name="title_pref_connect_http_proxy_host">HTTP proxy host</string>
     <string name="title_pref_connect_http_proxy_port">HTTP proxy port</string>
     <string name="title_pref_connect_http_proxy_username">HTTP proxy username (optional)</string>
@@ -484,6 +502,9 @@
     <string name="connection_test_testing">Testing…</string>
     <string name="connection_test_testing_count">Testing %d configs…</string>
     <string name="connection_test_available">Connection succeeded in %1$s</string>
+    <string name="connection_tunnel_active_delay_unavailable">Tunnel active; delay check unavailable</string>
+    <string name="warp_endpoint_searching">Searching WARP endpoints…</string>
+    <string name="warp_desync_masque_note">Desync is routed to the outer MASQUE/H2 TLS connection. Choose a preset to save it to this profile.</string>
     <string name="server_test_delay_value">%1$d ms</string>
     <string name="connection_test_error">Connection test failed: %s</string>
     <string name="connection_test_fail">Internet unavailable</string>

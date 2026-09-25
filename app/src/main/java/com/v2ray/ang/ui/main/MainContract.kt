@@ -9,6 +9,7 @@ sealed interface MainStatus {
     data object Disconnected : MainStatus
     data object Connected : MainStatus
     data object Testing : MainStatus
+    data object WarpSearching : MainStatus
     data class TestProgress(val progress: String) : MainStatus
     data class ConnectionTest(val result: ConnectionTestResult) : MainStatus
 }
@@ -54,6 +55,9 @@ sealed interface MainAction {
     data object ImportClipboard : MainAction
     data object ImportConfigLocal : MainAction
     data object AddServerLess : MainAction
+    data object AddWarpMasque : MainAction
+    data object AddWarpWireGuard : MainAction
+    data object AddWarpInWarp : MainAction
     data class ImportManually(val type: Int) : MainAction
     data object RestartService : MainAction
     data object LocateSelectedServer : MainAction

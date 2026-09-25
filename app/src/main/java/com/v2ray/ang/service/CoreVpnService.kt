@@ -18,6 +18,10 @@ import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.contracts.Tun2SocksControl
 import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.core.PingNgDiagnostics
+import com.v2ray.ang.core.WarpMasqueBridge
+import com.v2ray.ang.core.WarpMasqueConfig
+import com.v2ray.ang.core.WarpRegistrationProxy
+import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.handler.AppLocaleManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.NotificationManager
@@ -28,6 +32,13 @@ import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
 import java.lang.ref.SoftReference
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 @SuppressLint("VpnServicePolicy")
 class CoreVpnService : VpnService(), ServiceControl {
@@ -35,6 +46,11 @@ class CoreVpnService : VpnService(), ServiceControl {
     private var isRunning = false
     private var tun2SocksService: Tun2SocksControl? = null
     private val isStartingLock = AtomicBoolean(false)
+    private val startupCancelled = AtomicBoolean(false)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var startupJob: Job? = null
+
+    fun isStartupCancelled(): Boolean = startupCancelled.get()
 
     override fun onCreate() {
         super.onCreate()
@@ -46,6 +62,9 @@ class CoreVpnService : VpnService(), ServiceControl {
 
     override fun onRevoke() {
         LogUtil.w(AppConfig.TAG, "StartCore-VPN: Permission revoked")
+        startupCancelled.set(true)
+        WarpMasqueBridge.cancelStartup()
+        startupJob?.cancel()
         stopAllService()
     }
 
@@ -56,26 +75,17 @@ class CoreVpnService : VpnService(), ServiceControl {
 
     override fun onDestroy() {
         LogUtil.i(AppConfig.TAG, "StartCore-VPN: Service destroyed")
-
-        // Ensure VPN interface is properly closed when the service is destroyed without
-        // going through stopAllService() (e.g. when killed unexpectedly). isRunning is
-        // set to false at the start of stopAllService(), so this guard prevents a double-close.
-        if (isRunning) {
-            isRunning = false
-            tun2SocksService?.stopTun2Socks()
-            tun2SocksService = null
-            RootLanSharing.stopClientSharing(this)
-            runCatching { CoreServiceManager.stopCoreLoop(this) }
-            try {
-                if (::mInterface.isInitialized) {
-                    mInterface.close()
-                    LogUtil.i(AppConfig.TAG, "StartCore-VPN: VPN interface closed in onDestroy")
-                }
-            } catch (e: Exception) {
-                LogUtil.e(AppConfig.TAG, "StartCore-VPN: Failed to close interface in onDestroy", e)
-            }
+        startupCancelled.set(true)
+        WarpMasqueBridge.cancelStartup()
+        startupJob?.cancel()
+        // Startup can be stopped after Android has established the TUN but
+        // before CoreServiceManager marks the service as running. Always run
+        // teardown for that partially-started state too, or Android keeps the
+        // VPN key active after the service is gone.
+        if (isRunning || (::mInterface.isInitialized && mInterface.fileDescriptor.valid()) || CoreServiceManager.isRunning()) {
+            stopAllService()
         }
-
+        serviceScope.cancel()
         super.onDestroy()
         unlockStart()
         NotificationManager.cancelNotification()
@@ -94,30 +104,52 @@ class CoreVpnService : VpnService(), ServiceControl {
                 LogUtil.w(AppConfig.TAG, "StartCore-VPN: Start already in progress")
                 return START_NOT_STICKY
             }
+            startupCancelled.set(false)
             LogUtil.i(
                 AppConfig.TAG,
                 "StartCore-VPN: Service command received, systemVpnStart=$isSystemVpnStart, " +
                     "hev=${SettingsManager.isUsingHevTun()}"
             )
-            // Psiphon uses the local Xray HTTP inbound as its upstream. Start
-            // only that bootstrap core first; the Android VPN interface must
-            // not be established until Psiphon has a real SOCKS listener.
-            if (shouldBootstrapPsiphon()) {
-                LogUtil.i(AppConfig.TAG, "StartCore-VPN: Holding VPN until Psiphon connects")
-                PingNgDiagnostics.record("VPN held until Psiphon connects")
-                if (!CoreServiceManager.isRunning() && !CoreServiceManager.startCoreLoop(null)) {
-                    unlockStart()
-                    stopSelf()
-                    return START_NOT_STICKY
+            // MASQUE endpoint scans and registration can block for tens of
+            // seconds. Keep Android's service main thread free so Stop can
+            // cancel the startup and close a TUN that was already created.
+            val job = serviceScope.launch {
+                try {
+                    if (shouldBootstrapPsiphon()) {
+                        LogUtil.i(AppConfig.TAG, "StartCore-VPN: Holding VPN until Psiphon connects")
+                        PingNgDiagnostics.record("VPN held until Psiphon connects")
+                        if (!CoreServiceManager.isRunning() && !CoreServiceManager.startCoreLoop(null)) {
+                            if (!startupCancelled.get()) {
+                                unlockStart()
+                                stopSelf()
+                            }
+                            return@launch
+                        }
+                        return@launch
+                    }
+                    prepareWarpMasqueRegistration()
+                    check(!startupCancelled.get()) { "VPN startup canceled" }
+                    if (!setupVpnService()) {
+                        unlockStart()
+                        stopSelf()
+                        return@launch
+                    }
+                    check(!startupCancelled.get()) { "VPN startup canceled" }
+                    startService()
+                } catch (error: Throwable) {
+                    if (startupCancelled.get() || error is CancellationException) {
+                        PingNgDiagnostics.record("VPN startup canceled")
+                        runCatching { stopAllService() }
+                    } else {
+                        val message = error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName
+                        LogUtil.e(AppConfig.TAG, "StartCore-VPN: Unhandled startup failure: $message", error)
+                        MessageHelper.sendMsg2UI(this@CoreVpnService, AppConfig.MSG_STATE_START_FAILURE, message)
+                        runCatching { stopAllService() }
+                    }
                 }
-                return START_STICKY
             }
-            if (!setupVpnService()) {
-                unlockStart()
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            startService()
+            startupJob = job
+            job.invokeOnCompletion { if (startupJob === job) startupJob = null }
             return START_STICKY
         } catch (error: Throwable) {
             val message = error.message?.takeIf(String::isNotBlank) ?: error.javaClass.simpleName
@@ -169,6 +201,9 @@ class CoreVpnService : VpnService(), ServiceControl {
     }
 
     override fun stopService() {
+        startupCancelled.set(true)
+        WarpMasqueBridge.cancelStartup()
+        startupJob?.cancel()
         stopAllService(true)
     }
 
@@ -209,6 +244,19 @@ class CoreVpnService : VpnService(), ServiceControl {
     private fun shouldBootstrapPsiphon(): Boolean {
         val guid = MmkvManager.getSelectServer() ?: return false
         return MmkvManager.decodeServerConfig(guid)?.psiphonEnabled == true
+    }
+
+    private fun prepareWarpMasqueRegistration() {
+        val guid = MmkvManager.getSelectServer() ?: return
+        val profile = MmkvManager.decodeServerConfig(guid) ?: return
+        if (profile.configType != com.v2ray.ang.enums.EConfigType.WARP) return
+        LogUtil.i(AppConfig.TAG, "StartCore-VPN: registering WARP MASQUE before VPN setup")
+        WarpRegistrationProxy.prepareMasqueRegistration(
+            service = this,
+            targetGuid = guid,
+            targetProfile = profile,
+            proxyGuid = profile.warpRegistrationProxyGuid ?: WarpRegistrationProxy.AUTO,
+        )
     }
 
     /**
@@ -311,8 +359,20 @@ class CoreVpnService : VpnService(), ServiceControl {
         // Android Q (API 29) and above: Configure metering and HTTP proxy
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             builder.setMetered(false)
-            if (MmkvManager.decodeSettingsBool(AppConfig.PREF_APPEND_HTTP_PROXY)) {
+            val selectedProfile = MmkvManager.getSelectServer()
+                ?.let(MmkvManager::decodeServerConfig)
+            val isWarpFullDevice = selectedProfile != null && (
+                selectedProfile.configType == com.v2ray.ang.enums.EConfigType.WARP ||
+                    WarpMasqueConfig.isDescription(selectedProfile.description) ||
+                    WarpPlusConfig.isDescription(selectedProfile.description)
+                )
+            if (MmkvManager.decodeSettingsBool(AppConfig.PREF_APPEND_HTTP_PROXY) && !isWarpFullDevice) {
                 builder.setHttpProxy(ProxyInfo.buildDirectProxy(LOOPBACK, SettingsManager.getHttpPort()))
+            } else if (isWarpFullDevice && MmkvManager.decodeSettingsBool(AppConfig.PREF_APPEND_HTTP_PROXY)) {
+                // A stale Android system HTTP proxy can make browsers fail while
+                // UDP apps continue to work. WARP already routes the complete
+                // device through Xray, so leave browser proxy discovery alone.
+                PingNgDiagnostics.record("WARP full-device route: Android HTTP proxy bypassed")
             }
         }
     }
@@ -329,6 +389,23 @@ class CoreVpnService : VpnService(), ServiceControl {
      */
     private fun configurePerAppProxy(builder: Builder) {
         val selfPackageName = BuildConfig.APPLICATION_ID
+
+        // A WARP profile is a full-device tunnel. With global per-app mode,
+        // selecting only Telegram makes the VPN and MASQUE core look healthy
+        // while browsers never enter Xray. Keep PingNG itself outside to
+        // avoid a loop, but route the rest of the device through WARP.
+        val selectedProfile = MmkvManager.getSelectServer()
+            ?.let(MmkvManager::decodeServerConfig)
+        if (selectedProfile != null && (
+                selectedProfile.configType == com.v2ray.ang.enums.EConfigType.WARP ||
+                    WarpMasqueConfig.isDescription(selectedProfile.description) ||
+                    WarpPlusConfig.isDescription(selectedProfile.description)
+                )
+        ) {
+            builder.addDisallowedApplication(selfPackageName)
+            PingNgDiagnostics.record("WARP full-device VPN route enabled; per-app selection bypassed")
+            return
+        }
 
         // If per-app proxy is not enabled, disallow the VPN service's own package and return
         if (MmkvManager.decodeSettingsBool(AppConfig.PREF_PER_APP_PROXY) == false) {

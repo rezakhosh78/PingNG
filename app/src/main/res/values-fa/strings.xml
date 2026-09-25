@@ -15,6 +15,8 @@
     <string name="action_stop_service">قطع اتصال</string>
     <string name="action_ok">تأیید</string>
     <string name="action_cancel">لغو</string>
+    <string name="action_save">ذخیره</string>
+    <string name="warp_in_warp_generate_first">ابتدا هر دو اکانت WARP را بسازید.</string>
     <string name="migration_fail">انتقال داده‌ها با شکست مواجه شد!</string>
     <string name="pull_down_to_refresh">برای بروزرسانی، صفحه را به پایین بکشید!</string>
 
@@ -39,6 +41,11 @@
     <string name="menu_item_import_config_local">کانفیگ را از محلی وارد کنید</string>
     <string name="menu_item_import_config_policy_group">افزودن [گروه خط‌‌ مشی]</string>
     <string name="menu_item_import_config_proxy_chain">افزودن [زنجیره پروکسی]</string>
+    <string name="menu_item_import_config_warp_in_warp">افزودن [WARP PLUS]</string>
+    <string name="menu_item_add_warp">افزودن [WARP]</string>
+    <string name="menu_item_import_config_warp">WARP MASQUE/H2</string>
+    <string name="menu_item_import_config_warp_wireguard">WARP WireGuard</string>
+    <string name="dialog_select_warp_type">انتخاب نوع WARP</string>
     <string name="menu_item_import_config_manually_vmess">افزودن [VMess]</string>
     <string name="menu_item_import_config_manually_vless">افزودن [VLESS]</string>
     <string name="menu_item_import_config_manually_ss">افزودن [Shadowsocks]</string>
@@ -181,7 +188,7 @@
     <string name="pingng_desync_search_count">در حال جست‌وجوی %1$d پروفایل کنترل‌شدهٔ Desync…</string>
     <string name="pingng_desync_search_success">تنظیمات مناسب پیدا شد: %1$s</string>
     <string name="pingng_desync_search_failed">پروفایل مناسبی پیدا نشد؛ تنظیمات قبلی برگردانده شد</string>
-    <string name="pingng_find_desync_setting">Find Desync Setting</string>
+    <string name="pingng_find_desync_setting">پیدا کردن تنظیم Desync</string>
     <string name="pingng_custom_method">روش Desync</string>
     <string name="pingng_custom_position">موقعیت بسته</string>
     <string name="pingng_custom_ttl">TTL بسته جعلی (۱ تا ۲۵۵)</string>
@@ -208,7 +215,7 @@
     <string name="pingng_fake_data">payload جعلی سفارشی</string>
     <string name="pingng_fake_data_hint">مسیر فایل یا دادهٔ escape‌شده که با : شروع شود</string>
     <string name="pingng_oob_data">بایت OOB سفارشی</string>
-    <string name="pingng_oob_data_hint">یک کاراکتر یا escape مانند \\x00</string>
+    <string name="pingng_oob_data_hint">یک کاراکتر یا escape هگزادسیمال مانند hex 00</string>
     <string name="pingng_hosts">فهرست مجاز Host</string>
     <string name="pingng_hosts_hint">دامنه‌ها را با فاصله جدا کنید؛ فقط این hostها Desync می‌شوند</string>
     <string name="pingng_port_filter">فیلتر پورت</string>
@@ -290,7 +297,7 @@
     <string name="title_pref_route_only_enabled">فعال‌سازی routeOnly</string>
     <string name="summary_pref_route_only_enabled">از نام دامنهٔ شناسایی‌شده فقط برای مسیریابی استفاده کنید و آدرس مقصد را به‌صورت IP نگه دارید.</string>
     <string name="title_pref_connect_http_proxy">اتصال از طریق پروکسی HTTP</string>
-    <string name="summary_pref_connect_http_proxy">اتصال‌های Xray و دانلودهای برنامه را از طریق پروکسی HTTP CONNECT عبور می‌دهد. پروکسی HTTP از UDP پشتیبانی نمی‌کند.</string>
+    <string name="summary_pref_connect_http_proxy">اتصال‌های TCP و دانلودهای کل برنامه را از طریق پروکسی HTTP CONNECT عبور می‌دهد. پروکسی HTTP از UDP پشتیبانی نمی‌کند.</string>
     <string name="title_pref_connect_http_proxy_host">میزبان پروکسی HTTP</string>
     <string name="title_pref_connect_http_proxy_port">پورت پروکسی HTTP</string>
     <string name="title_pref_connect_http_proxy_username">نام کاربری پروکسی HTTP (اختیاری)</string>
@@ -473,6 +480,9 @@
     <string name="connection_test_testing">در حال آزمایش…</string>
     <string name="connection_test_testing_count">تست کردن %d کانفیگ…</string>
     <string name="connection_test_available">اتصال در %1$s با موفقیت برقرار شد</string>
+    <string name="connection_tunnel_active_delay_unavailable">تونل فعال است؛ بررسی تأخیر در دسترس نیست</string>
+    <string name="warp_endpoint_searching">در حال جست‌وجوی اندپوینت‌های WARP…</string>
+    <string name="warp_desync_masque_note">Desync به اتصال TLS بیرونی MASQUE/H2 هدایت می‌شود. برای ذخیره‌ی یکی از حالت‌ها در این پروفایل، آن را انتخاب کنید.</string>
     <string name="server_test_delay_value">%1$d میلی‌ثانیه</string>
     <string name="connection_test_error">آزمایش اتصال ناموفق بود: %s</string>
     <string name="connection_test_fail">اینترنت در دسترس نیست</string>

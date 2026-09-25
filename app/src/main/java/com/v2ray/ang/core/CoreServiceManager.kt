@@ -34,11 +34,14 @@ import com.v2ray.ang.util.Utils
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import com.v2ray.ang.extension.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.ProcessFinder
@@ -53,11 +56,17 @@ object CoreServiceManager {
     @Volatile
     private var currentConfigGuid: String? = null
     private var autoExitProbeJob: Job? = null
+    private var probeScope: CoroutineScope? = null
+    private var coreStopJob: Job? = null
     @Volatile
     private var stopping = false
+    @Volatile
+    private var lifecycleGeneration = 0L
     private var processFinder: XrayProcessFinder? = null
     private var browserDialer: IDialerService? = null
     private var networkMonitor: NetworkMonitor? = null
+    @Volatile
+    private var receiverRegistered = false
 
     @Volatile
     private var isReloading = false
@@ -107,6 +116,17 @@ object CoreServiceManager {
      * Starts the V2Ray core service.
      */
     fun startCoreLoop(vpnInterface: ParcelFileDescriptor?): Boolean {
+        // Native stopLoop can outlive the Android service that requested it. A new WARP/
+        // WireGuard instance must wait until the previous native instance released its listeners
+        // and TUN resources, otherwise reconnects race with the old core.
+        coreStopJob?.let { stopJob ->
+            if (stopJob.isActive) {
+                LogUtil.i(AppConfig.TAG, "StartCore-Manager: waiting for previous core stop")
+                runBlocking { stopJob.join() }
+            }
+            coreStopJob = null
+        }
+
         if (isRunning()) {
             LogUtil.w(AppConfig.TAG, "StartCore-Manager: Core already running")
             return false
@@ -124,6 +144,8 @@ object CoreServiceManager {
         } catch (e: Throwable) {
             val message = e.message?.takeUnless { it.isBlank() } ?: e.javaClass.simpleName
             PingNgDesyncManager.stop()
+            WarpMasqueBridge.stop()
+            WarpMasqueDesyncProxy.stop()
             LogUtil.e(AppConfig.TAG, "StartCore-Manager: $message", e)
             PingNgDiagnostics.record("Core start failed: $message", e)
             MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, message)
@@ -135,11 +157,13 @@ object CoreServiceManager {
     @Throws(Exception::class)
     private fun doStartCoreLoop(service: Service, vpnInterface: ParcelFileDescriptor?) {
         stopping = false
+        lifecycleGeneration += 1
         val mFilter = IntentFilter(AppConfig.BROADCAST_ACTION_SERVICE)
         mFilter.addAction(Intent.ACTION_SCREEN_ON)
         mFilter.addAction(Intent.ACTION_SCREEN_OFF)
         mFilter.addAction(Intent.ACTION_USER_PRESENT)
         ContextCompat.registerReceiver(service, mMsgReceive, mFilter, Utils.receiverFlags())
+        receiverRegistered = true
 
         currentVpnInterface = vpnInterface
         launchCore(service, vpnInterface)
@@ -161,10 +185,24 @@ object CoreServiceManager {
                 }
             }
         }
+        if (config.configType == com.v2ray.ang.enums.EConfigType.WARP) {
+            if (PingNgCompat.isNativeDesyncEnabled(config)) {
+                // The local HTTP CONNECT adapter bridges MASQUE's outer H2
+                // connection into the native Desync SOCKS listener. Start it
+                // before the external MASQUE process reads its config.
+                WarpMasqueDesyncProxy.start(PingNgDesyncManager.activePort())
+            } else {
+                WarpMasqueDesyncProxy.stop()
+            }
+            // Start MASQUE after Desync so the outer TLS socket can use it.
+            WarpMasqueBridge.startIfNeeded(service, guid, config)
+        }
         val result = CoreConfigManager.getV2rayConfig(service, guid)
         LogUtil.d(AppConfig.TAG, result.content)
         if (!result.status) {
             if (!isReload) PingNgDesyncManager.stop()
+            WarpMasqueBridge.stop()
+            WarpMasqueDesyncProxy.stop()
             PingNgDiagnostics.record("Xray configuration generation failed: ${result.errorMessage}")
             error(result.errorMessage.ifBlank { "Failed to get V2Ray config" })
         }
@@ -185,6 +223,11 @@ object CoreServiceManager {
         }
         if (SettingsManager.isUsingHevTun()) {
             tunFd = 0
+        } else if (config.configType == com.v2ray.ang.enums.EConfigType.WARP &&
+            WarpMasqueConfig.isDescription(config.description) &&
+            vpnInterface != null
+        ) {
+            PingNgDiagnostics.record("WARP MASQUE using Xray native TUN for full-device traffic")
         }
 
         NotificationManager.showNotification(currentConfig)
@@ -193,7 +236,9 @@ object CoreServiceManager {
         }
         coreController.startLoop(preparedConfig, tunFd)
         check(isRunning()) { "Core failed to enter the running state" }
+        MmkvManager.setCoreServiceStatus(true)
         PingNgDiagnostics.record("Xray core is running")
+        resetProbeScope()
 
         if (browserDialer != null) {
             browserDialer!!.stop()
@@ -248,9 +293,14 @@ object CoreServiceManager {
         }
 
         stopping = true
+        lifecycleGeneration += 1
         PsiphonBridge.stop()
+        WarpMasqueBridge.stop()
+        WarpMasqueDesyncProxy.stop()
         autoExitProbeJob?.cancel()
         autoExitProbeJob = null
+        probeScope?.cancel()
+        probeScope = null
 
         networkMonitor?.unregister()
         networkMonitor = null
@@ -258,14 +308,19 @@ object CoreServiceManager {
         currentConfig = null
         currentConfigGuid = null
 
-        if (isRunning()) {
-            CoroutineScope(Dispatchers.IO).launch {
+        if (coreStopJob?.isActive != true && isRunning()) {
+            coreStopJob = CoroutineScope(Dispatchers.IO).launch {
                 try {
                     coreController.stopLoop()
+                    PingNgDiagnostics.record("Core stop completed")
                 } catch (e: Exception) {
                     LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to stop V2Ray loop", e)
+                } finally {
+                    MmkvManager.setCoreServiceStatus(false)
                 }
             }
+        } else if (coreStopJob?.isActive != true) {
+            MmkvManager.setCoreServiceStatus(false)
         }
         PingNgDesyncManager.stop()
         PingNgDiagnostics.record("Core stop requested")
@@ -280,10 +335,14 @@ object CoreServiceManager {
         MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_STOP_SUCCESS, "")
         NotificationManager.cancelNotification()
 
-        try {
-            service.unregisterReceiver(mMsgReceive)
-        } catch (e: Exception) {
-            LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to unregister receiver", e)
+        if (receiverRegistered) {
+            try {
+                service.unregisterReceiver(mMsgReceive)
+            } catch (e: Exception) {
+                LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to unregister receiver", e)
+            } finally {
+                receiverRegistered = false
+            }
         }
 
         return true
@@ -373,6 +432,11 @@ object CoreServiceManager {
             val tunFd = currentVpnInterface
 
             isReloading = true
+            lifecycleGeneration += 1
+            autoExitProbeJob?.cancel()
+            autoExitProbeJob = null
+            probeScope?.cancel()
+            probeScope = null
             LogUtil.i(AppConfig.TAG, "StartCore-Manager: Core reload start...")
 
             coreController.stopLoop()
@@ -428,12 +492,15 @@ object CoreServiceManager {
      * Also fetches remote IP information if the delay test was successful.
      */
     private fun measureV2rayDelay(): Job? {
-        if (!isRunning()) {
+        if (stopping || !isRunning()) {
             return null
         }
 
-        return CoroutineScope(Dispatchers.IO).launch {
+        val generation = lifecycleGeneration
+        val scope = probeScope ?: return null
+        return scope.launch {
             val service = getService() ?: return@launch
+            if (!isProbeCurrent(generation)) return@launch
             var time = -1L
             var errorStr = ""
             val forceLiveProxyProbe = service is CoreProxyOnlyService
@@ -451,23 +518,38 @@ object CoreServiceManager {
                 }
             }
 
+            if (!forceLiveProxyProbe &&
+                currentConfig?.let { WarpPlusConfig.isDescription(it.description) } == true
+            ) {
+                // Use the same live HTTP path that selected the WARP Plus
+                // endpoint. Google's HTTPS delay URL may be blocked even
+                // while this WARP tunnel can fetch ordinary web pages.
+                time = SpeedtestManager.liveTunnelDelay(
+                    "http://cp.cloudflare.com/generate_204", 4_000,
+                )
+            }
+
             if (!forceLiveProxyProbe && time < 0L) {
                 try {
                     time = coreController.measureDelay(SettingsManager.getDelayTestUrl())
                 } catch (e: Exception) {
+                    if (!isProbeCurrent(generation)) return@launch
                     LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to measure delay", e)
                     errorStr = e.message?.substringAfter("\":").orEmpty()
                 }
             }
+            if (!isProbeCurrent(generation)) return@launch
             if (!forceLiveProxyProbe && time == -1L) {
                 try {
                     time = coreController.measureDelay(SettingsManager.getDelayTestUrl(true))
                 } catch (e: Exception) {
+                    if (!isProbeCurrent(generation)) return@launch
                     LogUtil.e(AppConfig.TAG, "StartCore-Manager: Failed to measure delay", e)
                     errorStr = e.message?.substringAfter("\":").orEmpty()
                 }
             }
 
+            if (!isProbeCurrent(generation)) return@launch
             // The standalone core probe may not use the live dialer chain. Retry through the
             // running SOCKS inbound so an active PingNG Desync route is measured correctly.
             if (!forceLiveProxyProbe && time < 0L) {
@@ -487,6 +569,7 @@ object CoreServiceManager {
                 }
             }
 
+            if (!isProbeCurrent(generation)) return@launch
             val result = ConnectionTestResult(
                 delayMillis = time,
                 errorMessage = errorStr,
@@ -518,11 +601,41 @@ object CoreServiceManager {
     /** Runs automatically after startup and retries briefly while the outbound route settles. */
     private fun scheduleAutomaticExitProbe(guid: String) {
         autoExitProbeJob?.cancel()
-        autoExitProbeJob = CoroutineScope(Dispatchers.IO).launch {
+        val generation = lifecycleGeneration
+        val scope = probeScope ?: return
+        autoExitProbeJob = scope.launch {
             val quickSearchProbe = getService() is CoreProxyOnlyService
+            val warpPlusProbe = currentConfig?.let { WarpPlusConfig.isDescription(it.description) } == true
             delay(if (quickSearchProbe) 200L else 900L)
+            if (warpPlusProbe && !quickSearchProbe) {
+                // WARP Plus can carry ordinary traffic while Google's generate_204 endpoint
+                // times out. Do not turn that endpoint-specific failure into a fake reconnect
+                // signal; verify readiness through the same exit-IP route used by the profile.
+                repeat(3) { attempt ->
+                    if (!isProbeCurrent(generation) || currentConfigGuid != guid) return@launch
+                    PingNgDiagnostics.record(
+                        "Automatic WARP Plus readiness probe for ${currentConfig?.remarks.orEmpty()}"
+                    )
+                    if (probeWarpPlusExitIp(generation)) return@launch
+                    if (attempt < 2) delay(1_200L)
+                }
+                return@launch
+            }
+            val service = getService() ?: return@launch
+            if (!isProbeCurrent(generation) || currentConfigGuid != guid) return@launch
+            // Publish the exit IP first. A delay endpoint can be blocked or
+            // slow even when the actual tunnel is usable; waiting for that
+            // request made the UI keep showing only "Connected". This is the
+            // service-side equivalent of tapping "Tap to Check Connection"
+            // and uses the live Psiphon SOCKS port when that second hop is on.
+            PingNgDiagnostics.record("Automatic connection check: resolving exit IP")
+            fetchAndPublishExitIp(
+                service = service,
+                result = ConnectionTestResult(delayMillis = -1L),
+                forceLiveProxyProbe = quickSearchProbe,
+            )
             repeat(if (quickSearchProbe) 1 else 3) { attempt ->
-                if (!isRunning() || currentConfigGuid != guid) return@launch
+                if (!isProbeCurrent(generation) || currentConfigGuid != guid) return@launch
                 PingNgDiagnostics.record("Automatic exit IP probe for ${currentConfig?.remarks.orEmpty()}")
                 measureV2rayDelay()?.join()
                 if (!quickSearchProbe && attempt < 2) delay(1200L)
@@ -530,11 +643,47 @@ object CoreServiceManager {
         }
     }
 
+    /** Gives each core instance its own cancellable probe scope. */
+    private fun resetProbeScope() {
+        probeScope?.cancel()
+        probeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
+
+    private fun isProbeCurrent(generation: Long): Boolean {
+        return !stopping && lifecycleGeneration == generation && isRunning()
+    }
+
+    /** Checks WARP Plus readiness without probing a delay URL that may be blocked by the network. */
+    private fun probeWarpPlusExitIp(generation: Long): Boolean {
+        if (!isProbeCurrent(generation)) return false
+        val service = getService() ?: return false
+        val delay = SpeedtestManager.liveTunnelDelay(
+            "http://cp.cloudflare.com/generate_204", 4_000,
+        )
+        if (delay < 0L || !isProbeCurrent(generation)) return false
+        return fetchAndPublishExitIp(
+            service = service,
+            result = ConnectionTestResult(delayMillis = delay),
+            forceLiveProxyProbe = false,
+            // The automatic check is the same user-visible operation as
+            // tapping "Tap to Check Connection". Do not only cache the IP;
+            // publish it so every connected profile displays its exit IP.
+            publishResult = true,
+        )
+    }
+
     private fun fetchAndPublishExitIp(
         service: Service,
         result: ConnectionTestResult,
         forceLiveProxyProbe: Boolean,
+        publishResult: Boolean = true,
     ): Boolean {
+        // An IP API response alone is not enough evidence that WARP Plus can
+        // open pages. Publish its IP only after the live HTTP page probe has
+        // returned, so a failed delay check cannot say "Tunnel active".
+        if (currentConfig?.let { WarpPlusConfig.isDescription(it.description) } == true &&
+            result.delayMillis < 0L
+        ) return false
         val psiphonSocksPort = PsiphonBridge.activeSocksPort()
         val remoteIpInfo = when {
             forceLiveProxyProbe -> SpeedtestManager.getRemoteIPInfoThroughSocks()
@@ -545,7 +694,28 @@ object CoreServiceManager {
                 SpeedtestManager.getRemoteIPInfoThroughSocks(psiphonSocksPort)
             }
             else -> SpeedtestManager.getRemoteIPInfo()
-        } ?: return false
+        } ?: run {
+            // Keep the last verified IP visible if a transient probe fails.
+            // The next successful probe replaces it; this prevents a slow
+            // delay endpoint from erasing the IP that was just displayed by
+            // the automatic connection check.
+            if (publishResult) {
+                val profile = currentConfig
+                val cachedIp = profile?.lastExitIpAddress?.takeIf { it.isNotBlank() }
+                if (cachedIp != null && profile?.let { WarpPlusConfig.isDescription(it.description) } != true) {
+                    MessageHelper.sendMsg2UI(
+                        service,
+                        AppConfig.MSG_MEASURE_DELAY_RESULT,
+                        result.copy(
+                            country = profile.lastExitCountryCode,
+                            countryCode = profile.lastExitCountryCode,
+                            ipAddress = cachedIp,
+                        ),
+                    )
+                }
+            }
+            return false
+        }
 
         val countryCode = remoteIpInfo.countryCode?.trim()?.uppercase()
             ?.takeIf { it.length == 2 && it.all { char -> char in 'A'..'Z' } }
@@ -557,18 +727,24 @@ object CoreServiceManager {
             profile.lastExitCountryCode = countryCode ?: profile.lastExitCountryCode
             profile.lastExitIpAddress = ipAddress ?: profile.lastExitIpAddress
             currentConfigGuid?.let { activeGuid ->
-                MmkvManager.encodeServerConfig(activeGuid, profile)
+                if (profile.warpRegistrationInternalProxy == true) {
+                    MmkvManager.encodeEphemeralServerConfig(activeGuid, profile)
+                } else {
+                    MmkvManager.encodeServerConfig(activeGuid, profile)
+                }
             }
         }
-        MessageHelper.sendMsg2UI(
-            service,
-            AppConfig.MSG_MEASURE_DELAY_RESULT,
-            result.copy(
-                country = remoteIpInfo.country,
-                countryCode = remoteIpInfo.countryCode,
-                ipAddress = remoteIpInfo.ipAddress,
-            ),
-        )
+        if (publishResult) {
+            MessageHelper.sendMsg2UI(
+                service,
+                AppConfig.MSG_MEASURE_DELAY_RESULT,
+                result.copy(
+                    country = remoteIpInfo.country,
+                    countryCode = remoteIpInfo.countryCode,
+                    ipAddress = remoteIpInfo.ipAddress,
+                ),
+            )
+        }
         PingNgDiagnostics.record(
             "Automatic exit IP ready: ${ipAddress.orEmpty()} ${countryCode.orEmpty()}",
         )

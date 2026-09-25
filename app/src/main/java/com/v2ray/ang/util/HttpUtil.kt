@@ -5,6 +5,7 @@ import com.v2ray.ang.AppConfig.LOOPBACK
 import com.v2ray.ang.BuildConfig
 import com.v2ray.ang.dto.UrlContentRequest
 import com.v2ray.ang.dto.UrlContentResponse
+import com.v2ray.ang.handler.HttpProxyClient
 import com.v2ray.ang.handler.SettingsManager
 import okhttp3.Credentials
 import okhttp3.OkHttpClient
@@ -318,22 +319,22 @@ object HttpUtil {
             externalProxy != null -> InetSocketAddress.createUnresolved(externalProxy.host, externalProxy.port)
             else -> null
         }
-        if (proxyAddress != null) {
-            builder.proxy(Proxy(Proxy.Type.HTTP, proxyAddress))
-            val username = if (httpPort != 0) proxyUsername else externalProxy?.username
-            val password = if (httpPort != 0) proxyPassword else externalProxy?.password
-            val authUsername = username?.takeIf { it.isNotBlank() }
+        if (httpPort != 0) {
+            builder.proxy(Proxy(Proxy.Type.HTTP, proxyAddress!!))
+            val authUsername = proxyUsername?.takeIf { it.isNotBlank() }
             if (authUsername != null) {
                 builder.proxyAuthenticator { _, response ->
                     if (response.request.header("Proxy-Authorization") != null) {
                         null
                     } else {
                         response.request.newBuilder()
-                            .header("Proxy-Authorization", Credentials.basic(authUsername, password.orEmpty()))
+                            .header("Proxy-Authorization", Credentials.basic(authUsername, proxyPassword.orEmpty()))
                             .build()
                     }
                 }
             }
+        } else if (externalProxy != null) {
+            HttpProxyClient.apply(builder, externalProxy)
         }
 
         return builder.build()

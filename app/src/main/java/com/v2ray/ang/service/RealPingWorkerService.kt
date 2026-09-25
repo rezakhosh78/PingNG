@@ -4,6 +4,7 @@ import android.content.Context
 import com.v2ray.ang.core.CoreConfigManager
 import com.v2ray.ang.core.CoreNativeManager
 import com.v2ray.ang.core.CoreServiceManager
+import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.dto.RealPingEvent
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.extension.isComplexType
@@ -27,15 +28,16 @@ import java.util.concurrent.atomic.AtomicInteger
 
 internal object RealPingExecutionLimiter {
     private val customConfigMutex = Mutex()
+    private val warpMasqueMutex = Mutex()
 
     suspend fun <T> run(configType: EConfigType, block: () -> T): T {
         // Custom profiles bypass speed-test trimming and start complete Xray configs.
         // Parallel teardown can abort the native probe process, so serialize their
         // JNI measurements globally across batches.
-        return if (configType == EConfigType.CUSTOM) {
-            customConfigMutex.withLock { block() }
-        } else {
-            block()
+        return when (configType) {
+            EConfigType.CUSTOM -> customConfigMutex.withLock { block() }
+            EConfigType.WARP -> warpMasqueMutex.withLock { block() }
+            else -> block()
         }
     }
 }
@@ -125,6 +127,7 @@ class RealPingWorkerService(
         if (!config.configType.isComplexType()
             && config.configType != EConfigType.HYSTERIA2
             && config.configType != EConfigType.WIREGUARD
+            && config.configType != EConfigType.WARP
             && config.alpn?.startsWith("h3") != true
             && config.server.isNotNullEmpty()
             && config.serverPort?.toIntOrNull() != null
@@ -144,7 +147,13 @@ class RealPingWorkerService(
             return retFailure
         }
         return RealPingExecutionLimiter.run(config.configType) {
-            CoreNativeManager.measureOutboundDelay(configResult.content, SettingsManager.getDelayTestUrl())
+            val ownsMasque = config.configType == EConfigType.WARP && !isSelectedLiveProfile
+            if (ownsMasque) WarpMasqueBridge.startIfNeeded(context, guid, config)
+            try {
+                CoreNativeManager.measureOutboundDelay(configResult.content, SettingsManager.getDelayTestUrl())
+            } finally {
+                if (ownsMasque) WarpMasqueBridge.stop()
+            }
         }
     }
 
@@ -155,6 +164,7 @@ class RealPingWorkerService(
         if (!config.configType.isComplexType()
             && config.configType != EConfigType.HYSTERIA2
             && config.configType != EConfigType.WIREGUARD
+            && config.configType != EConfigType.WARP
             && config.alpn?.split(',')?.all { it.trim().startsWith("h3") } != true
             && config.server.isNotNullEmpty()
             && config.serverPort?.toIntOrNull() != null

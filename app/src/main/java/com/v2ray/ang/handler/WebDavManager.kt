@@ -31,6 +31,7 @@ object WebDavManager {
             .readTimeout(config.timeoutSeconds, TimeUnit.SECONDS)
             .writeTimeout(config.timeoutSeconds, TimeUnit.SECONDS)
             .callTimeout(config.timeoutSeconds, TimeUnit.SECONDS)
+            .let { HttpProxyClient.apply(it) }
             .build()
     }
 

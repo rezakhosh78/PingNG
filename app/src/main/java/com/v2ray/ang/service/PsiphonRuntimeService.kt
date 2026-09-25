@@ -5,6 +5,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -13,7 +16,9 @@ import com.v2ray.ang.AppConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.core.PingNgDiagnostics
 import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.util.LogUtil
+import com.google.gson.JsonArray
 import com.google.gson.JsonParser
 import java.io.File
 import java.lang.reflect.InvocationHandler
@@ -42,6 +47,27 @@ class PsiphonRuntimeService : Service() {
         const val CONFIG_ASSET = "pingng_psiphon_config.json"
         const val ENTRIES_ASSET = "pingng_psiphon_server_entries.txt"
         const val NATIVE_NAME = "libpingng_psiphon.so"
+
+        // Psiphon is always chained through PingNG's local HTTP upstream.
+        // QUIC and in-proxy transports cannot be used through that hop, so
+        // this is the same protocol set used by the reference chained mode.
+        val CHAINED_TUNNEL_PROTOCOLS = listOf(
+            "SSH",
+            "OSSH",
+            "TLS-OSSH",
+            "UNFRONTED-MEEK-OSSH",
+            "UNFRONTED-MEEK-HTTPS-OSSH",
+            "UNFRONTED-MEEK-SESSION-TICKET-OSSH",
+            "SHADOWSOCKS-OSSH",
+            "FRONTED-MEEK-OSSH",
+            "FRONTED-MEEK-CDN-OSSH",
+            "FRONTED-MEEK-HTTP-OSSH",
+            "FRONTED-MEEK-CDN-HTTP-OSSH",
+        )
+        val CDN_TUNNEL_PROTOCOLS = listOf(
+            "FRONTED-MEEK-CDN-OSSH",
+            "FRONTED-MEEK-CDN-HTTP-OSSH",
+        )
     }
 
     private val starting = AtomicBoolean(false)
@@ -50,6 +76,7 @@ class PsiphonRuntimeService : Service() {
     @Volatile private var activeGuid: String? = null
     @Volatile private var runtimeLoader: ClassLoader? = null
     @Volatile private var localSocksPort: Int = 0
+    @Volatile private var boundUnderlyingNetwork: Network? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -62,9 +89,13 @@ class PsiphonRuntimeService : Service() {
             AppConfig.PSIPHON_RUNTIME_START -> {
                 val guid = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_GUID).orEmpty()
                 val region = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_REGION).orEmpty()
+                val mode = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_MODE).orEmpty().ifBlank { "auto" }
+                val cdnIps = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_CDN_IPS).orEmpty()
+                val cdnSni = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_CDN_SNI).orEmpty()
+                val cdnSets = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_CDN_SETS).orEmpty()
                 val upstreamPort = intent.getIntExtra(AppConfig.EXTRA_PSIPHON_UPSTREAM_PORT, 0)
                 if (guid.isNotBlank() && upstreamPort in 1..65535) {
-                    startRuntime(guid, region, upstreamPort)
+                    startRuntime(guid, region, mode, cdnIps, cdnSni, cdnSets, upstreamPort)
                 } else {
                     emit(PsiphonStatus.FAILED, guid, message = "Invalid Psiphon startup parameters")
                     stopSelf(startId)
@@ -85,7 +116,15 @@ class PsiphonRuntimeService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun startRuntime(guid: String, region: String, upstreamPort: Int) {
+    private fun startRuntime(
+        guid: String,
+        region: String,
+        mode: String,
+        cdnIps: String,
+        cdnSni: String,
+        cdnSets: String,
+        upstreamPort: Int,
+    ) {
         // A stop/start can arrive before Android has delivered onDestroy for
         // the previous foreground-service instance. Tear down that stale
         // runtime first so the second connection is not silently ignored.
@@ -98,7 +137,7 @@ class PsiphonRuntimeService : Service() {
         emit(PsiphonStatus.CONNECTING, guid)
         Thread {
             try {
-                startInternal(guid, region, upstreamPort)
+                startInternal(guid, region, mode, cdnIps, cdnSni, cdnSets, upstreamPort)
             } catch (error: Throwable) {
                 val cause = unwrapInvocation(error)
                 LogUtil.e(TAG, "Psiphon start failed", cause)
@@ -112,7 +151,25 @@ class PsiphonRuntimeService : Service() {
         }.apply { name = "PingNG-Psiphon-runtime-start" }.start()
     }
 
-    private fun startInternal(guid: String, region: String, upstreamPort: Int) {
+    private fun startInternal(
+        guid: String,
+        region: String,
+        mode: String,
+        cdnIps: String,
+        cdnSni: String,
+        cdnSets: String,
+        upstreamPort: Int,
+    ) {
+        // The Android VPN is created after Psiphon reports CONNECTED. Without
+        // an explicit process binding, Android changes the default network of
+        // this process to the newly-created VPN at that exact moment. The
+        // embedded Psiphon runtime then receives NetworkChanged while its Go
+        // callback is being entered and the bundled gomobile runtime crashes
+        // (the log shows _cgoexp_*NetworkChanged followed by
+        // `fatal error: unknown caller pc`). Keep this process on the real
+        // Wi-Fi/cellular network for its lifetime; its upstream is still the
+        // local Xray HTTP listener on 127.0.0.1.
+        bindToUnderlyingNetwork()
         // Android associates a loaded native library with both its absolute
         // path and its ClassLoader. Reusing the old libgojni.so path after a
         // stop makes the next Psiphon ClassLoader fail with
@@ -142,7 +199,7 @@ class PsiphonRuntimeService : Service() {
 
         val tunnelClass = loader.loadClass("ca.psiphon.PsiphonTunnel")
         val hostClass = loader.loadClass("ca.psiphon.PsiphonTunnel\$HostService")
-        val config = buildConfig(region, upstreamPort)
+        val config = buildConfig(region, mode, cdnIps, cdnSni, cdnSets, upstreamPort)
         val entries = assets.open(ENTRIES_ASSET).bufferedReader().use { it.readText() }
         val host = Proxy.newProxyInstance(
             loader,
@@ -257,9 +314,63 @@ class PsiphonRuntimeService : Service() {
         activeGuid?.let { emit(PsiphonStatus.STOPPED, it) }
         activeGuid = null
         runtimeLoader = null
+        unbindUnderlyingNetwork()
     }
 
-    private fun buildConfig(region: String, upstreamPort: Int): String {
+    /**
+     * Pins only the Psiphon runtime process to a validated non-VPN network.
+     * Xray remains responsible for routing the user's traffic through WARP;
+     * this binding protects Psiphon's own control/data sockets from being
+     * captured by the VPN that is created after Psiphon becomes ready.
+     */
+    private fun bindToUnderlyingNetwork() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val connectivity = getSystemService(ConnectivityManager::class.java) ?: return
+        val candidates = connectivity.allNetworks.mapNotNull { network ->
+            val capabilities = connectivity.getNetworkCapabilities(network) ?: return@mapNotNull null
+            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN) ||
+                !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            ) return@mapNotNull null
+            val validated = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            val transportScore = when {
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> 3
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> 2
+                capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> 1
+                else -> 0
+            }
+            network to (if (validated) 100 else 0) + transportScore
+        }
+        val selected = candidates.maxByOrNull { it.second }?.first
+        if (selected == null) {
+            PingNgDiagnostics.record("Psiphon runtime: no underlying non-VPN network to bind")
+            return
+        }
+        if (runCatching { connectivity.bindProcessToNetwork(selected) }.getOrDefault(false)) {
+            boundUnderlyingNetwork = selected
+            PingNgDiagnostics.record("Psiphon runtime bound to underlying network: $selected")
+        } else {
+            PingNgDiagnostics.record("Psiphon runtime could not bind to underlying network: $selected")
+        }
+    }
+
+    private fun unbindUnderlyingNetwork() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        if (boundUnderlyingNetwork == null) return
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        runCatching { connectivity?.bindProcessToNetwork(null) }
+            .onFailure { LogUtil.w(TAG, "Could not clear Psiphon network binding", it) }
+        boundUnderlyingNetwork = null
+    }
+
+    private fun buildConfig(
+        region: String,
+        mode: String,
+        cdnIps: String,
+        cdnSni: String,
+        cdnSets: String,
+        upstreamPort: Int,
+    ): String {
         val base = assets.open(CONFIG_ASSET).bufferedReader().use { it.readText() }
         val root = JsonParser.parseString(base).asJsonObject
         // Psiphon creates its datastore with mkdir (not mkdirs) on some
@@ -279,7 +390,14 @@ class PsiphonRuntimeService : Service() {
         // Psiphon region and would filter every server entry out.
         root.addProperty("EgressRegion", normalizedEgressRegion(region))
         root.addProperty("TunnelWholeDevice", 0)
-        root.addProperty("UpstreamProxyUrl", "http://127.0.0.1:$upstreamPort")
+        val configuredProxy = SettingsManager.getConnectHttpProxy()
+        val upstreamProxyUrl = configuredProxy?.asHttpUrl() ?: "http://127.0.0.1:$upstreamPort"
+        root.addProperty("UpstreamProxyUrl", upstreamProxyUrl)
+        if (configuredProxy != null) {
+            PingNgDiagnostics.record(
+                "Connect through HTTP proxy: Psiphon upstream set to ${configuredProxy.host}:${configuredProxy.port}",
+            )
+        }
         root.addProperty("DataRootDirectory", dataRoot.absolutePath)
         root.addProperty("DataStoreDirectory", dataStore.absolutePath)
         root.addProperty("MigrateDataStoreDirectory", filesDir.absolutePath)
@@ -294,10 +412,63 @@ class PsiphonRuntimeService : Service() {
         // intentionally rejects non-allowlisted sources behind an upstream
         // proxy unless this switch is enabled.
         root.addProperty("UpstreamProxyAllowAllServerEntrySources", true)
+        applyTunnelProtocolMode(root, mode)
+        addCdnFrontingConfig(root, mode, cdnIps, cdnSni, cdnSets)
         root.addProperty("DeviceRegion", Locale.getDefault().country)
         root.addProperty("ClientPlatform", "Android_${Build.VERSION.RELEASE}_${packageName}".replace(Regex("[^\\w\\-.]"), "_"))
         root.addProperty("ClientAPILevel", Build.VERSION.SDK_INT)
         return root.toString()
+    }
+
+    /** Restricts Psiphon to the selected shape when it is chained upstream. */
+    private fun applyTunnelProtocolMode(root: com.google.gson.JsonObject, mode: String) {
+        val normalized = mode.trim().lowercase(Locale.ROOT)
+        val protocols = when (normalized) {
+            "cdn" -> CDN_TUNNEL_PROTOCOLS
+            "direct" -> CHAINED_TUNNEL_PROTOCOLS.filterNot { it.startsWith("FRONTED-") }
+            else -> CHAINED_TUNNEL_PROTOCOLS
+        }
+        root.add("LimitTunnelProtocols", JsonArray().also { values -> protocols.forEach(values::add) })
+        if (normalized == "cdn" || normalized == "direct") {
+            root.addProperty("DisableTactics", true)
+        }
+    }
+
+    /** Mirrors PingNG's Psiphon fronting configuration using tunnel-core JSON. */
+    private fun addCdnFrontingConfig(
+        root: com.google.gson.JsonObject,
+        mode: String,
+        cdnIps: String,
+        cdnSni: String,
+        cdnSets: String,
+    ) {
+        if (mode.trim().equals("direct", ignoreCase = true)) return
+        fun candidates(raw: String): List<String> = raw.split(',', ';', ' ', '\t', '\n', '\r')
+            .map(String::trim).filter(String::isNotBlank)
+        val addresses = candidates(cdnIps)
+        val names = candidates(cdnSni)
+        val sets = candidates(cdnSets)
+        if (!mode.trim().equals("cdn", ignoreCase = true) && addresses.isEmpty() && names.isEmpty() && sets.isEmpty()) return
+        if (addresses.isNotEmpty()) {
+            val spec = com.google.gson.JsonObject().apply {
+                add("IPCandidates", com.google.gson.JsonArray().also { values -> addresses.forEach(values::add) })
+                if (names.isNotEmpty()) {
+                    add("SNIServerNames", com.google.gson.JsonArray().also { values -> names.forEach(values::add) })
+                }
+            }
+            root.add("FrontedMeekCDNScanSpec", spec)
+        }
+        // No custom edges means use all built-in lists. Named lists restrict the
+        // built-in scan and are appended after custom edges, matching PingNG's reference behavior.
+        if (addresses.isEmpty() || sets.isNotEmpty()) {
+            root.addProperty("FrontedMeekCDNScanUseBuiltInSpec", true)
+        }
+        if (sets.isNotEmpty()) {
+            root.add("FrontedMeekCDNScanBuiltInSets", com.google.gson.JsonArray().also { values -> sets.forEach(values::add) })
+        }
+        PingNgDiagnostics.record(
+            "Psiphon CDN fronting enabled: customEdges=${addresses.size}, builtInSets=${sets.size}",
+        )
     }
 
     private fun normalizedEgressRegion(region: String): String =

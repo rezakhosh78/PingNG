@@ -5,6 +5,10 @@ import android.graphics.Bitmap
 import android.text.TextUtils
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.core.CoreConfigManager
+import com.v2ray.ang.core.WarpMasqueConfig
+import com.v2ray.ang.core.WarpPlusConfig
+import com.v2ray.ang.core.WarpShareCodec
+import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.dto.SubscriptionUpdateResult
 import com.v2ray.ang.dto.UrlContentRequest
 import com.v2ray.ang.dto.entities.ProfileItem
@@ -157,6 +161,37 @@ object AngConfigManager {
         try {
             val config = MmkvManager.decodeServerConfig(guid) ?: return ""
 
+            if (config.configType == EConfigType.WARP) {
+                return WarpShareCodec.encodeMasque(config)
+            }
+            if (WarpWireGuardConfig.isProfile(config)) {
+                return WarpShareCodec.encodeWireGuard(config)
+            }
+            if (config.configType == EConfigType.PROXYCHAIN &&
+                WarpPlusConfig.isDescription(config.description)
+            ) {
+                val managed = MmkvManager.decodeAllServerList()
+                    .mapNotNull { childGuid ->
+                        MmkvManager.decodeServerConfig(childGuid)?.let { childGuid to it }
+                    }
+                    .filter { (_, child) -> child.managedBy == guid }
+                val names = config.proxyChainProfiles.orEmpty()
+                    .split(",").map(String::trim).filter(String::isNotBlank)
+                val ordered = names.mapNotNull { name ->
+                    managed.firstOrNull { (_, child) -> child.remarks == name }
+                }.ifEmpty { managed }
+                if (ordered.size >= 2) {
+                    val legacyOuterFirst = config.description == WarpPlusConfig.LEGACY_DESCRIPTION
+                    val outerIndex = if (legacyOuterFirst) 0 else 1
+                    val innerIndex = if (legacyOuterFirst) 1 else 0
+                    return WarpShareCodec.encodePlus(
+                        config,
+                        ordered[innerIndex].second,
+                        ordered[outerIndex].second,
+                    )
+                }
+            }
+
             return config.configType.protocolScheme + when (config.configType) {
                 EConfigType.VMESS -> VmessFmt.toUri(config)
                 EConfigType.SHADOWSOCKS -> ShadowsocksFmt.toUri(config)
@@ -183,6 +218,9 @@ object AngConfigManager {
      */
     fun importBatchConfig(server: String?, subid: String, append: Boolean): Pair<Int, Int> {
         return try {
+            val warpShareCount = importWarpShare(server, subid, append)
+            if (warpShareCount > 0) return warpShareCount to 0
+
             var count = parseBatchConfig(Utils.decode(server), subid, append)
             if (count <= 0) {
                 count = parseBatchConfig(server, subid, append)
@@ -204,6 +242,90 @@ object AngConfigManager {
             LogUtil.e(AppConfig.TAG, "Failed to store imported profiles", e)
             0 to 0
         }
+    }
+
+    /** Imports PingNG's dedicated WARP/WARP Plus URI without exposing JSON. */
+    private fun importWarpShare(server: String?, subid: String, append: Boolean): Int {
+        val decoded = listOfNotNull(server, Utils.decode(server))
+            .flatMap { it.lines() }
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .mapNotNull { WarpShareCodec.decode(it) }
+        if (decoded.isEmpty()) return 0
+
+        val profiles = linkedMapOf<String, ProfileItem>()
+        val visibleGuids = mutableListOf<String>()
+        decoded.forEach { shared ->
+            when (shared) {
+                is WarpShareCodec.Decoded.Masque -> {
+                    val guid = Utils.getUuid()
+                    val profile = shared.profile.apply {
+                        subscriptionId = subid
+                        description = WarpMasqueConfig.DESCRIPTION
+                        warpMasqueEndpointCandidates = warpMasqueEndpointCandidates
+                            .takeUnless { it.isNullOrBlank() } ?: WarpMasqueConfig.DEFAULT_ENDPOINTS
+                        warpMasquePrimaryEndpoint = warpMasquePrimaryEndpoint
+                            .takeUnless { it.isNullOrBlank() } ?: WarpMasqueConfig.DEFAULT_ENDPOINT
+                        warpMasqueEndpointPort = warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT
+                        warpMasqueEndpointMode = warpMasqueEndpointMode
+                            ?: WarpMasqueConfig.ENDPOINT_MODE_AUTO
+                        warpMasqueSni = warpMasqueSni.takeUnless { it.isNullOrBlank() } ?: WarpMasqueConfig.DEFAULT_SNI
+                        warpMasqueDns = warpMasqueDns.takeUnless { it.isNullOrBlank() } ?: WarpMasqueConfig.DEFAULT_DNS
+                    }
+                    profiles[guid] = profile
+                    visibleGuids += guid
+                }
+
+                is WarpShareCodec.Decoded.WireGuard -> {
+                    val guid = Utils.getUuid()
+                    val profile = shared.profile.apply {
+                        subscriptionId = subid
+                        description = WarpWireGuardConfig.DESCRIPTION
+                        remarks = remarks.ifBlank { "WARP WireGuard" }
+                    }
+                    profiles[guid] = profile
+                    visibleGuids += guid
+                }
+
+                is WarpShareCodec.Decoded.Plus -> {
+                    val parentGuid = Utils.getUuid()
+                    val innerGuid = Utils.getUuid()
+                    val outerGuid = Utils.getUuid()
+                    val suffix = parentGuid.take(8)
+                    val baseRemark = shared.parent.remarks.ifBlank { "WARP Plus" }
+                    val innerRemark = "$baseRemark • Inner WARP • $suffix"
+                    val outerRemark = "$baseRemark • Outer WARP • $suffix"
+                    val inner = shared.inner.apply {
+                        subscriptionId = subid
+                        managedBy = parentGuid
+                        remarks = innerRemark
+                    }
+                    val outer = shared.outer.apply {
+                        subscriptionId = subid
+                        managedBy = parentGuid
+                        remarks = outerRemark
+                    }
+                    val parent = shared.parent.apply {
+                        subscriptionId = subid
+                        description = WarpPlusConfig.DESCRIPTION
+                        proxyChainProfiles = "$innerRemark,$outerRemark"
+                        warpEndpointTestEnabled = true
+                        warpSkipEndpointTestOnce = false
+                    }
+                    // saveServerProfiles publishes each entry at index zero;
+                    // parent is inserted last so the visible selection is the
+                    // parent rather than one of its hidden WireGuard layers.
+                    profiles[outerGuid] = outer
+                    profiles[innerGuid] = inner
+                    profiles[parentGuid] = parent
+                    visibleGuids += parentGuid
+                }
+            }
+        }
+        MmkvManager.saveServerProfiles(profiles, emptyMap(), subid, append)
+        visibleGuids.lastOrNull()?.let(MmkvManager::setSelectServer)
+        return decoded.size
     }
 
     /**

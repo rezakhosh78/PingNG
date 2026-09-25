@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string-array name="pingng_psiphon_cdn_set_entries">
+        <item>Cloudflare</item>
+        <item>Fastly</item>
+        <item>CloudFront</item>
+        <item>Akamai (Psiphon list)</item>
+        <item>Bunny (Psiphon list)</item>
+        <item>Vercel</item>
+        <item>GitHub</item>
+        <item>Curated fronting edges</item>
+        <item>Legacy Android overrides</item>
+    </string-array>
     <string-array name="securitys" translatable="false">
         <item>chacha20-poly1305</item>
         <item>aes-128-gcm</item>

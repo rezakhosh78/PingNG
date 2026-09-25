@@ -45,6 +45,7 @@ object MmkvManager {
     private const val ID_ASSET = "ASSET"
     private const val ID_SETTING = "SETTING"
     private const val KEY_SELECTED_SERVER = "SELECTED_SERVER"
+    private const val KEY_CORE_SERVICE_RUNNING = "CORE_SERVICE_RUNNING"
     private const val KEY_ANG_CONFIGS = "ANG_CONFIGS"
     private const val KEY_SUB_SERVER_PREFIX = "SUB_SERVERS_"
     private const val KEY_SUB_IDS = "SUB_IDS"
@@ -186,6 +187,12 @@ object MmkvManager {
         }
     }
 
+    fun isCoreServiceRunning(): Boolean = mainStorage.decodeBool(KEY_CORE_SERVICE_RUNNING, false)
+
+    fun setCoreServiceStatus(running: Boolean) {
+        mainStorage.encode(KEY_CORE_SERVICE_RUNNING, running)
+    }
+
     /**
      * Encodes the server list for a given subscription.
      * Saves to the subscription's serverList (including default subscription for ungrouped servers).
@@ -256,6 +263,36 @@ object MmkvManager {
             return null
         }
         return JsonUtil.fromJsonSafe(json, ProfileItem::class.java)
+    }
+
+    /** Stores an internal runtime profile payload without adding it to any visible server list. */
+    fun encodeEphemeralServerConfig(guid: String, config: ProfileItem) {
+        require(guid.isNotBlank()) { "Ephemeral profile GUID is blank" }
+        requireStorageWrite(
+            profileFullStorage.encode(guid, JsonUtil.toJson(config)),
+            "Failed to save internal profile payload",
+        )
+    }
+
+    /** Removes only the internal runtime profile payload, leaving server indexes untouched. */
+    fun removeEphemeralServerConfig(guid: String) {
+        if (guid.isNotBlank()) profileFullStorage.remove(guid)
+    }
+
+    /** Hides a retained profile from its subscription index without deleting its payload. */
+    fun hideServerConfigFromLists(guid: String) {
+        if (guid.isBlank()) return
+        val config = decodeServerConfig(guid) ?: return
+        withProfileIndexLock {
+            val subId = getSubscriptionId(config.subscriptionId)
+            val serverList = decodeServerList(subId)
+            if (serverList.remove(guid)) {
+                requireStorageWrite(
+                    persistServerList(serverList, subId),
+                    "Failed to hide internal profile from the server list",
+                )
+            }
+        }
     }
 
 
@@ -421,6 +458,14 @@ object MmkvManager {
 
         // Get config to determine which subscription to update
         val config = decodeServerConfig(guid)
+        // Composite WARP-in-WARP profiles keep their two WireGuard hops as
+        // hidden managed profiles. Remove those payloads together with the
+        // visible parent so orphaned credentials cannot accumulate.
+        if (config?.managedBy.isNullOrBlank()) {
+            decodeAllServerList()
+                .filter { childGuid -> decodeServerConfig(childGuid)?.managedBy == guid }
+                .forEach(::removeServer)
+        }
         val subId = getSubscriptionId(config?.subscriptionId)
 
         // Remove from appropriate server list

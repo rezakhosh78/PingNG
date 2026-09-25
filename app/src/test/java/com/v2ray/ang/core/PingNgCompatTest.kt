@@ -41,6 +41,21 @@ class PingNgCompatTest {
     }
 
     @Test
+    fun warpMasqueUsesSelectedCustomDesyncArguments() {
+        val profile = ProfileItem.create(EConfigType.WARP).apply {
+            description = WarpMasqueConfig.DESCRIPTION
+            pingNgProfile = PingNgCompat.PROFILE_CUSTOM
+            pingNgDesyncArgs = "--proto=tls --split 3 --delay-range 0-1"
+        }
+
+        val command = requireNotNull(PingNgCompat.buildCommandLine(profile, 18193))
+
+        assertTrue(command.containsAll(listOf("--proto=tls", "--split", "3")))
+        assertFalse(command.contains("--tlsrec"))
+        assertEquals(listOf("--ip", "127.0.0.1", "--port", "18193"), command.takeLast(4))
+    }
+
+    @Test
     fun customProfilePreservesQuotedArgumentsAndForcesLoopbackListener() {
         val profile = ProfileItem.create(EConfigType.VLESS).apply {
             pingNgProfile = PingNgCompat.PROFILE_CUSTOM
