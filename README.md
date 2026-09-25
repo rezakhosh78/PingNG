@@ -25,12 +25,11 @@ PingNG keeps the familiar v2rayNG experience and adds a native, profile-aware De
 
 | Feature | v2rayNG | PingNG |
 |---|:---:|:---:|
-| Native Android Desync engine | — | ✅ |
+| Desync engine | — | ✅ |
 | Per-configuration Desync settings | — | ✅ |
-| Ready-to-use Desync profiles | — | ✅ |
+| WARP-WARP MASQUE/H2-WARP in WARP | — | ✅ |
 | Smart custom parameter editor | — | ✅ |
 | Random multi-domain Fake SNI | — | ✅ |
-| Strict fail-closed Desync startup | — | ✅ |
 | `unsafe` TLS fingerprint (PattNG) | — | ✅ |
 | Editable Cipher Suites (PattNG) | — | ✅ |
 | Psiphon Over Xray | — | ✅ |
