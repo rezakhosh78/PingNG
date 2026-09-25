@@ -25,15 +25,15 @@ PingNG keeps the familiar v2rayNG experience and adds a native, profile-aware De
 
 | Feature | v2rayNG | PingNG |
 |---|:---:|:---:|
-| Desync engine | — | ✅ |
-| Per-configuration Desync settings | — | ✅ |
+| Desync Engine | — | ✅ |
+| Per-Configuration Desync settings | — | ✅ |
 | WARP-WARP MASQUE/H2-WARP in WARP | — | ✅ |
 | Smart custom parameter editor | — | ✅ |
 | Random multi-domain Fake SNI | — | ✅ |
 | `unsafe` TLS fingerprint (PattNG) | — | ✅ |
 | Editable Cipher Suites (PattNG) | — | ✅ |
 | Psiphon Over Xray | — | ✅ |
-| traffic usage graph | — | ✅ |
+| Traffic Usage Graph | — | ✅ |
 | `Find Desync Setting` to each configuration | — | ✅ |
 | `Find Final Mask Setting` to each configuration | — | ✅ |
 | Connect through an HTTP proxy | — | ✅ |
