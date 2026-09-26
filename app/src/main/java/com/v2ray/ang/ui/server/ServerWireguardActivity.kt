@@ -26,6 +26,8 @@ import com.v2ray.ang.extension.toastSuccess
 import com.v2ray.ang.ui.compose.FormTextField
 import com.v2ray.ang.ui.compose.FormDropdownField
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 
 class ServerWireguardActivity : BaseServerActivity() {
 
@@ -65,7 +67,9 @@ class ServerWireguardActivity : BaseServerActivity() {
         var proxyChoices by remember(editGuid) {
             mutableStateOf(WarpRegistrationProxy.choices(editGuid))
         }
-        var generating by rememberSaveable { mutableStateOf(false) }
+        var generating by remember { mutableStateOf(false) }
+        var generationJob by remember { mutableStateOf<Job?>(null) }
+        var generationToken by remember { mutableStateOf(0) }
         val proxyLabel = if (registrationProxyGuid == WarpRegistrationProxy.AUTO) {
             WarpRegistrationProxy.AUTO_LABEL
         } else {
@@ -80,50 +84,76 @@ class ServerWireguardActivity : BaseServerActivity() {
             )
         }
         var showFinalMaskSearch by rememberSaveable { mutableStateOf(false) }
+        fun clearWarpAccount() {
+            uiState.secretKey = ""
+            uiState.publicKey = ""
+            uiState.address = ""
+            uiState.port = ""
+            uiState.localAddress = ""
+            uiState.reserved = ""
+            uiState.mtu = ""
+        }
+
+        fun startWarpGeneration(proxyGuid: String) {
+            generationJob?.cancel()
+            val token = generationToken + 1
+            generationToken = token
+            generating = true
+            generationJob = scope.launch {
+                try {
+                    val account = WarpRegistrationProxy.register(
+                        this@ServerWireguardActivity,
+                        proxyGuid,
+                        editGuid,
+                    )
+                    if (generationToken != token) return@launch
+                    proxyChoices = WarpRegistrationProxy.choices(editGuid)
+                    uiState.secretKey = account.privateKey
+                    uiState.publicKey = account.peerPublicKey
+                    uiState.address = account.endpointHost
+                    uiState.port = account.endpointPort.toString()
+                    uiState.localAddress = account.localAddress
+                    uiState.reserved = account.reserved
+                    uiState.mtu = account.mtu.toString()
+                    toastSuccess(R.string.toast_success)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    if (generationToken == token) {
+                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
+                        toast(error.message ?: "WARP registration failed")
+                    }
+                } finally {
+                    if (generationToken == token) generating = false
+                }
+            }
+        }
+
         LaunchedEffect(isWarpWireGuard, initialConfig.secretKey) {
             if (isWarpWireGuard && uiState.finalMask.isBlank()) {
                 uiState.finalMask = WarpPlusConfig.DEFAULT_FINAL_MASK
             }
             if (isWarpWireGuard && uiState.secretKey.isBlank()) {
-                generating = true
-                runCatching {
-                    WarpRegistrationProxy.register(
-                        this@ServerWireguardActivity,
-                        registrationProxyGuid,
-                        editGuid,
-                    )
-                }
-                    .onSuccess { account ->
-                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                        uiState.secretKey = account.privateKey
-                        uiState.publicKey = account.peerPublicKey
-                        uiState.address = account.endpointHost
-                        uiState.port = account.endpointPort.toString()
-                        uiState.localAddress = account.localAddress
-                        uiState.reserved = account.reserved
-                        uiState.mtu = account.mtu.toString()
-                        toastSuccess(R.string.toast_success)
-                    }
-                    .onFailure {
-                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                        toast(it.message ?: "WARP registration failed")
-                    }
-                generating = false
+                startWarpGeneration(registrationProxyGuid)
             }
         }
         ServerEditorScaffold(
             title = if (isWarpWireGuard) "WARP WireGuard" else serverConfigType.toString(),
             onSaveClick = {
-                if (isWarpWireGuard) {
-                    initialConfig.description = WarpWireGuardConfig.DESCRIPTION
-                    initialConfig.warpEndpointTestMode = endpointMode
-                    initialConfig.warpRegistrationProxyGuid = registrationProxyGuid
-                    if (endpointMode == WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM) {
-                        initialConfig.warpWireGuardSelectedEndpoint = "${uiState.address.trim()}:${uiState.port.trim()}"
+                if (isWarpWireGuard && (generating || uiState.secretKey.isBlank())) {
+                    toast(if (generating) "Wait for WARP key generation to finish" else "Generate a WARP key before saving")
+                } else {
+                    if (isWarpWireGuard) {
+                        initialConfig.description = WarpWireGuardConfig.DESCRIPTION
+                        initialConfig.warpEndpointTestMode = endpointMode
+                        initialConfig.warpRegistrationProxyGuid = registrationProxyGuid
+                        if (endpointMode == WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM) {
+                            initialConfig.warpWireGuardSelectedEndpoint = "${uiState.address.trim()}:${uiState.port.trim()}"
+                        }
+                        uiState.finalMask = finalMaskFields.toJsonOrNull().orEmpty()
                     }
-                    uiState.finalMask = finalMaskFields.toJsonOrNull().orEmpty()
+                    saveServer(uiState)
                 }
-                saveServer(uiState)
             }
         ) {
             CommonBasicFields(
@@ -138,11 +168,18 @@ class ServerWireguardActivity : BaseServerActivity() {
                             value = proxyLabel,
                             options = listOf(WarpRegistrationProxy.AUTO_LABEL) + proxyChoices.map { it.label },
                             onValueChange = { selected ->
-                                registrationProxyGuid = if (selected == WarpRegistrationProxy.AUTO_LABEL) {
+                                val nextProxyGuid = if (selected == WarpRegistrationProxy.AUTO_LABEL) {
                                     WarpRegistrationProxy.AUTO
                                 } else {
                                     proxyChoices.firstOrNull { it.label == selected }?.guid
                                         ?: WarpRegistrationProxy.AUTO
+                                }
+                                if (nextProxyGuid != registrationProxyGuid) {
+                                    registrationProxyGuid = nextProxyGuid
+                                    if (isWarpWireGuard) {
+                                        clearWarpAccount()
+                                        startWarpGeneration(nextProxyGuid)
+                                    }
                                 }
                             },
                         )
@@ -155,32 +192,8 @@ class ServerWireguardActivity : BaseServerActivity() {
                     enabled = !generating,
                     modifier = Modifier.padding(start = 16.dp),
                     onClick = {
-                        scope.launch {
-                            generating = true
-                            runCatching {
-                                WarpRegistrationProxy.register(
-                                    this@ServerWireguardActivity,
-                                    registrationProxyGuid,
-                                    editGuid,
-                                )
-                            }
-                                .onSuccess { account ->
-                                    proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                                    uiState.secretKey = account.privateKey
-                                    uiState.publicKey = account.peerPublicKey
-                                    uiState.address = account.endpointHost
-                                    uiState.port = account.endpointPort.toString()
-                                    uiState.localAddress = account.localAddress
-                                    uiState.reserved = account.reserved
-                                    uiState.mtu = account.mtu.toString()
-                                    toastSuccess(R.string.toast_success)
-                                }
-                                .onFailure {
-                                    proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                                    toast(it.message ?: "WARP registration failed")
-                                }
-                            generating = false
-                        }
+                        clearWarpAccount()
+                        startWarpGeneration(registrationProxyGuid)
                     },
                 ) { Text(if (generating) "Generating…" else "Generate New WARP") }
                 FormDropdownField(

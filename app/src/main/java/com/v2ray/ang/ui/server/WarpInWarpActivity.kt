@@ -342,28 +342,64 @@ class WarpInWarpActivity : BaseComponentActivity() {
                 ?: WarpRegistrationProxy.AUTO_LABEL
         }
         var generating by remember { mutableStateOf(false) }
+        var generationJob by remember { mutableStateOf<Job?>(null) }
+        var generationToken by remember { mutableStateOf(0) }
         var showFinalMaskFinder by remember { mutableStateOf(false) }
         val lazyListState = rememberLazyListState()
 
+        fun startWarpGeneration(proxyGuid: String, regenerateBoth: Boolean, generateOuter: Boolean = true) {
+            generationJob?.cancel()
+            val token = generationToken + 1
+            generationToken = token
+            generating = true
+            generationJob = scope.launch {
+                try {
+                    if (regenerateBoth) {
+                        val outerAccount = WarpRegistrationProxy.register(
+                            this@WarpInWarpActivity,
+                            proxyGuid,
+                            editGuid,
+                        )
+                        val innerAccount = WarpRegistrationProxy.register(
+                            this@WarpInWarpActivity,
+                            proxyGuid,
+                            editGuid,
+                        )
+                        if (generationToken == token) {
+                            proxyChoices = WarpRegistrationProxy.choices(editGuid)
+                            outer = outer.withAccount(outerAccount)
+                            inner = inner.withAccount(innerAccount)
+                            toastSuccess(R.string.toast_success)
+                        }
+                    } else {
+                        val account = WarpRegistrationProxy.register(
+                            this@WarpInWarpActivity,
+                            proxyGuid,
+                            editGuid,
+                        )
+                        if (generationToken == token) {
+                            proxyChoices = WarpRegistrationProxy.choices(editGuid)
+                            if (generateOuter) outer = outer.withAccount(account)
+                            else inner = inner.withAccount(account)
+                            toastSuccess(R.string.toast_success)
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    if (generationToken == token) {
+                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
+                        toast(error.message ?: "WARP registration failed")
+                    }
+                } finally {
+                    if (generationToken == token) generating = false
+                }
+            }
+        }
+
         LaunchedEffect(Unit) {
             if (editGuid.isBlank() && outer.privateKey.isBlank() && inner.privateKey.isBlank()) {
-                generating = true
-                runCatching {
-                    val outerAccount = WarpRegistrationProxy.register(
-                        this@WarpInWarpActivity,
-                        registrationProxyGuid,
-                        editGuid,
-                    )
-                    val innerAccount = WarpRegistrationProxy.register(
-                        this@WarpInWarpActivity,
-                        registrationProxyGuid,
-                        editGuid,
-                    )
-                    outer = outer.withAccount(outerAccount)
-                    inner = inner.withAccount(innerAccount)
-                }.onFailure { toast(it.message ?: "WARP registration failed") }
-                proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                generating = false
+                startWarpGeneration(registrationProxyGuid, regenerateBoth = true)
             }
         }
 
@@ -373,26 +409,29 @@ class WarpInWarpActivity : BaseComponentActivity() {
                     title = "WARP Plus",
                     onBackClick = { finish() },
                     actions = {
-                        TextButton(onClick = {
-                            saveServer(
-                                remarks,
-                                outer,
-                                inner,
-                                finalMask.toJsonOrNull(),
-                                finalMask.enabled,
-                                psiphon,
-                                region,
-                                psiphonMode,
-                                psiphonCdnIps,
-                                psiphonCdnSni,
-                                psiphonCdnSets,
-                                endpointTestMode,
-                                finalMaskPickedFromFinder,
-                                fastFinalMaskJson,
-                                allFinalMaskJson,
-                                registrationProxyGuid,
-                            )
-                        }) { Text(stringResource(R.string.action_save)) }
+                        TextButton(
+                            enabled = !generating && outer.privateKey.isNotBlank() && inner.privateKey.isNotBlank(),
+                            onClick = {
+                                saveServer(
+                                    remarks,
+                                    outer,
+                                    inner,
+                                    finalMask.toJsonOrNull(),
+                                    finalMask.enabled,
+                                    psiphon,
+                                    region,
+                                    psiphonMode,
+                                    psiphonCdnIps,
+                                    psiphonCdnSni,
+                                    psiphonCdnSets,
+                                    endpointTestMode,
+                                    finalMaskPickedFromFinder,
+                                    fastFinalMaskJson,
+                                    allFinalMaskJson,
+                                    registrationProxyGuid,
+                                )
+                            },
+                        ) { Text(stringResource(R.string.action_save)) }
                     },
                 )
             },
@@ -409,11 +448,17 @@ class WarpInWarpActivity : BaseComponentActivity() {
                         value = proxyLabel,
                         options = listOf(WarpRegistrationProxy.AUTO_LABEL) + proxyChoices.map { it.label },
                         onValueChange = { selected ->
-                            registrationProxyGuid = if (selected == WarpRegistrationProxy.AUTO_LABEL) {
+                            val nextProxyGuid = if (selected == WarpRegistrationProxy.AUTO_LABEL) {
                                 WarpRegistrationProxy.AUTO
                             } else {
                                 proxyChoices.firstOrNull { it.label == selected }?.guid
                                     ?: WarpRegistrationProxy.AUTO
+                            }
+                            if (nextProxyGuid != registrationProxyGuid) {
+                                registrationProxyGuid = nextProxyGuid
+                                outer = outer.copy(privateKey = "")
+                                inner = inner.copy(privateKey = "")
+                                startWarpGeneration(nextProxyGuid, regenerateBoth = true)
                             }
                         },
                     )
@@ -425,26 +470,8 @@ class WarpInWarpActivity : BaseComponentActivity() {
                         generating = generating,
                         onStateChange = { outer = it },
                         onGenerate = {
-                            scope.launch {
-                                generating = true
-                                runCatching {
-                                    WarpRegistrationProxy.register(
-                                        this@WarpInWarpActivity,
-                                        registrationProxyGuid,
-                                        editGuid,
-                                    )
-                                }
-                                    .onSuccess {
-                                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                                        outer = outer.withAccount(it)
-                                        toastSuccess(R.string.toast_success)
-                                    }
-                                    .onFailure {
-                                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                                        toast(it.message ?: "WARP registration failed")
-                                    }
-                                generating = false
-                            }
+                            outer = outer.copy(privateKey = "")
+                            startWarpGeneration(registrationProxyGuid, regenerateBoth = false, generateOuter = true)
                         },
                     )
                 }
@@ -456,26 +483,8 @@ class WarpInWarpActivity : BaseComponentActivity() {
                         generating = generating,
                         onStateChange = { inner = it },
                         onGenerate = {
-                            scope.launch {
-                                generating = true
-                                runCatching {
-                                    WarpRegistrationProxy.register(
-                                        this@WarpInWarpActivity,
-                                        registrationProxyGuid,
-                                        editGuid,
-                                    )
-                                }
-                                    .onSuccess {
-                                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                                        inner = inner.withAccount(it)
-                                        toastSuccess(R.string.toast_success)
-                                    }
-                                    .onFailure {
-                                        proxyChoices = WarpRegistrationProxy.choices(editGuid)
-                                        toast(it.message ?: "WARP registration failed")
-                                    }
-                                generating = false
-                            }
+                            inner = inner.copy(privateKey = "")
+                            startWarpGeneration(registrationProxyGuid, regenerateBoth = false, generateOuter = false)
                         },
                     )
                 }

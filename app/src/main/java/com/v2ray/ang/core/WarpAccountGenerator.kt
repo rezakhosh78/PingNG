@@ -4,8 +4,11 @@ import android.util.Base64
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import okhttp3.ConnectionSpec
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.TlsVersion
@@ -16,6 +19,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 /** A WireGuard profile returned by Cloudflare's free WARP registration API. */
 data class WarpAccount(
@@ -43,7 +49,7 @@ object WarpAccountGenerator {
     private val prime = BigInteger.ONE.shiftLeft(255).subtract(BigInteger.valueOf(19))
     private val a24 = BigInteger.valueOf(121665)
 
-    fun register(proxy: Proxy? = null): WarpAccount {
+    suspend fun register(proxy: Proxy? = null): WarpAccount {
         val privateBytes = ByteArray(32).also(random::nextBytes)
         val publicBytes = scalarMult(privateBytes, ByteArray(32).also { it[0] = 9 })
         val privateKey = encode(privateBytes)
@@ -75,12 +81,36 @@ object WarpAccountGenerator {
             .post(body)
             .build()
 
-        client.newCall(request).execute().use { response ->
-            val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) {
-                throw IllegalStateException("WARP registration failed (${response.code}): ${text.take(180)}")
-            }
-            return parseResponse(privateKey, publicKey, text)
+        return suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, error: java.io.IOException) {
+                    continuation.resumeWithException(error)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    if (!continuation.isActive) {
+                        response.close()
+                        return
+                    }
+                    val account = try {
+                        response.use {
+                            val text = it.body?.string().orEmpty()
+                            if (!it.isSuccessful) {
+                                throw IllegalStateException(
+                                    "WARP registration failed (${it.code}): ${text.take(180)}"
+                                )
+                            }
+                            parseResponse(privateKey, publicKey, text)
+                        }
+                    } catch (error: Throwable) {
+                        continuation.resumeWithException(error)
+                        return
+                    }
+                    continuation.resume(account)
+                }
+            })
         }
     }
 

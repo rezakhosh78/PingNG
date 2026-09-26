@@ -18,6 +18,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Routes WARP registration through an existing PingNG profile when direct access is filtered. */
 object WarpRegistrationProxy {
@@ -26,6 +28,8 @@ object WarpRegistrationProxy {
     const val PUBLIC_PROXY_REMARK = "Proxy-1"
     const val BUNDLED_PROXY_GUID = "__PINGNG_PROXY_1_VLESS__"
     private const val INTERNAL_PROFILE_GUID = "pingng-internal-warp-registration-proxy-1"
+    /** Proxy startup and cleanup mutate process-wide selected-profile state. */
+    private val registrationMutex = Mutex()
 
     data class Choice(val guid: String, val label: String)
 
@@ -183,55 +187,58 @@ object WarpRegistrationProxy {
         context: Context,
         proxyGuid: String,
         excludeGuid: String,
-    ): WarpAccount = withContext(Dispatchers.IO) {
-        if (proxyGuid == BUNDLED_PROXY_GUID) {
+    ): WarpAccount = registrationMutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (proxyGuid == BUNDLED_PROXY_GUID) {
+                val proxyProfile = loadBundledProxyProfile(context)
+                MmkvManager.encodeEphemeralServerConfig(INTERNAL_PROFILE_GUID, proxyProfile)
+                try {
+                    return@withContext withProxyProfile(context, INTERNAL_PROFILE_GUID) { proxy ->
+                        WarpAccountGenerator.register(proxy)
+                    }
+                } finally {
+                    withContext(NonCancellable) {
+                        MmkvManager.removeEphemeralServerConfig(INTERNAL_PROFILE_GUID)
+                        runCatching {
+                            File(context.applicationContext.filesDir, "warp-masque/$INTERNAL_PROFILE_GUID.json").delete()
+                        }
+                    }
+                }
+            }
+            if (proxyGuid != AUTO) {
+                val profile = MmkvManager.decodeServerConfig(proxyGuid)
+                    ?: throw IllegalStateException("Selected Proxy configuration no longer exists")
+                requireUsable(profile)
+                return@withContext withProxyProfile(context, proxyGuid) { proxy ->
+                    WarpAccountGenerator.register(proxy)
+                }
+            }
+
+            val directResult = runCatching { WarpAccountGenerator.register() }
+            if (directResult.isSuccess) return@withContext directResult.getOrThrow()
+            val directFailure = directResult.exceptionOrNull()
+                ?: IllegalStateException("Direct WARP registration failed")
+            if (directFailure is CancellationException) throw directFailure
+
             val proxyProfile = loadBundledProxyProfile(context)
             MmkvManager.encodeEphemeralServerConfig(INTERNAL_PROFILE_GUID, proxyProfile)
             try {
-                return@withContext withProxyProfile(context, INTERNAL_PROFILE_GUID) { proxy ->
+                withProxyProfile(context, INTERNAL_PROFILE_GUID) { proxy ->
                     WarpAccountGenerator.register(proxy)
                 }
+            } catch (proxyFailure: Throwable) {
+                if (proxyFailure is CancellationException) throw proxyFailure
+                throw IllegalStateException(
+                    "WARP key registration failed directly and through the bundled Proxy-1 profile: " +
+                        (proxyFailure.message ?: proxyFailure.javaClass.simpleName),
+                    proxyFailure,
+                ).also { it.addSuppressed(directFailure) }
             } finally {
                 withContext(NonCancellable) {
                     MmkvManager.removeEphemeralServerConfig(INTERNAL_PROFILE_GUID)
                     runCatching {
                         File(context.applicationContext.filesDir, "warp-masque/$INTERNAL_PROFILE_GUID.json").delete()
                     }
-                }
-            }
-        }
-        if (proxyGuid != AUTO) {
-            val profile = MmkvManager.decodeServerConfig(proxyGuid)
-                ?: throw IllegalStateException("Selected Proxy configuration no longer exists")
-            requireUsable(profile)
-            return@withContext withProxyProfile(context, proxyGuid) { proxy ->
-                WarpAccountGenerator.register(proxy)
-            }
-        }
-
-        val directResult = runCatching { WarpAccountGenerator.register() }
-        if (directResult.isSuccess) return@withContext directResult.getOrThrow()
-        val directFailure = directResult.exceptionOrNull()
-            ?: IllegalStateException("Direct WARP registration failed")
-        if (directFailure is CancellationException) throw directFailure
-
-        val proxyProfile = loadBundledProxyProfile(context)
-        MmkvManager.encodeEphemeralServerConfig(INTERNAL_PROFILE_GUID, proxyProfile)
-        try {
-            withProxyProfile(context, INTERNAL_PROFILE_GUID) { proxy ->
-                WarpAccountGenerator.register(proxy)
-            }
-        } catch (proxyFailure: Throwable) {
-            throw IllegalStateException(
-                "WARP key registration failed directly and through the bundled Proxy-1 profile: " +
-                    (proxyFailure.message ?: proxyFailure.javaClass.simpleName),
-                proxyFailure,
-            ).also { it.addSuppressed(directFailure) }
-        } finally {
-            withContext(NonCancellable) {
-                MmkvManager.removeEphemeralServerConfig(INTERNAL_PROFILE_GUID)
-                runCatching {
-                    File(context.applicationContext.filesDir, "warp-masque/$INTERNAL_PROFILE_GUID.json").delete()
                 }
             }
         }
@@ -259,7 +266,7 @@ object WarpRegistrationProxy {
     private suspend fun <T> withProxyProfile(
         context: Context,
         guid: String,
-        action: (Proxy) -> T,
+        action: suspend (Proxy) -> T,
     ): T {
         val app = context.applicationContext
         val previousGuid = MmkvManager.getSelectServer()
