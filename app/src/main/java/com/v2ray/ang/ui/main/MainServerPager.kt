@@ -894,6 +894,7 @@ private fun getProtocolDescription(profile: ProfileItem): String {
     if (WarpWireGuardConfig.isProfile(profile)) return "WARP WireGuard"
     if (WarpPlusConfig.isDescription(profile.description)) return "WARP PLUS"
     if (WarpMasqueConfig.isDescription(profile.description)) return "WARP MASQUE/H2"
+    if (profile.description == "MasterDNS") return "MasterDNS"
     if (profile.configType.isComplexType()) return profile.configType.name
     val parts = mutableListOf(profile.configType.name)
     profile.network?.let { net ->

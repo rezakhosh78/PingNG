@@ -145,6 +145,7 @@ object CoreServiceManager {
             val message = e.message?.takeUnless { it.isBlank() } ?: e.javaClass.simpleName
             PingNgDesyncManager.stop()
             WarpMasqueBridge.stop()
+            MasterDnsBridge.stop()
             WarpMasqueDesyncProxy.stop()
             LogUtil.e(AppConfig.TAG, "StartCore-Manager: $message", e)
             PingNgDiagnostics.record("Core start failed: $message", e)
@@ -197,11 +198,15 @@ object CoreServiceManager {
             // Start MASQUE after Desync so the outer TLS socket can use it.
             WarpMasqueBridge.startIfNeeded(service, guid, config)
         }
+        if (MasterDnsBridge.isProfile(config)) {
+            MasterDnsBridge.start(service, guid, config)
+        }
         val result = CoreConfigManager.getV2rayConfig(service, guid)
         LogUtil.d(AppConfig.TAG, result.content)
         if (!result.status) {
             if (!isReload) PingNgDesyncManager.stop()
             WarpMasqueBridge.stop()
+            MasterDnsBridge.stop()
             WarpMasqueDesyncProxy.stop()
             PingNgDiagnostics.record("Xray configuration generation failed: ${result.errorMessage}")
             error(result.errorMessage.ifBlank { "Failed to get V2Ray config" })
@@ -296,6 +301,7 @@ object CoreServiceManager {
         lifecycleGeneration += 1
         PsiphonBridge.stop()
         WarpMasqueBridge.stop()
+        MasterDnsBridge.stop()
         WarpMasqueDesyncProxy.stop()
         autoExitProbeJob?.cancel()
         autoExitProbeJob = null

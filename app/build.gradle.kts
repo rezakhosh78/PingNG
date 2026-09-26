@@ -242,6 +242,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            keepDebugSymbols.add("**/libmasterdns.so")
         }
     }
 

@@ -148,6 +148,13 @@ class MainViewModel(
             is MainServiceEvent.MeasureConfigNotify -> {
                 _uiState.update { it.copy(status = MainStatus.TestProgress(event.progress)) }
             }
+            is MainServiceEvent.MasterDnsProgress -> {
+                _uiState.update { state ->
+                    if (state.isStarting && state.selectedGuid == event.guid) {
+                        state.copy(status = MainStatus.MasterDnsProgress(event.completed, event.total))
+                    } else state
+                }
+            }
 
             is MainServiceEvent.MeasureConfigFinish -> {
                 onTestsFinished()
@@ -160,6 +167,7 @@ class MainViewModel(
         MainStatus.Connected -> dataSource.getString(R.string.connection_connected)
         MainStatus.Testing -> dataSource.getString(R.string.connection_test_testing)
         MainStatus.WarpSearching -> dataSource.getString(R.string.warp_endpoint_searching)
+        is MainStatus.MasterDnsProgress -> "DNS: ${status.completed}/${status.total}"
         is MainStatus.TestProgress -> dataSource.getString(
             R.string.connection_running_task_left,
             status.progress
@@ -250,6 +258,7 @@ class MainViewModel(
             is MainAction.ShareFullContent -> {
                 // Handled by Activity via its onAction lambda
             }
+            MainAction.AddMasterDns -> Unit // The editor is opened by MainActivity.
         }
     }
 
@@ -285,7 +294,8 @@ class MainViewModel(
                 isStarting = pending,
                 status = when {
                     pending && searchingWarp -> MainStatus.WarpSearching
-                    !pending && state.status == MainStatus.WarpSearching -> MainStatus.Disconnected
+                    !pending && (state.status == MainStatus.WarpSearching ||
+                        state.status is MainStatus.MasterDnsProgress) -> MainStatus.Disconnected
                     else -> state.status
                 },
             )

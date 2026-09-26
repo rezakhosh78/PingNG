@@ -7,6 +7,7 @@ import android.os.IBinder
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.core.CoreServiceManager
+import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.handler.AppLocaleManager
@@ -81,6 +82,7 @@ class CoreRootService : Service(), ServiceControl {
         super.onDestroy()
         startupCancelled = true
         WarpMasqueBridge.cancelStartup()
+        MasterDnsBridge.cancelStartup()
         // Wait for any in-flight async setup to finish before tearing down. The rules are
         // installed off the main thread and can take seconds (the setup script waits for the
         // tun to appear); if a stop arrives during that window, teardown would run first and

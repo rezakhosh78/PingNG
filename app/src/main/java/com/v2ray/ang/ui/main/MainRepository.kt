@@ -68,6 +68,14 @@ class MainRepository(
                 AppConfig.MSG_MEASURE_CONFIG_NOTIFY -> MainServiceEvent.MeasureConfigNotify(
                     safeIntent.getStringExtra("content").orEmpty()
                 )
+                AppConfig.MSG_MASTERDNS_PROGRESS -> {
+                    val fields = safeIntent.getStringExtra("content").orEmpty().split('|')
+                    val completed = fields.getOrNull(1)?.toIntOrNull()
+                    val total = fields.getOrNull(2)?.toIntOrNull()
+                    if (fields.size == 3 && completed != null && total != null &&
+                        completed in 0..total && total > 0
+                    ) MainServiceEvent.MasterDnsProgress(fields[0], completed, total) else null
+                }
 
                 AppConfig.MSG_MEASURE_CONFIG_FINISH -> MainServiceEvent.MeasureConfigFinish(
                     safeIntent.getStringExtra("content")

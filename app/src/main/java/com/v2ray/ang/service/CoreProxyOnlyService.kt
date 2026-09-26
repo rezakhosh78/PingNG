@@ -8,6 +8,7 @@ import com.v2ray.ang.AppConfig
 import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.core.LauncherManager
+import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.handler.AppLocaleManager
@@ -83,6 +84,7 @@ class CoreProxyOnlyService : Service(), ServiceControl {
     override fun onDestroy() {
         startupCancelled = true
         WarpMasqueBridge.cancelStartup()
+        MasterDnsBridge.cancelStartup()
         startupJob?.cancel()
         serviceScope.cancel()
         super.onDestroy()

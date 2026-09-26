@@ -23,6 +23,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.annotation.StringRes
 import com.v2ray.ang.R
 import com.v2ray.ang.ui.compose.CollapsiblePreferenceGroupHeader
 import com.v2ray.ang.ui.compose.FormDropdownField
@@ -35,6 +36,8 @@ fun PsiphonEditorFields(
     region: String,
     onEnabledChange: (Boolean) -> Unit,
     onRegionChange: (String) -> Unit,
+    enabledTitle: String? = null,
+    @StringRes hintResId: Int = R.string.pingng_psiphon_short_hint,
     mode: String = "auto",
     onModeChange: (String) -> Unit = {},
     cdnIps: String = "",
@@ -46,12 +49,12 @@ fun PsiphonEditorFields(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SettingsSwitchItem(
-            title = stringResource(R.string.pingng_psiphon_enabled),
+            title = enabledTitle ?: stringResource(R.string.pingng_psiphon_enabled),
             checked = enabled,
             onCheckedChange = onEnabledChange
         )
         Text(
-            text = stringResource(R.string.pingng_psiphon_short_hint),
+            text = stringResource(hintResId),
             modifier = Modifier.padding(horizontal = 16.dp),
             style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
             color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,

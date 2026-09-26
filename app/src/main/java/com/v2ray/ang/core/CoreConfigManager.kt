@@ -238,7 +238,8 @@ object CoreConfigManager {
         configureRootModeDns(v2rayConfig)
         val isWarpPlus = WarpPlusConfig.isDescription(primaryResolvedOutbound.profile.description)
         val isWarpMasque = WarpMasqueConfig.isDescription(primaryResolvedOutbound.profile.description)
-        if (isWarpPlus || isWarpMasque) {
+        val isMasterDns = MasterDnsBridge.isProfile(primaryResolvedOutbound.profile)
+        if (isWarpPlus || isWarpMasque || isMasterDns) {
             // Both WARP transports must receive every application flow. This
             // is especially important for browsers: unlike Telegram, they
             // create many fresh DNS/TCP/QUIC flows and must not fall through
@@ -250,7 +251,7 @@ object CoreConfigManager {
                 rule.outboundTag == "dns-out" ||
                     rule.inboundTag?.any { it == AppConfig.TAG_DNS || it == "dns" } == true ||
                     (rule.port == "53" && rule.inboundTag?.any { it == "tun" || it == "socks" } == true)
-            }
+            }.filterNot { rule -> isMasterDns && rule.outboundTag == AppConfig.TAG_DIRECT }
             rules.clear()
             rules.addAll(dnsRules)
             val inboundTags = arrayListOf("tun", "socks", "http")
@@ -282,7 +283,25 @@ object CoreConfigManager {
                     )
                 )
             }
-            if (isWarpMasque && warpMasqueResolvedTag != null) {
+            if (isMasterDns) {
+                // MasterDnsVPN accepts SOCKS TCP and DNS UDP/53, not QUIC UDP/443.
+                // Port 53 is intercepted above, and remaining UDP must fail fast.
+                rules.add(
+                    V2rayConfig.RoutingBean.RulesBean(
+                        network = "tcp",
+                        inboundTag = inboundTags,
+                        outboundTag = AppConfig.TAG_PROXY,
+                    )
+                )
+                rules.add(
+                    V2rayConfig.RoutingBean.RulesBean(
+                        network = "udp",
+                        inboundTag = inboundTags,
+                        outboundTag = AppConfig.TAG_BLOCKED,
+                    )
+                )
+                PingNgDiagnostics.record("MasterDNS: DNS/53 -> dns-out; TCP -> proxy; other UDP blocked")
+            } else if (isWarpMasque && warpMasqueResolvedTag != null) {
                 // Resolve hostname-based TCP flows in Xray before handing them
                 // to the local MASQUE SOCKS listener. The listener's own DNS
                 // (1.1.1.1) is unreliable on restricted networks; literal-IP
@@ -328,11 +347,13 @@ object CoreConfigManager {
             // routing preset or a Direct geo rule win before WARP. DNS
             // interception and the MASQUE QUIC fallback rule remain above
             // this catch-all rule.
-            if (isWarpMasque && warpMasqueResolvedTag != null) {
-                PingNgDiagnostics.record("WARP MASQUE UDP/443 blocked; TCP fallback forced")
+            if (!isMasterDns) {
+                if (isWarpMasque && warpMasqueResolvedTag != null) {
+                    PingNgDiagnostics.record("WARP MASQUE UDP/443 blocked; TCP fallback forced")
+                }
+                PingNgDiagnostics.record("WARP DNS interception: UDP/53 -> dns-out")
+                PingNgDiagnostics.record("WARP full-device routing enabled")
             }
-            PingNgDiagnostics.record("WARP MASQUE DNS interception: UDP/53 -> dns-out")
-            PingNgDiagnostics.record("WARP full-device routing: TCP/UDP forced to MASQUE")
         }
 
         // (added by getDns / getCustomLocalDns) to use the balancer, then add
@@ -1222,6 +1243,8 @@ object CoreConfigManager {
         val isWarpMasque = WarpMasqueConfig.isDescription(
             configContext.resolvedOutbounds.firstOrNull()?.profile?.description
         )
+        val isMasterDns = configContext.resolvedOutbounds.firstOrNull()
+            ?.profile?.let(MasterDnsBridge::isProfile) == true
         val remoteDns = SettingsManager.getRemoteDnsServers()
         val domesticDns = SettingsManager.getDomesticDnsServers()
 
@@ -1263,7 +1286,7 @@ object CoreConfigManager {
         v2rayConfig.dns = V2rayConfig.DnsBean(
             servers = servers,
             hosts = hosts,
-            queryStrategy = if (isWarpPlus || isWarpMasque) "UseIPv4" else null,
+            queryStrategy = if (isWarpPlus || isWarpMasque || isMasterDns) "UseIPv4" else null,
             tag = AppConfig.TAG_DNS,
             enableParallelQuery = if (!isWarpPlus && (domesticDns.size + remoteDns.size) > 2) true else null
         )

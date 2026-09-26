@@ -11,6 +11,7 @@ import com.v2ray.ang.R
 import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpWireGuardConfig
+import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.extension.isComplexType
@@ -33,7 +34,8 @@ private enum class ImportMenuAction(@StringRes val labelRes: Int, val action: Ma
     Hysteria2(R.string.menu_item_import_config_manually_hysteria2, MainAction.ImportManually(EConfigType.HYSTERIA2.value)),
     Warp(R.string.menu_item_add_warp, null),
     WarpInWarp(R.string.menu_item_import_config_warp_in_warp, MainAction.AddWarpInWarp),
-    ServerLess(R.string.menu_item_import_config_serverless, MainAction.AddServerLess)
+    ServerLess(R.string.menu_item_import_config_serverless, MainAction.AddServerLess),
+    MasterDns(R.string.menu_item_add_masterdns, MainAction.AddMasterDns)
 }
 
 private enum class WarpTypeOption(@StringRes val labelRes: Int, val action: MainAction) {
@@ -69,11 +71,11 @@ internal enum class ServerMenuAction(
 internal fun serverMenuActions(
     isComplexProfile: Boolean,
     includeManagementActions: Boolean,
-    allowDedicatedWarpSharing: Boolean = false,
+    hasDedicatedProfileLink: Boolean = false,
 ): List<ServerMenuAction> = ServerMenuAction.entries.filter { action ->
     (includeManagementActions || action.isShareAction) &&
-        !(allowDedicatedWarpSharing && action == ServerMenuAction.ShareFullContent) &&
-        (!isComplexProfile || action.supportsComplexProfiles || allowDedicatedWarpSharing)
+        !(hasDedicatedProfileLink && action == ServerMenuAction.ShareFullContent) &&
+        (!isComplexProfile || action.supportsComplexProfiles || hasDedicatedProfileLink)
 }
 
 @Composable
@@ -123,7 +125,8 @@ fun ShareMethodDialog(
     val menuActions = serverMenuActions(
         isComplexProfile = profile.configType.isComplexType(),
         includeManagementActions = more,
-        allowDedicatedWarpSharing = profile.configType == EConfigType.WARP ||
+        hasDedicatedProfileLink = MasterDnsBridge.isProfile(profile) ||
+            profile.configType == EConfigType.WARP ||
             (profile.configType == EConfigType.PROXYCHAIN &&
                 WarpPlusConfig.isDescription(profile.description)) ||
             WarpMasqueConfig.isDescription(profile.description) ||

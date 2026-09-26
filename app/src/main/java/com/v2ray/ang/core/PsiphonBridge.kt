@@ -129,7 +129,7 @@ object PsiphonBridge {
         // incidental outbound (for example a DNS or fallback entry) become
         // Psiphon's upstream; the inner WARP tag is the only valid upstream
         // for this profile.
-        val upstreamOutbound = if (isWarpPlus && outbounds.any {
+        val upstreamOutbound = if ((isWarpPlus || MasterDnsBridge.isProfile(profile)) && outbounds.any {
                 it.isJsonObject && it.asJsonObject.get("tag")?.asString == "proxy"
             }) {
             "proxy"

@@ -12,6 +12,12 @@ data class ProfileItem(
 
     var remarks: String = "",
     var description: String? = null,
+    /** MasterDnsVPN settings for the local SOCKS5 adapter. */
+    var masterDnsDomain: String? = null,
+    var masterDnsEncryptionKey: String? = null,
+    var masterDnsMethod: Int? = null,
+    var masterDnsAdvanced: String? = null,
+    var masterDnsResolvers: String? = null,
     var server: String? = null,
     var serverPort: String? = null,
 

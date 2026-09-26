@@ -5,6 +5,7 @@ import com.v2ray.ang.core.CoreConfigManager
 import com.v2ray.ang.core.CoreNativeManager
 import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.core.WarpMasqueBridge
+import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.dto.RealPingEvent
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.extension.isComplexType
@@ -148,9 +149,19 @@ class RealPingWorkerService(
         }
         return RealPingExecutionLimiter.run(config.configType) {
             val ownsMasque = config.configType == EConfigType.WARP && !isSelectedLiveProfile
+            val ownsMasterDns = MasterDnsBridge.isProfile(config) && !isSelectedLiveProfile
+            if (ownsMasterDns && MasterDnsBridge.isActive()) return@run retFailure
             if (ownsMasque) WarpMasqueBridge.startIfNeeded(context, guid, config)
+            val measure = {
+                if (ownsMasterDns) MasterDnsBridge.start(context, guid, config)
+                try {
+                    CoreNativeManager.measureOutboundDelay(configResult.content, SettingsManager.getDelayTestUrl())
+                } finally {
+                    if (ownsMasterDns) MasterDnsBridge.stop()
+                }
+            }
             try {
-                CoreNativeManager.measureOutboundDelay(configResult.content, SettingsManager.getDelayTestUrl())
+                if (ownsMasterDns) synchronized(MasterDnsBridge) { measure() } else measure()
             } finally {
                 if (ownsMasque) WarpMasqueBridge.stop()
             }

@@ -10,6 +10,7 @@ sealed interface MainStatus {
     data object Connected : MainStatus
     data object Testing : MainStatus
     data object WarpSearching : MainStatus
+    data class MasterDnsProgress(val completed: Int, val total: Int) : MainStatus
     data class TestProgress(val progress: String) : MainStatus
     data class ConnectionTest(val result: ConnectionTestResult) : MainStatus
 }
@@ -55,6 +56,7 @@ sealed interface MainAction {
     data object ImportClipboard : MainAction
     data object ImportConfigLocal : MainAction
     data object AddServerLess : MainAction
+    data object AddMasterDns : MainAction
     data object AddWarpMasque : MainAction
     data object AddWarpWireGuard : MainAction
     data object AddWarpInWarp : MainAction

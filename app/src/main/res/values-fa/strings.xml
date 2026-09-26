@@ -8,6 +8,7 @@
     <string name="pingng_psiphon_region">کشور</string>
     <string name="pingng_psiphon_region_summary">انتخاب</string>
     <string name="pingng_psiphon_short_hint">ابتدا Xray وصل می‌شود، سپس ترافیک از Psiphon عبور می‌کند.</string>
+    <string name="pingng_psiphon_masterdns_hint">ابتدا MasterDNS وصل می‌شود، سپس ترافیک از Psiphon عبور می‌کند.</string>
     <string name="app_tile_first_use">برای اولین استفاده از این قابلیت، لطفاً ابتدا از داخل برنامه یک سرور اضافه کنید</string>
     <string name="navigation_drawer_open">باز کردن منو کشویی</string>
     <string name="navigation_drawer_close">بستن منو کشویی</string>

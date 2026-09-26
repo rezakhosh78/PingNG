@@ -22,6 +22,7 @@ import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.core.WarpPlusConfig
+import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.handler.AppLocaleManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.NotificationManager
@@ -64,6 +65,7 @@ class CoreVpnService : VpnService(), ServiceControl {
         LogUtil.w(AppConfig.TAG, "StartCore-VPN: Permission revoked")
         startupCancelled.set(true)
         WarpMasqueBridge.cancelStartup()
+        MasterDnsBridge.cancelStartup()
         startupJob?.cancel()
         stopAllService()
     }
@@ -77,6 +79,7 @@ class CoreVpnService : VpnService(), ServiceControl {
         LogUtil.i(AppConfig.TAG, "StartCore-VPN: Service destroyed")
         startupCancelled.set(true)
         WarpMasqueBridge.cancelStartup()
+        MasterDnsBridge.cancelStartup()
         startupJob?.cancel()
         // Startup can be stopped after Android has established the TUN but
         // before CoreServiceManager marks the service as running. Always run
@@ -203,6 +206,7 @@ class CoreVpnService : VpnService(), ServiceControl {
     override fun stopService() {
         startupCancelled.set(true)
         WarpMasqueBridge.cancelStartup()
+        MasterDnsBridge.cancelStartup()
         startupJob?.cancel()
         stopAllService(true)
     }
@@ -365,6 +369,7 @@ class CoreVpnService : VpnService(), ServiceControl {
                 selectedProfile.configType == com.v2ray.ang.enums.EConfigType.WARP ||
                     WarpMasqueConfig.isDescription(selectedProfile.description) ||
                     WarpPlusConfig.isDescription(selectedProfile.description)
+                    || MasterDnsBridge.isProfile(selectedProfile)
                 )
             if (MmkvManager.decodeSettingsBool(AppConfig.PREF_APPEND_HTTP_PROXY) && !isWarpFullDevice) {
                 builder.setHttpProxy(ProxyInfo.buildDirectProxy(LOOPBACK, SettingsManager.getHttpPort()))
@@ -399,7 +404,8 @@ class CoreVpnService : VpnService(), ServiceControl {
         if (selectedProfile != null && (
                 selectedProfile.configType == com.v2ray.ang.enums.EConfigType.WARP ||
                     WarpMasqueConfig.isDescription(selectedProfile.description) ||
-                    WarpPlusConfig.isDescription(selectedProfile.description)
+                    WarpPlusConfig.isDescription(selectedProfile.description) ||
+                    MasterDnsBridge.isProfile(selectedProfile)
                 )
         ) {
             builder.addDisallowedApplication(selfPackageName)

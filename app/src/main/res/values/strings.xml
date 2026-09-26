@@ -8,6 +8,7 @@
     <string name="pingng_psiphon_region">Country</string>
     <string name="pingng_psiphon_region_summary">Select</string>
     <string name="pingng_psiphon_short_hint">Xray connects first, then Psiphon carries the traffic.</string>
+    <string name="pingng_psiphon_masterdns_hint">MasterDNS connects first, then Psiphon carries the traffic.</string>
     <string name="pingng_psiphon_mode">Psiphon connection</string>
     <string name="pingng_psiphon_mode_auto">Automatic</string>
     <string name="pingng_psiphon_mode_cdn">CDN Fronting</string>
@@ -54,6 +55,7 @@
     <string name="menu_item_import_config_proxy_chain">Add [Proxy chain]</string>
     <string name="menu_item_import_config_warp_in_warp">Add [WARP PLUS]</string>
     <string name="menu_item_add_warp">Add [WARP]</string>
+    <string name="menu_item_add_masterdns" translatable="false">Add [MasterDNS]</string>
     <string name="menu_item_import_config_warp">WARP MASQUE/H2</string>
     <string name="menu_item_import_config_warp_wireguard">WARP WireGuard</string>
     <string name="dialog_select_warp_type">Select WARP type</string>

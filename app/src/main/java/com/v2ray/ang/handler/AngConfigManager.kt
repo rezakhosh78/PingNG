@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.text.TextUtils
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.core.CoreConfigManager
+import com.v2ray.ang.core.MasterDnsBridge
+import com.v2ray.ang.core.MasterDnsShareCodec
 import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.core.WarpShareCodec
@@ -43,6 +45,7 @@ object AngConfigManager {
     // Parser mapping for different config types (lazy initialized)
     private val configFmtParsers: Map<String, (String) -> ProfileItem?> by lazy {
         mapOf(
+            MasterDnsShareCodec.PREFIX to MasterDnsShareCodec::decode,
             EConfigType.VMESS.protocolScheme to VmessFmt::parse,
             EConfigType.SHADOWSOCKS.protocolScheme to ShadowsocksFmt::parse,
             EConfigType.SOCKS.protocolScheme to SocksFmt::parse,
@@ -138,6 +141,7 @@ object AngConfigManager {
     fun shareFullContent2Clipboard(context: Context, guid: String?): Int {
         try {
             if (guid == null) return -1
+            if (MmkvManager.decodeServerConfig(guid)?.let(MasterDnsBridge::isProfile) == true) return -1
             val result = CoreConfigManager.getV2rayConfig(context, guid)
             if (result.status) {
                 Utils.setClipboard(context, result.content)
@@ -161,6 +165,9 @@ object AngConfigManager {
         try {
             val config = MmkvManager.decodeServerConfig(guid) ?: return ""
 
+            if (MasterDnsBridge.isProfile(config)) {
+                return MasterDnsShareCodec.encode(config)
+            }
             if (config.configType == EConfigType.WARP) {
                 return WarpShareCodec.encodeMasque(config)
             }
@@ -541,7 +548,9 @@ object AngConfigManager {
             }
 
             config.subscriptionId = subid
-            config.description = generateDescription(config)
+            config.description = if (MasterDnsBridge.isProfile(config)) {
+                MasterDnsBridge.LABEL
+            } else generateDescription(config)
 
             if (str.startsWith(AppConfig.V2RAYNFMTS, ignoreCase = true)
                 && config.policyGroupSubscriptionId == "self"

@@ -55,6 +55,8 @@ import com.v2ray.ang.ui.server.ServerVmessActivity
 import com.v2ray.ang.ui.server.ServerWireguardActivity
 import com.v2ray.ang.ui.server.WarpInWarpActivity
 import com.v2ray.ang.ui.server.WarpMasqueActivity
+import com.v2ray.ang.ui.server.MasterDnsActivity
+import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.service.DesyncSearchKeepAliveService
 import com.v2ray.ang.ui.settings.SettingsActivity
@@ -143,6 +145,9 @@ class MainActivity : HelperBaseComponentActivity() {
                     MainAction.ImportClipboard -> importClipboard()
                     MainAction.ImportConfigLocal -> importConfigLocal()
                     MainAction.AddServerLess -> addServerLessSubscription()
+                    MainAction.AddMasterDns -> profileEditorLauncher.launch(Intent(this, MasterDnsActivity::class.java).apply {
+                        putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+                    })
                     MainAction.AddWarpMasque -> addWarpMasque()
                     MainAction.AddWarpWireGuard -> addWarpWireGuard()
                     MainAction.AddWarpInWarp -> addWarpInWarp()
@@ -213,6 +218,9 @@ class MainActivity : HelperBaseComponentActivity() {
             state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
                 ?.takeIf { it.configType == EConfigType.WARP }
                 ?.let { WarpMasqueBridge.cancelStartup() }
+            state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
+                ?.takeIf(MasterDnsBridge::isProfile)
+                ?.let { MasterDnsBridge.cancelStartup() }
             LauncherManager.stopService(this)
         } else {
             val selected = state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
@@ -489,7 +497,7 @@ class MainActivity : HelperBaseComponentActivity() {
             EConfigType.VMESS -> ServerVmessActivity::class.java
             EConfigType.VLESS -> ServerVlessActivity::class.java
             EConfigType.SHADOWSOCKS -> ServerShadowsocksActivity::class.java
-            EConfigType.SOCKS -> ServerSocksActivity::class.java
+            EConfigType.SOCKS -> if (MasterDnsBridge.isProfile(profile)) MasterDnsActivity::class.java else ServerSocksActivity::class.java
             EConfigType.HTTP -> ServerHttpActivity::class.java
             EConfigType.TROJAN -> ServerTrojanActivity::class.java
             EConfigType.WIREGUARD -> ServerWireguardActivity::class.java

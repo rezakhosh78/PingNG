@@ -23,10 +23,10 @@ object PingNgCompat {
         EConfigType.VMESS,
         EConfigType.VLESS,
         EConfigType.SHADOWSOCKS,
-        EConfigType.SOCKS,
         EConfigType.HTTP,
         EConfigType.TROJAN,
         EConfigType.WARP -> true
+        EConfigType.SOCKS -> !MasterDnsBridge.isProfile(profileItem)
         else -> false
     }
 
