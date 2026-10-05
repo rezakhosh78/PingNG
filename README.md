@@ -2,7 +2,7 @@
 
 # 🚀 PingNG
 
-### A v2rayNG fork with native Desync, WARP tools, MasterDNS, and Psiphon CDN Fronting
+### A v2rayNG fork with native Desync, WARP, AmneziaWG, DNS tunnels, and Psiphon
 
 Control connection behavior per profile, configure WARP tunnels, customize TLS, and troubleshoot from one Android client.
 
@@ -10,7 +10,7 @@ Control connection behavior per profile, configure WARP tunnels, customize TLS, 
 ![Kotlin](https://img.shields.io/badge/Language-Kotlin-7F52FF?logo=kotlin&logoColor=white)
 ![Root](https://img.shields.io/badge/Root-Not%20Required-2EA44F)
 ![Desync](https://img.shields.io/badge/Desync-Native-0066CC)
-![Xray](https://img.shields.io/badge/Xray--core-26.9.9-blue)
+![Xray](https://img.shields.io/badge/Xray--core-26.9.30-blue)
 
 **English** · [فارسی](README_FA.md)
 
@@ -20,7 +20,7 @@ Control connection behavior per profile, configure WARP tunnels, customize TLS, 
 
 ## 🌟 Why PingNG?
 
-PingNG keeps the familiar v2rayNG experience and adds profile-aware Desync, WARP tunnel options, MasterDNS, and Psiphon CDN Fronting. Settings are stored with the relevant profile and applied when it connects.
+PingNG is synced with v2rayNG 2.3.10 and keeps its familiar experience while adding profile-aware Desync, WARP tunnels, AmneziaWG, MasterDNS, DNSTT, and Psiphon routing options. Settings are stored with the relevant profile and applied when it connects.
 
 ### At a glance
 
@@ -31,11 +31,14 @@ PingNG keeps the familiar v2rayNG experience and adds profile-aware Desync, WARP
 | WARP Plus (Outer + Inner) | — | ✅ |
 | WARP WireGuard | — | ✅ |
 | WARP MASQUE/H2 | — | ✅ |
-| MasterDNS | — | ✅ |
+| MasterDNS profiles, Fast resolver cache, and live logs | — | ✅ |
+| DNSTT DNS tunnels and DNSTT-to-SSH profiles | — | ✅ |
+| AmneziaWG profiles | — | ✅ |
 | Psiphon over MasterDNS | — | ✅ |
+| Psiphon over AmneziaWG | — | ✅ |
 | FinalMask controls and search for WARP profiles | — | ✅ |
 | Psiphon CDN Fronting on profiles | — | ✅ |
-| Psiphon over WARP and WARP Plus | — | ✅ |
+| Psiphon over WARP, WARP Plus, and AmneziaWG | — | ✅ |
 | WARP key registration through a proxy | — | ✅ |
 | Smart custom Desync parameter editor | — | ✅ |
 | Random multi-domain Fake SNI | — | ✅ |
@@ -108,7 +111,17 @@ Psiphon can be enabled per configuration, including WARP and WARP Plus profiles.
 
 **Add [MasterDNS]** appears at the end of the profile menu. The client includes binaries for common Android architectures. While DNS resolvers are tested, PingNG shows live progress in **completed/total** format, such as `230/450`.
 
-The MasterDNS editor also includes **Psiphon Over MasterDNS**, with a title and description specific to this connection.
+The MasterDNS editor also includes **Psiphon Over MasterDNS**, with a title and description specific to this connection. Fast mode can reuse saved valid resolvers and MTU results; the editor provides advanced settings and live, copyable logs.
+
+## 📡 DNSTT
+
+PingNG includes DNSTT profiles for DNS tunneling, including a mode that carries an SSH connection through the tunnel. The editor accepts the DNS tunnel details and, for SSH mode, the SSH account credentials. Connection logs report tunnel and SSH stages separately. DNSTT core libraries are bundled for common Android architectures.
+
+## 🛡️ AmneziaWG
+
+PingNG supports standalone AmneziaWG profiles. Import a `.conf` file or enter the interface, obfuscation, and peer settings in the dedicated editor. The AmneziaWG engine runs separately from Xray.
+
+Enable **Psiphon Over AmneziaWG** in an AmneziaWG profile to chain TCP traffic through Psiphon and AmneziaWG. UDP and DNS use the AmneziaWG tunnel because Psiphon does not carry UDP traffic. The AmneziaWG profile's `AllowedIPs` still controls which destinations are routed through the tunnel.
 
 ## 🎲 Random multi-domain Fake SNI
 
@@ -144,7 +157,7 @@ Per-profile Desync is available for supported TCP/TLS configurations, including:
 - Desync settings are stored per configuration and applied to the selected connection path.
 - Display names map to the native methods without changing their runtime flags.
 - Random Fake SNI selection has been confirmed through runtime logs.
-- Xray-core is set to **26.9.9**.
+- Xray-core is set to **26.9.30**.
 
 Testing on multiple Android versions, device vendors, and network conditions is recommended before release.
 
@@ -162,6 +175,6 @@ Use this project only in accordance with the laws of your country and the terms 
 
 <div align="center">
 
-Made with ❤️ for Iranian People
+Made with ❤️ for Iranian people
 
 </div>
