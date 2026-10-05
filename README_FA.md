@@ -2,7 +2,7 @@
 
 # 🚀 PingNG
 
-### نسخه‌ای از v2rayNG با موتور بومی Desync، ابزارهای WARP، MasterDNS و Psiphon CDN Fronting
+### نسخه‌ای از v2rayNG با موتور بومی Desync، WARP، AmneziaWG، تونل‌های DNS و Psiphon
 
 رفتار اتصال را برای هر پروفایل تنظیم کنید، تونل‌های WARP را مدیریت کنید، تنظیمات TLS را تغییر دهید و مشکلات اتصال را در یک برنامهٔ اندرویدی بررسی کنید.
 
@@ -10,7 +10,7 @@
 ![Kotlin](https://img.shields.io/badge/Language-Kotlin-7F52FF?logo=kotlin&logoColor=white)
 ![Root](https://img.shields.io/badge/Root-Not%20Required-2EA44F)
 ![Desync](https://img.shields.io/badge/Desync-Native-0066CC)
-![Xray](https://img.shields.io/badge/Xray--core-26.9.9-blue)
+![Xray](https://img.shields.io/badge/Xray--core-26.9.30-blue)
 
 [English](README.md) · **فارسی**
 
@@ -20,22 +20,25 @@
 
 ## 🌟 چرا PingNG؟
 
-PingNG تجربهٔ آشنای v2rayNG را حفظ می‌کند و Desync مخصوص هر پروفایل، گزینه‌های تونل WARP، MasterDNS و Psiphon CDN Fronting را به آن اضافه می‌کند. تنظیمات هر قابلیت همراه پروفایل مربوط به آن ذخیره می‌شود و هنگام اتصال اعمال می‌گردد.
+PingNG با v2rayNG 2.3.10 همگام شده و در کنار تجربهٔ آشنای آن، Desync مخصوص هر پروفایل، تونل‌های WARP، پروفایل‌های AmneziaWG، MasterDNS، DNSTT و گزینه‌های مسیردهی Psiphon را ارائه می‌دهد. تنظیمات هر قابلیت همراه پروفایل مربوط به آن ذخیره می‌شود و هنگام اتصال اعمال می‌گردد.
 
 ### امکانات در یک نگاه
 
 | قابلیت | v2rayNG | PingNG |
 |---|:---:|:---:|
-| Desync | — | ✅ |
+| Desync بومی اندروید | — | ✅ |
 | تنظیمات Desync برای هر پروفایل | — | ✅ |
 | WARP Plus (Outer + Inner) | — | ✅ |
 | WARP WireGuard | — | ✅ |
 | WARP MASQUE/H2 | — | ✅ |
-| MasterDNS | ✅ |
+| پروفایل‌های MasterDNS، کش ریزالور در حالت Fast و گزارش زنده | — | ✅ |
+| تونل‌های DNS با DNSTT و پروفایل DNSTT به SSH | — | ✅ |
+| پروفایل‌های AmneziaWG | — | ✅ |
 | Psiphon روی MasterDNS | — | ✅ |
+| Psiphon روی AmneziaWG | — | ✅ |
 | تنظیم و جست‌وجوی FinalMask برای پروفایل‌های WARP | — | ✅ |
-| Psiphon CDN Fronting | — | ✅ |
-| Psiphon روی WARP و WARP Plus | — | ✅ |
+| Psiphon CDN Fronting برای پروفایل‌ها | — | ✅ |
+| Psiphon روی WARP، WARP Plus و AmneziaWG | — | ✅ |
 | ثبت کلید WARP از طریق پروکسی | — | ✅ |
 | ویرایشگر هوشمند پارامترهای Desync سفارشی | — | ✅ |
 | Fake SNI تصادفی با چند دامنه | — | ✅ |
@@ -108,7 +111,17 @@ Psiphon را می‌توان برای هر کانفیگ، از جمله پروف
 
 گزینهٔ **Add [MasterDNS]** در انتهای منوی افزودن پروفایل قرار دارد. کلاینت شامل فایل‌های اجرایی برای معماری‌های رایج اندروید است. هنگام بررسی DNS resolverها، PingNG پیشرفت را به‌صورت زنده با قالب **بررسی‌شده/کل**، مثلاً `230/450`، نشان می‌دهد.
 
-ویرایشگر MasterDNS گزینهٔ **Psiphon Over MasterDNS** را نیز با عنوان و توضیح مخصوص همین اتصال دارد.
+ویرایشگر MasterDNS گزینهٔ **Psiphon Over MasterDNS** را نیز با عنوان و توضیح مخصوص همین اتصال دارد. حالت Fast می‌تواند از ریزالورهای معتبر و نتیجه‌های MTU ذخیره‌شده استفاده کند؛ ویرایشگر تنظیمات پیشرفته و گزارش زنده و قابل کپی دارد.
+
+## 📡 DNSTT
+
+PingNG پروفایل‌های DNSTT برای تونل‌سازی DNS دارد؛ از جمله حالتی که اتصال SSH را از داخل تونل عبور می‌دهد. در ویرایشگر، اطلاعات تونل DNS و در حالت SSH مشخصات حساب SSH وارد می‌شود. گزارش اتصال، مراحل تونل و SSH را جداگانه نمایش می‌دهد. فایل‌های هستهٔ DNSTT برای معماری‌های رایج اندروید همراه برنامه هستند.
+
+## 🛡️ AmneziaWG
+
+PingNG از پروفایل مستقل AmneziaWG پشتیبانی می‌کند. فایل `.conf` را وارد کنید یا تنظیمات Interface، obfuscation و Peerها را در ویرایشگر اختصاصی وارد کنید. هستهٔ AmneziaWG جدا از Xray اجرا می‌شود.
+
+با فعال‌کردن **Psiphon Over AmneziaWG** در پروفایل AmneziaWG، ترافیک TCP از Psiphon و سپس AmneziaWG عبور می‌کند. UDP و DNS از تونل AmneziaWG منتقل می‌شوند، چون Psiphon ترافیک UDP را پشتیبانی نمی‌کند. مقدار `AllowedIPs` در پروفایل AmneziaWG همچنان مقصدهایی را که از تونل عبور می‌کنند کنترل می‌کند.
 
 ## 🎲 Fake SNI تصادفی با چند دامنه
 
@@ -144,7 +157,7 @@ Desync مخصوص هر پروفایل برای کانفیگ‌های پشتیب�
 - تنظیمات Desync برای هر کانفیگ ذخیره و در مسیر اتصال انتخاب‌شده اعمال می‌شوند.
 - نام گزینه‌ها بدون تغییر پرچم‌های اجرایی به روش‌های بومی نگاشت می‌شوند.
 - انتخاب تصادفی Fake SNI از طریق لاگ‌های زمان اجرا بررسی شده است.
-- نسخهٔ Xray-core روی **26.9.9** تنظیم شده است.
+- نسخهٔ Xray-core روی **26.9.30** تنظیم شده است.
 
 پیش از انتشار، آزمایش روی نسخه‌های مختلف اندروید، دستگاه‌های گوناگون و شرایط متفاوت شبکه توصیه می‌شود.
 
