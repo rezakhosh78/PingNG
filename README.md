@@ -2,7 +2,7 @@
 
 # 🚀 PingNG
 
-### A v2rayNG fork with a native Desync engine, WARP tools, and Psiphon CDN Fronting
+### A v2rayNG fork with native Desync, WARP tools, MasterDNS, and Psiphon CDN Fronting
 
 Control connection behavior per profile, configure WARP tunnels, customize TLS, and troubleshoot from one Android client.
 
@@ -20,7 +20,7 @@ Control connection behavior per profile, configure WARP tunnels, customize TLS, 
 
 ## 🌟 Why PingNG?
 
-PingNG keeps the familiar v2rayNG experience and adds profile-aware Desync, WARP tunnel options, and Psiphon CDN Fronting. Settings are stored with the relevant profile and applied when it connects.
+PingNG keeps the familiar v2rayNG experience and adds profile-aware Desync, WARP tunnel options, MasterDNS, and Psiphon CDN Fronting. Settings are stored with the relevant profile and applied when it connects.
 
 ### At a glance
 
@@ -31,6 +31,8 @@ PingNG keeps the familiar v2rayNG experience and adds profile-aware Desync, WARP
 | WARP Plus (Outer + Inner) | — | ✅ |
 | WARP WireGuard | — | ✅ |
 | WARP MASQUE/H2 | — | ✅ |
+| MasterDNS | — | ✅ |
+| Psiphon over MasterDNS | — | ✅ |
 | FinalMask controls and search for WARP profiles | — | ✅ |
 | Psiphon CDN Fronting on profiles | — | ✅ |
 | Psiphon over WARP and WARP Plus | — | ✅ |
@@ -102,6 +104,12 @@ Psiphon can be enabled per configuration, including WARP and WARP Plus profiles.
 - Select built-in CDN edge lists or use the default lists.
 - Route Psiphon through the configured HTTP CONNECT proxy when required.
 
+## 🌐 MasterDNS
+
+**Add [MasterDNS]** appears at the end of the profile menu. The client includes binaries for common Android architectures. While DNS resolvers are tested, PingNG shows live progress in **completed/total** format, such as `230/450`.
+
+The MasterDNS editor also includes **Psiphon Over MasterDNS**, with a title and description specific to this connection.
+
 ## 🎲 Random multi-domain Fake SNI
 
 Add multiple domains to **Fake SNI**, separated by commas:
@@ -154,6 +162,6 @@ Use this project only in accordance with the laws of your country and the terms 
 
 <div align="center">
 
-Made with ❤️ for Iranian people
+Made with ❤️ for Iranian People
 
 </div>
