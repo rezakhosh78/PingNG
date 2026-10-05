@@ -30,6 +30,7 @@ int hev_config_init_from_str (const unsigned char *config_str,
                               unsigned int config_len);
 
 const char *hev_config_get_tunnel_name (void);
+const char *hev_config_get_tunnel_guid (void);
 unsigned int hev_config_get_tunnel_mtu (void);
 int hev_config_get_tunnel_multi_queue (void);
 int hev_config_get_tunnel_icmp (void);

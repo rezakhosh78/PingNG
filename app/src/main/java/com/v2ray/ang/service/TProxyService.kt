@@ -17,7 +17,8 @@ class TProxyService(
     private val context: Context,
     private val vpnInterface: ParcelFileDescriptor,
     private val isRunningProvider: () -> Boolean,
-    private val restartCallback: () -> Unit
+    private val restartCallback: () -> Unit,
+    private val socksPortOverride: Int? = null
 ) : Tun2SocksControl {
     companion object {
         private val nativeLoadResult: Result<Unit> = runCatching {
@@ -84,17 +85,19 @@ class TProxyService(
             } else {
                 LogUtil.e(AppConfig.TAG, "HevSocks5Tunnel returned false; VPN traffic is not being forwarded")
                 PingNgDiagnostics.record("HEV TUN failed to start; VPN traffic is not being forwarded")
+                if (socksPortOverride != null) error("HEV could not attach the Psiphon Over AmneziaWG VPN")
             }
         } catch (e: Throwable) {
             LogUtil.e(AppConfig.TAG, "HevSocks5Tunnel failed to start", e)
             PingNgDiagnostics.record("HEV TUN start failed", e)
+            if (socksPortOverride != null) throw e
         }
     }
 
     private fun buildConfig(): String {
-        val socksPort = SettingsManager.getSocksPort()
-        val socksUsername = SettingsManager.getSocksUsername()
-        val socksPassword = SettingsManager.getSocksPassword()
+        val socksPort = socksPortOverride ?: SettingsManager.getSocksPort()
+        val socksUsername = if (socksPortOverride == null) SettingsManager.getSocksUsername() else null
+        val socksPassword = if (socksPortOverride == null) SettingsManager.getSocksPassword() else null
         val vpnConfig = SettingsManager.getCurrentVpnInterfaceAddressConfig()
         val escapedSocksUsername = socksUsername?.replace("'", "''")
         val escapedSocksPassword = socksPassword?.replace("'", "''")
@@ -138,6 +141,12 @@ class TProxyService(
         try {
             LogUtil.i(AppConfig.TAG, "TProxyStopService...")
             TProxyStopService()
+            // HEV exposes a process-global singleton. Wait briefly until it has released the TUN
+            // before another native engine is allowed to receive a recycled descriptor number.
+            repeat(25) {
+                if (!TProxyIsRunning()) return
+                Thread.sleep(10)
+            }
         } catch (e: Throwable) {
             LogUtil.e(AppConfig.TAG, "Failed to stop hev-socks5-tunnel", e)
         }

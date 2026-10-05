@@ -111,6 +111,7 @@ fun FinalMaskSearchDialog(
     var testedProfiles by remember { mutableStateOf(0) }
     var totalProfiles by remember { mutableStateOf(0) }
     var maxProfiles by remember { mutableStateOf(384) }
+    var pendingApplyJson by remember(guid) { mutableStateOf<String?>(null) }
     val shown = history.sortedBy { it.delayMillis }
     val countOptions = listOf(32, 64, 128, 256, 384)
 
@@ -137,11 +138,21 @@ fun FinalMaskSearchDialog(
                     items(shown) { result ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 1.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("${result.delayMillis} ms • ${result.title}", Modifier.weight(1f))
-                            TextButton(onClick = {
-                                onCancelSearch()
-                                onApply(result.json)
-                                onDismiss()
-                            }) { Text("Apply") }
+                            TextButton(enabled = pendingApplyJson == null, onClick = {
+                                if (searching) {
+                                    // Search temporarily writes each candidate to the stored
+                                    // profile. Wait for its cleanup to restore the original
+                                    // profile before applying the selected result, so cleanup
+                                    // cannot overwrite the newly applied FinalMask.
+                                    pendingApplyJson = result.json
+                                    onCancelSearch()
+                                } else {
+                                    onApply(result.json)
+                                    onDismiss()
+                                }
+                            }) {
+                                Text(if (pendingApplyJson != null) "Applying…" else "Apply")
+                            }
                         }
                     }
                 }
@@ -161,7 +172,14 @@ fun FinalMaskSearchDialog(
                         history = (history + result).distinctBy { it.json }.sortedBy { it.delayMillis }
                     }, { tested ->
                         testedProfiles = tested.coerceIn(0, totalProfiles)
-                    }, { searching = false })
+                    }, {
+                        searching = false
+                        pendingApplyJson?.let { json ->
+                            pendingApplyJson = null
+                            onApply(json)
+                            onDismiss()
+                        }
+                    })
                 }) { Text(if (searching) "Testing..." else "Search") }
             }
         },

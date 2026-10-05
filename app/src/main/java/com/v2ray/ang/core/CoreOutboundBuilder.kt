@@ -30,6 +30,8 @@ object CoreOutboundBuilder {
             EConfigType.VLESS -> toOutboundVless(profileItem)
             EConfigType.TROJAN -> toOutboundTrojan(profileItem)
             EConfigType.WIREGUARD -> toOutboundWireguard(profileItem)
+            // AmneziaWG is handled by its own Go engine in CoreServiceManager.
+            EConfigType.AMNEZIAWG -> null
             EConfigType.HYSTERIA2 -> toOutboundHysteria2(profileItem)
             EConfigType.HTTP -> toOutboundHttp(profileItem)
             EConfigType.WARP -> toOutboundWarpMasque(profileItem)

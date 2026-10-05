@@ -70,6 +70,7 @@ class MainViewModel(
     private val groupPageFlows = ConcurrentHashMap<String, MutableStateFlow<List<ServersCache>>>()
     private val groupLoadMutexes = ConcurrentHashMap<String, Mutex>()
     private val serverOrderPersistenceJobs = mutableMapOf<String, Job>()
+    private val psiphonReconnectStatusJobs = mutableMapOf<String, Job>()
 
     private var setupGroupJob: Job? = null
     private var preloadJob: Job? = null
@@ -118,14 +119,7 @@ class MainViewModel(
             }
 
             is MainServiceEvent.PsiphonStatusChanged -> {
-                _uiState.update { current ->
-                    val states = current.psiphonStates.toMutableMap()
-                    when (event.status.state) {
-                        PsiphonStatus.STOPPED -> states.remove(event.status.guid)
-                        else -> states[event.status.guid] = event.status.state
-                    }
-                    current.copy(psiphonStates = states)
-                }
+                updatePsiphonStatus(event.status)
             }
 
             is MainServiceEvent.SubscriptionUpdated -> {
@@ -151,7 +145,7 @@ class MainViewModel(
             is MainServiceEvent.MasterDnsProgress -> {
                 _uiState.update { state ->
                     if (state.isStarting && state.selectedGuid == event.guid) {
-                        state.copy(status = MainStatus.MasterDnsProgress(event.completed, event.total))
+                        state.copy(status = MainStatus.MasterDnsProgress(event.completed, event.total, event.valid))
                     } else state
                 }
             }
@@ -162,12 +156,50 @@ class MainViewModel(
         }
     }
 
+    /** Hides brief Psiphon tunnel handovers from the server-row status badge. */
+    private fun updatePsiphonStatus(status: PsiphonStatus) {
+        val guid = status.guid
+        val previousState = _uiState.value.psiphonStates[guid]
+
+        if (status.state == PsiphonStatus.CONNECTING && previousState == PsiphonStatus.CONNECTED) {
+            // Psiphon can announce a short tunnel handover after the SOCKS
+            // listener has already connected. Keep the green badge during
+            // that brief transition; a real, longer outage still turns red.
+            if (psiphonReconnectStatusJobs[guid]?.isActive == true) return
+            val job = viewModelScope.launch {
+                delay(5_000L)
+                if (psiphonReconnectStatusJobs[guid] !== currentCoroutineContext()[Job]) return@launch
+                psiphonReconnectStatusJobs.remove(guid)
+                _uiState.update { current ->
+                    if (current.psiphonStates[guid] != PsiphonStatus.CONNECTED) return@update current
+                    current.copy(
+                        psiphonStates = current.psiphonStates.toMutableMap().apply {
+                            this[guid] = PsiphonStatus.CONNECTING
+                        },
+                    )
+                }
+            }
+            psiphonReconnectStatusJobs[guid] = job
+            return
+        }
+
+        psiphonReconnectStatusJobs.remove(guid)?.cancel()
+        _uiState.update { current ->
+            val states = current.psiphonStates.toMutableMap()
+            when (status.state) {
+                PsiphonStatus.STOPPED -> states.remove(guid)
+                else -> states[guid] = status.state
+            }
+            current.copy(psiphonStates = states)
+        }
+    }
+
     internal fun formatStatus(status: MainStatus): String = when (status) {
         MainStatus.Disconnected -> dataSource.getString(R.string.connection_not_connected)
         MainStatus.Connected -> dataSource.getString(R.string.connection_connected)
         MainStatus.Testing -> dataSource.getString(R.string.connection_test_testing)
         MainStatus.WarpSearching -> dataSource.getString(R.string.warp_endpoint_searching)
-        is MainStatus.MasterDnsProgress -> "DNS: ${status.completed}/${status.total}"
+        is MainStatus.MasterDnsProgress -> "DNS: ${status.completed}/${status.total} | Valid: ${status.valid}"
         is MainStatus.TestProgress -> dataSource.getString(
             R.string.connection_running_task_left,
             status.progress
@@ -217,6 +249,7 @@ class MainViewModel(
             MainAction.RefreshGroups -> setupGroupTab(forceRefresh = true)
             MainAction.TestAllServers -> testAllRealPing(true)
             MainAction.TestRealAllServers -> testAllRealPing()
+            is MainAction.TestRealSubscription -> testSubscriptionRealPing(action.groupId)
             MainAction.CancelTesting -> cancelAllPing()
             MainAction.RemoveAllServers -> removeAllServerAsync()
             MainAction.RemoveDuplicateServers -> removeDuplicateServerAsync()
@@ -229,7 +262,10 @@ class MainViewModel(
             is MainAction.SelectServer -> updateSelectedGuid(action.guid)
             is MainAction.RemoveServer -> removeServerAndRefresh(action.guid)
             is MainAction.Search -> filterConfig(action.query)
-            is MainAction.ImportBatchConfig -> importBatchConfig(action.configText)
+            is MainAction.ImportBatchConfig -> importBatchConfig(
+                action.configText,
+                action.forceAmneziaWg,
+            )
             is MainAction.LocateHandled -> consumeLocateTarget(action.target)
             is MainAction.ShareQRCode -> {
                 val bitmap = dataSource.share2QRCode(action.guid)
@@ -245,6 +281,7 @@ class MainViewModel(
             MainAction.ImportQRcode,
             MainAction.ImportClipboard,
             MainAction.ImportConfigLocal,
+            MainAction.ImportAmneziaWG,
             MainAction.AddServerLess,
             MainAction.AddWarpMasque,
             MainAction.AddWarpWireGuard,
@@ -258,7 +295,7 @@ class MainViewModel(
             is MainAction.ShareFullContent -> {
                 // Handled by Activity via its onAction lambda
             }
-            MainAction.AddMasterDns -> Unit // The editor is opened by MainActivity.
+            MainAction.AddMasterDns, MainAction.AddDnstt -> Unit // The editor is opened by MainActivity.
         }
     }
 
@@ -421,45 +458,62 @@ class MainViewModel(
                     cacheMutex.withLock { groupDataCache.clear() }
                 }
                 val subscriptions = dataSource.getSubscriptions()
+
+                fun isWorkerSubscription(cache: SubscriptionCache): Boolean =
+                    SubscriptionNoticeParser.isWorkerSubscription(cache.subscription.url) ||
+                        cache.subscription.url.substringBefore('#') ==
+                        AppConfig.SERVERLESS_SUBSCRIPTION_URL.substringBefore('#')
+
+                fun isBundledServerlessSubscription(cache: SubscriptionCache): Boolean =
+                    cache.subscription.url.substringBefore('#') ==
+                        AppConfig.SERVERLESS_SUBSCRIPTION_URL.substringBefore('#')
+
+                fun subscriptionNotice(cache: SubscriptionCache): String? = when {
+                    isBundledServerlessSubscription(cache) ->
+                        dataSource.getString(R.string.subscription_serverless_default_notice)
+                    else -> cache.subscription.notice
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: if (SubscriptionNoticeParser.isWorkerSubscription(cache.subscription.url)) {
+                            dataSource.getString(R.string.subscription_worker_default_notice)
+                        } else {
+                            null
+                        }
+                }
+
                 val allGroupNotice = subscriptions
                     .asSequence()
                     .filter { it.guid.isNotEmpty() }
                     .mapNotNull { cache ->
-                        cache.subscription.notice
-                            ?.trim()
-                            ?.takeIf { notice -> notice.isNotEmpty() }
-                            ?.let { notice -> "${cache.subscription.remarks}: $notice" }
+                        subscriptionNotice(cache)
+                            ?.let { notice -> "📢 ${cache.subscription.remarks}\n$notice" }
                     }
                     .joinToString("\n\n")
                     .takeIf { it.isNotEmpty() }
 
-                val groups = subscriptions.map {
+                val groups = subscriptions.map { cache ->
+                    val isWorker = cache.guid.isNotEmpty() && isWorkerSubscription(cache)
                     GroupMapItem(
-                        id = it.guid,
-                        remarks = it.subscription.remarks,
-                        notice = if (it.guid.isEmpty()) {
+                        id = cache.guid,
+                        remarks = cache.subscription.remarks,
+                        notice = if (cache.guid.isEmpty()) {
                             allGroupNotice
                         } else {
-                            it.subscription.notice
-                                ?.trim()
-                                ?.takeIf { notice -> notice.isNotEmpty() }
+                            subscriptionNotice(cache)
                         },
-                        supportUrl = if (it.guid.isEmpty()) {
+                        supportUrl = if (cache.guid.isEmpty()) {
                             null
                         } else {
-                            it.subscription.supportUrl?.takeIf { url -> url.isNotBlank() }
-                                ?: it.subscription.url.takeIf { url -> url.isNotBlank() }
+                            cache.subscription.supportUrl?.takeIf { url -> url.isNotBlank() }
+                                ?: cache.subscription.url.takeIf { url -> url.isNotBlank() }
                         },
-                        trafficTotalBytes = if (it.guid.isEmpty()) -1 else it.subscription.trafficTotalBytes,
-                        trafficUsedBytes = if (it.guid.isEmpty()) -1 else it.subscription.trafficUsedBytes,
-                        expirationEpochSeconds = if (it.guid.isEmpty()) -1 else it.subscription.expirationEpochSeconds,
-                        trafficTotalRequests = if (it.guid.isEmpty()) -1 else it.subscription.trafficTotalRequests,
-                        trafficUsedRequests = if (it.guid.isEmpty()) -1 else it.subscription.trafficUsedRequests,
-                        hasSubscriptionLink = it.guid.isNotEmpty() && it.subscription.url.isNotBlank(),
-                        isWorkerSubscription = it.guid.isNotEmpty() &&
-                            (SubscriptionNoticeParser.isWorkerSubscription(it.subscription.url) ||
-                                it.subscription.url.substringBefore('#') ==
-                                AppConfig.SERVERLESS_SUBSCRIPTION_URL.substringBefore('#')),
+                        trafficTotalBytes = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficTotalBytes,
+                        trafficUsedBytes = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficUsedBytes,
+                        expirationEpochSeconds = if (cache.guid.isEmpty()) -1 else cache.subscription.expirationEpochSeconds,
+                        trafficTotalRequests = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficTotalRequests,
+                        trafficUsedRequests = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficUsedRequests,
+                        hasSubscriptionLink = cache.guid.isNotEmpty() && cache.subscription.url.isNotBlank(),
+                        isWorkerSubscription = isWorker,
                     )
                 }
                 val selectedGroup = resolveSelectedGroup(groups)
@@ -512,12 +566,12 @@ class MainViewModel(
     }
 
     // ---------- Business actions (coroutine-based) ----------
-    private fun importBatchConfig(configText: String) {
+    private fun importBatchConfig(configText: String, forceAmneziaWg: Boolean = false) {
         launchLoading {
             withContext(ioDispatcher) {
                 try {
                     val (count, countSub) = dataSource.importBatchConfig(
-                        configText, uiState.value.selectedGroupId, true
+                        configText, uiState.value.selectedGroupId, true, forceAmneziaWg,
                     )
                     when {
                         count > 0 -> {
@@ -818,9 +872,16 @@ class MainViewModel(
     }
 
     fun testAllRealPing(onlyTcp: Boolean = false) {
+        testRealPingForGroup(uiState.value.selectedGroupId, onlyTcp)
+    }
+
+    fun testSubscriptionRealPing(subscriptionId: String) {
+        if (subscriptionId.isNotBlank()) testRealPingForGroup(subscriptionId, onlyTcp = false)
+    }
+
+    private fun testRealPingForGroup(groupId: String, onlyTcp: Boolean) {
         dataSource.cancelAllPing()
-        val groupId = uiState.value.selectedGroupId
-        val servers = currentServers()
+        val servers = mutableServersForGroup(groupId).value
         if (servers.isEmpty()) {
             _uiState.update { it.copy(isTesting = false) }
             return
@@ -919,6 +980,8 @@ class MainViewModel(
         selectedGroupLoadJob?.cancel()
         reloadJob?.cancel()
         filterJob?.cancel()
+        psiphonReconnectStatusJobs.values.forEach { it.cancel() }
+        psiphonReconnectStatusJobs.clear()
         cancelAllPing()
         dataSource.close()
         super.onCleared()

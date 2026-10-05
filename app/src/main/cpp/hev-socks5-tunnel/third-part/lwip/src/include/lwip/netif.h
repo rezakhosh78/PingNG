@@ -115,6 +115,9 @@ extern "C" {
  * Set by the user. */
 #define NETIF_FLAG_PRETEND_ICMP 0x200U
 
+/* If set, the netif to pretend that every host for TCP/UDP and ICMP packets. */
+#define NETIF_FLAG_PRETEND (NETIF_FLAG_PRETEND_TCP | NETIF_FLAG_PRETEND_UDP | NETIF_FLAG_PRETEND_ICMP)
+
 /**
  * @}
  */

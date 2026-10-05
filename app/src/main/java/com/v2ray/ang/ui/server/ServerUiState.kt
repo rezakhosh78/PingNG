@@ -12,6 +12,7 @@ import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.enums.NetworkType
 import com.v2ray.ang.extension.nullIfBlank
+import com.v2ray.ang.fmt.AmneziaWgFmt
 import com.v2ray.ang.util.JsonUtil
 
 class ServerUiState(
@@ -33,6 +34,7 @@ class ServerUiState(
     encryption: String = "",
     username: String = "",
     secretKey: String = "",
+    amneziawgConfig: String = "",
     publicKey: String = "",
     preSharedKey: String = "",
     reserved: String = "0,0,0",
@@ -90,6 +92,7 @@ class ServerUiState(
     var encryption by mutableStateOf(encryption)
     var username by mutableStateOf(username)
     var secretKey by mutableStateOf(secretKey)
+    var amneziawgConfig by mutableStateOf(amneziawgConfig)
     var publicKey by mutableStateOf(publicKey)
     var preSharedKey by mutableStateOf(preSharedKey)
     var reserved by mutableStateOf(reserved)
@@ -135,6 +138,7 @@ class ServerUiState(
         val isShadowsocks = configType == EConfigType.SHADOWSOCKS
         val isSocksOrHttp = configType == EConfigType.SOCKS || configType == EConfigType.HTTP
         val isWireguard = configType == EConfigType.WIREGUARD
+        val isAmneziaWg = configType == EConfigType.AMNEZIAWG
         val isHysteria2 = configType == EConfigType.HYSTERIA2
         val supportsDesync = configType == EConfigType.VMESS ||
             configType == EConfigType.VLESS ||
@@ -164,16 +168,17 @@ class ServerUiState(
             },
             flow = if (isVless) flow else null,
             username = if (isSocksOrHttp) username else null,
-            secretKey = if (isWireguard) secretKey else null,
+            secretKey = if (isWireguard || isAmneziaWg) secretKey else null,
+            amneziawgConfig = if (isAmneziaWg) amneziawgConfig else null,
             publicKey = when {
-                isWireguard -> publicKey
+                isWireguard || isAmneziaWg -> publicKey
                 streamSecurity == REALITY -> publicKeyReality
                 else -> null
             },
-            preSharedKey = if (isWireguard) preSharedKey else null,
+            preSharedKey = if (isWireguard || isAmneziaWg) preSharedKey else null,
             reserved = if (isWireguard) reserved else null,
-            localAddress = if (isWireguard) localAddress else null,
-            mtu = if (isWireguard) mtu.toIntOrNull() else null,
+            localAddress = if (isWireguard || isAmneziaWg) localAddress else null,
+            mtu = if (isWireguard || isAmneziaWg) mtu.toIntOrNull() else null,
             obfsPassword = if (isHysteria2) obfsPassword else null,
             portHopping = if (isHysteria2) portHopping else null,
             portHoppingInterval = if (isHysteria2) portHoppingInterval else null,
@@ -209,7 +214,21 @@ class ServerUiState(
             echConfigList = echConfigList,
             verifyPeerCertByName = verifyPeerCertByName,
             pinnedCA256 = pinnedCA256
-        )
+        ).also { config ->
+            if (isAmneziaWg) {
+                runCatching { AmneziaWgFmt.parse(amneziawgConfig, forceAmneziaWg = true) }
+                    .getOrNull()?.let { parsed ->
+                        config.server = parsed.server
+                        config.serverPort = parsed.serverPort
+                        config.secretKey = parsed.secretKey
+                        config.localAddress = parsed.localAddress
+                        config.publicKey = parsed.publicKey
+                        config.preSharedKey = parsed.preSharedKey
+                        config.mtu = parsed.mtu
+                        config.amneziawgConfig = amneziawgConfig
+                    }
+            }
+        }
     }
 
     companion object {
@@ -235,6 +254,7 @@ class ServerUiState(
                 encryption = initialConfig.method ?: "",
                 username = initialConfig.username ?: "",
                 secretKey = initialConfig.secretKey ?: "",
+                amneziawgConfig = initialConfig.amneziawgConfig ?: "",
                 publicKey = initialConfig.publicKey ?: "",
                 preSharedKey = initialConfig.preSharedKey ?: "",
                 reserved = initialConfig.reserved ?: "0,0,0",

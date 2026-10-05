@@ -6,7 +6,8 @@ object MasterDnsSettings {
     private val section = Regex("^# [0-9]+\\) (.+)$")
     private val reserved = setOf(
         "DOMAINS", "DATA_ENCRYPTION_METHOD", "ENCRYPTION_KEY",
-        "PROTOCOL_TYPE", "LISTEN_IP", "LISTEN_PORT", "MTU_TEST_PARALLELISM",
+        "PROTOCOL_TYPE", "LISTEN_IP", "LISTEN_PORT", "MTU_TEST_PARALLELISM", "MTU_TEST_PARALLELISM_RESOLVERS",
+        "SOCKS5_AUTH", "SOCKS5_USER", "SOCKS5_PASS", "LOCAL_DNS_ENABLED",
     )
 
     data class Field(val key: String, val section: String, val value: String, val kind: Kind)
@@ -34,6 +35,25 @@ object MasterDnsSettings {
     fun value(config: String, key: String): String? = config.lineSequence()
         .mapNotNull { assignment.matchEntire(it.trim()) }
         .firstOrNull { it.groupValues[1] == key }?.groupValues?.get(2)?.trim()
+
+    /** Add newly supported core options without discarding saved user choices. */
+    fun withDefaults(defaults: String, saved: String?): String {
+        if (saved.isNullOrBlank() || "STARTUP_MODE" in saved) return defaults
+        var result = defaults
+        val legacyDefaults = mapOf(
+            "MTU_TEST_RETRIES" to "2", "MTU_TEST_TIMEOUT" to "2.0",
+            "MAX_DOWNLOAD_MTU" to "4000",
+        )
+        fields(saved).forEach { field ->
+            if (legacyDefaults[field.key] != field.value) {
+                result = put(result, field.key, field.value, field.kind)
+            }
+        }
+        value(saved, "MTU_TEST_PARALLELISM")?.takeIf { it != "32" }?.let {
+            result = put(result, "MTU_TEST_PARALLELISM", it, Kind.NUMBER)
+        }
+        return result
+    }
 
     fun put(config: String, key: String, value: String, kind: Kind): String {
         require(key.matches(Regex("[A-Z][A-Z0-9_]*")))

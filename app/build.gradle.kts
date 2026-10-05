@@ -24,9 +24,23 @@ if (tasks.findByName("prepareKotlinBuildScriptModel") == null) {
 // Keep the version overridable so a newer signed AAR can be tested without
 // editing the build logic: ./gradlew -PXRAY_ANDROID_LIB_VERSION=...
 val xrayAndroidLibVersion = providers.gradleProperty("XRAY_ANDROID_LIB_VERSION")
-    .orElse("26.9.9")
+    .orElse("26.9.30")
     .get()
 val libV2rayFile = layout.projectDirectory.file("libs/libv2ray.aar").asFile
+val amneziaWgAndroidVersion = providers.gradleProperty("AMNEZIAWG_ANDROID_VERSION")
+    .orElse("3.1.20260828")
+    .get()
+// The v3.1.20260814 GitHub release asset contains a transposed digit in its filename.
+val amneziaWgAssetVersion = if (amneziaWgAndroidVersion == "3.1.20260814") {
+    "3.1.202060814"
+} else {
+    amneziaWgAndroidVersion
+}
+val amneziaWgApkUrl = providers.gradleProperty("AMNEZIAWG_ANDROID_APK_URL")
+    .orElse("https://github.com/amnezia-vpn/amneziawg-android/releases/download/v$amneziaWgAndroidVersion/AmneziaWG-$amneziaWgAssetVersion.apk")
+    .get()
+val amneziaWgApk = layout.projectDirectory.file("libs/amneziawg-android-$amneziaWgAndroidVersion.apk").asFile
+val amneziaWgAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
 
 fun isValidAar(file: java.io.File): Boolean = try {
     if (!file.isFile || file.length() <= 1024) {
@@ -68,12 +82,85 @@ fun downloadValidAar(target: java.io.File, url: String): Boolean {
     return false
 }
 
-// The standalone MASQUE core is bundled under an app-owned name. Keeping the
-// executable in the project makes Android builds deterministic and offline.
-val warpMasqueBinary = layout.projectDirectory.file("libs/arm64-v8a/libwarpmasque.so").asFile
+fun isValidAmneziaWgApk(file: java.io.File): Boolean = try {
+    if (!file.isFile || file.length() < 1024 * 1024) {
+        false
+    } else {
+        ZipFile(file).use { archive ->
+            amneziaWgAbis.all { abi ->
+                val entry = archive.getEntry("lib/$abi/libwg-go.so")
+                entry != null && entry.size > 512 * 1024
+            }
+        }
+    }
+} catch (_: Exception) {
+    false
+}
 
-check(warpMasqueBinary.isFile && warpMasqueBinary.length() > 1024 * 1024) {
-    "WARP MASQUE core is missing from app/libs/arm64-v8a"
+fun downloadAmneziaWgApk(target: java.io.File, url: String): Boolean {
+    target.parentFile.mkdirs()
+    val temporary = target.resolveSibling("${target.name}.download")
+    repeat(3) {
+        try {
+            temporary.delete()
+            val connection = URI(url).toURL().openConnection() as HttpURLConnection
+            connection.connectTimeout = 30_000
+            connection.readTimeout = 180_000
+            connection.instanceFollowRedirects = true
+            connection.inputStream.use { input ->
+                temporary.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (isValidAmneziaWgApk(temporary)) {
+                temporary.copyTo(target, overwrite = true)
+                temporary.delete()
+                return true
+            }
+        } catch (_: Exception) {
+            // Retry partial downloads and transient release-host errors.
+        } finally {
+            if (!isValidAmneziaWgApk(temporary)) temporary.delete()
+        }
+    }
+    return false
+}
+
+fun isValidAmneziaWgNativeLibrary(file: java.io.File): Boolean = try {
+    if (!file.isFile || file.length() <= 512 * 1024) {
+        false
+    } else {
+        // The official Go linker keeps the module dependency table in the
+        // shared object. The record is tab-delimited (not space-delimited),
+        // e.g. `dep<TAB>github.com/.../v3<TAB>v3.1.20260814`. Checking that
+        // exact record and FIX14 build marker prevent an unpatched official
+        // library or a stale hotfix from replacing the runtime-isolated build.
+        val bytes = file.readBytes().toString(Charsets.ISO_8859_1)
+        val marker = "dep\tgithub.com/amnezia-vpn/amneziawg-go/v3\tv$amneziaWgAndroidVersion"
+        bytes.contains(marker) &&
+            bytes.contains("PingNG-AWG-FIX15-PSIPHON-NETSTACK-20261005")
+    }
+} catch (_: Exception) {
+    false
+}
+
+fun ensureAmneziaWgNativeLibraries() {
+    val nativeLibraries = amneziaWgAbis.map { abi ->
+        layout.projectDirectory.file("libs/$abi/libwg-go.so").asFile
+    }
+    if (nativeLibraries.all(::isValidAmneziaWgNativeLibrary)) return
+
+    error("AmneziaWG FIX15 native libraries are missing or stale. Restore the bundled app/libs files or rebuild using native/amneziawg/build-android.sh. The unpatched official APK cannot replace this runtime-isolated build.")
+}
+
+// The standalone MASQUE/HTTP2 core is bundled per Android ARM ABI. Keeping
+// both executables in the project makes Android builds deterministic.
+val warpMasqueAbis = listOf("arm64-v8a", "armeabi-v7a")
+val warpMasqueBinaries = warpMasqueAbis.associateWith { abi ->
+    layout.projectDirectory.file("libs/$abi/libwarpmasque.so").asFile
+}
+warpMasqueBinaries.forEach { (abi, binary) ->
+    check(binary.isFile && binary.length() > 1024 * 1024) {
+        "WARP MASQUE core is missing from app/libs/$abi"
+    }
 }
 
 if (!isValidAar(libV2rayFile)) {
@@ -83,19 +170,26 @@ if (!isValidAar(libV2rayFile)) {
     )) { "libv2ray.aar is missing or corrupted, and a valid replacement could not be downloaded" }
 }
 
+ensureAmneziaWgNativeLibraries()
+
 android {
     namespace = "com.v2ray.ang"
     compileSdk = 37
+    ndkVersion = "30.0.14904198"
 
     defaultConfig {
         applicationId = "com.pingng.android"
         minSdk = 24
         targetSdk = 37
-        versionCode = 752
-        // v2rayNG 2.3.9-compatible PingNG build with the Pi39 feature set.
-        // Keep the project-specific version code so installs upgrade cleanly
-        // from the previous Pi37 builds.
-        versionName = "v2.3.9-Pi38"
+        // Increment the code so Android cannot retain the previously extracted
+        // v3.1.20260814 native library during an in-place update.
+        versionCode = 757
+        // PingNG Pi40 version metadata. Upstream tag 2.3.10 source changes integrated.
+        versionName = "v2.3.10-Pi40"
+        // Keep the bundled native engine version observable without calling a
+        // native diagnostic entry point during tunnel startup. Some older
+        // extracted libwg-go.so builds can panic from awgVersion() itself.
+        buildConfigField("String", "AMNEZIAWG_ENGINE_VERSION", "\"$amneziaWgAndroidVersion\"")
 
         val abiFilterList = (properties["ABI_FILTERS"] as? String)?.split(';')
         splits {
@@ -206,6 +300,13 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.all {
+            it.useJUnitPlatform()
+            it.systemProperty("junit.platform.discovery.issue.severity.critical", "WARNING")
+        }
+    }
+
     buildFeatures {
         buildConfig = true
         compose = true
@@ -242,6 +343,10 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // These files are executables, not shared libraries. Never run strip on them.
+            keepDebugSymbols.add("**/libwarpmasque.so")
+            keepDebugSymbols.add("**/libstormdns.so")
+            keepDebugSymbols.add("**/libdnstt.so")
             keepDebugSymbols.add("**/libmasterdns.so")
         }
     }
@@ -275,6 +380,7 @@ dependencies {
     implementation(libs.mmkv.static)
     implementation(libs.gson)
     implementation(libs.okhttp)
+    implementation("com.github.mwiede:jsch:0.2.24")
 
     // Reactive and Utility Libraries
     implementation(libs.kotlinx.coroutines.android)
@@ -299,10 +405,77 @@ dependencies {
     implementation(libs.reorderable)
 
     // Testing Libraries
-    testImplementation(libs.junit)
+    testImplementation(platform(libs.junit.bom))
+    testImplementation(libs.junit.jupiter)
+    testRuntimeOnly(libs.junit.platform.launcher)
+    // Retain PingNG's existing JUnit 4 regression tests during the upstream migration.
+    testImplementation(libs.junit4)
+    testRuntimeOnly(libs.junit.vintage)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
-    testImplementation(libs.org.mockito.mockito.inline)
+    testImplementation(libs.mockito.core)
     testImplementation(libs.mockito.kotlin)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
+}
+
+// Release builds must contain actual Android executables, never renamed Linux cores.
+val validateDnsTunnelCores by tasks.registering {
+    doLast {
+        val abis = (project.findProperty("ABI_FILTERS") as? String)?.split(';')
+            ?: listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+        for (abi in abis) for (core in listOf("stormdns", "dnstt")) {
+            val binary = layout.projectDirectory.file("libs/$abi/lib$core.so").asFile
+            check(binary.isFile && binary.length() > 1024) {
+                "Missing Android $abi $core core: $binary. See CHANGES_DNS_FA.md."
+            }
+            val header = binary.inputStream().use { it.readNBytes(20) }
+            check(header.size == 20 && header[0] == 0x7f.toByte() &&
+                header[1] == 'E'.code.toByte() && header[2] == 'L'.code.toByte() &&
+                header[3] == 'F'.code.toByte() && header[16] == 3.toByte()) {
+                "$binary must be an Android PIE ELF executable"
+            }
+            val expectedMachine = mapOf("arm64-v8a" to 183, "armeabi-v7a" to 40, "x86_64" to 62, "x86" to 3)[abi]
+            val machine = (header[18].toInt() and 255) or ((header[19].toInt() and 255) shl 8)
+            check(machine == expectedMachine) { "$binary architecture does not match $abi" }
+            check(binary.readBytes().toString(Charsets.ISO_8859_1).contains("/system/bin/linker")) {
+                "$binary is not an Android executable linked with the Android system linker"
+            }
+        }
+    }
+}
+tasks.configureEach {
+    if (name.startsWith("pre") && name.endsWith("ReleaseBuild")) dependsOn(validateDnsTunnelCores)
+}
+
+val validateArmV7CoreSet by tasks.registering {
+    doLast {
+        val armV7Dir = layout.projectDirectory.dir("libs/armeabi-v7a").asFile
+        val cores = listOf("dnstt", "masterdns", "pingng_psiphon", "stormdns", "warpmasque")
+        for (core in cores) {
+            val binary = File(armV7Dir, "lib$core.so")
+            check(binary.isFile && binary.length() > 1024) {
+                "Missing Android armeabi-v7a $core core: $binary"
+            }
+            val header = binary.inputStream().use { it.readNBytes(20) }
+            check(header.size == 20 && header[0] == 0x7f.toByte() &&
+                header[1] == 'E'.code.toByte() && header[2] == 'L'.code.toByte() &&
+                header[3] == 'F'.code.toByte()) {
+                "$binary must be an ELF core for Android"
+            }
+            val machine = (header[18].toInt() and 255) or ((header[19].toInt() and 255) shl 8)
+            check(machine == 40) { "$binary architecture does not match armeabi-v7a" }
+            val fileType = (header[16].toInt() and 255) or ((header[17].toInt() and 255) shl 8)
+            check(fileType == 3 || core == "masterdns") {
+                "$binary has an unexpected ELF type for the armeabi-v7a core set"
+            }
+            if (core in listOf("dnstt", "stormdns", "warpmasque")) {
+                check(binary.readBytes().toString(Charsets.ISO_8859_1).contains("/system/bin/linker")) {
+                    "$binary is not an Android executable linked with the Android system linker"
+                }
+            }
+        }
+    }
+}
+tasks.configureEach {
+    if (name.startsWith("pre") && name.endsWith("ReleaseBuild")) dependsOn(validateArmV7CoreSet)
 }

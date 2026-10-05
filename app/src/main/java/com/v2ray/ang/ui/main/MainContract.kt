@@ -10,7 +10,7 @@ sealed interface MainStatus {
     data object Connected : MainStatus
     data object Testing : MainStatus
     data object WarpSearching : MainStatus
-    data class MasterDnsProgress(val completed: Int, val total: Int) : MainStatus
+    data class MasterDnsProgress(val completed: Int, val total: Int, val valid: Int = 0) : MainStatus
     data class TestProgress(val progress: String) : MainStatus
     data class ConnectionTest(val result: ConnectionTestResult) : MainStatus
 }
@@ -43,6 +43,7 @@ sealed interface MainAction {
     data object TestCurrentServer : MainAction
     data object TestAllServers : MainAction
     data object TestRealAllServers : MainAction
+    data class TestRealSubscription(val groupId: String) : MainAction
     data object CancelTesting : MainAction
     data object RemoveAllServers : MainAction
     data object RemoveDuplicateServers : MainAction
@@ -55,8 +56,10 @@ sealed interface MainAction {
     data object ImportQRcode : MainAction
     data object ImportClipboard : MainAction
     data object ImportConfigLocal : MainAction
+    data object ImportAmneziaWG : MainAction
     data object AddServerLess : MainAction
     data object AddMasterDns : MainAction
+    data object AddDnstt : MainAction
     data object AddWarpMasque : MainAction
     data object AddWarpWireGuard : MainAction
     data object AddWarpInWarp : MainAction
@@ -80,7 +83,10 @@ sealed interface MainAction {
     data class ShareFullContent(val guid: String) : MainAction
     data object DismissQRCodeDialog : MainAction
 
-    data class ImportBatchConfig(val configText: String) : MainAction
+    data class ImportBatchConfig(
+        val configText: String,
+        val forceAmneziaWg: Boolean = false,
+    ) : MainAction
 
     data class LocateHandled(val target: LocateTarget) : MainAction
 }

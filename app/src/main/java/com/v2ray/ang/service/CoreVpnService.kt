@@ -9,7 +9,9 @@ import android.net.Network
 import android.net.ProxyInfo
 import android.net.VpnService
 import android.os.Build
+import androidx.core.content.ContextCompat
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants
 import android.os.StrictMode
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.AppConfig.LOOPBACK
@@ -23,6 +25,8 @@ import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.core.MasterDnsBridge
+import com.v2ray.ang.enums.EConfigType
+import com.v2ray.ang.fmt.AmneziaWgFmt
 import com.v2ray.ang.handler.AppLocaleManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.NotificationManager
@@ -42,7 +46,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
 @SuppressLint("VpnServicePolicy")
-class CoreVpnService : VpnService(), ServiceControl {
+open class CoreVpnService : VpnService(), ServiceControl {
     private lateinit var mInterface: ParcelFileDescriptor
     private var isRunning = false
     private var tun2SocksService: Tun2SocksControl? = null
@@ -97,6 +101,21 @@ class CoreVpnService : VpnService(), ServiceControl {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             NotificationManager.ensureForeground()
+            // Always-on VPN can restart the previously chosen component after
+            // the selected profile changes. Route it before any native startup.
+            val requiresAmneziaProcess = MmkvManager.getSelectServer()
+                ?.let(MmkvManager::decodeServerConfig)?.configType == EConfigType.AMNEZIAWG
+            if (requiresAmneziaProcess != (this is AmneziaWgVpnService)) {
+                val target = if (requiresAmneziaProcess) {
+                    AmneziaWgVpnService::class.java
+                } else {
+                    CoreVpnService::class.java
+                }
+                LogUtil.i(AppConfig.TAG, "FIX14: redirecting VPN startup to ${target.simpleName}")
+                ContextCompat.startForegroundService(this, Intent(this, target))
+                stopSelf()
+                return START_NOT_STICKY
+            }
             // Always-on VPN restarts from OS deliver intent.action == SERVICE_INTERFACE or null intent.
             // Reset any stuck start lock left by a killed process to allow setupVpnService() to run.
             val isSystemVpnStart = intent == null || intent.action == SERVICE_INTERFACE
@@ -108,10 +127,15 @@ class CoreVpnService : VpnService(), ServiceControl {
                 return START_NOT_STICKY
             }
             startupCancelled.set(false)
+            val selectedConfigType = MmkvManager.getSelectServer()
+                ?.let(MmkvManager::decodeServerConfig)
+                ?.configType
+            val hevEnabledForThisProfile = SettingsManager.isUsingHevTun() &&
+                selectedConfigType != EConfigType.AMNEZIAWG
             LogUtil.i(
                 AppConfig.TAG,
                 "StartCore-VPN: Service command received, systemVpnStart=$isSystemVpnStart, " +
-                    "hev=${SettingsManager.isUsingHevTun()}"
+                    "hev=$hevEnabledForThisProfile"
             )
             // MASQUE endpoint scans and registration can block for tens of
             // seconds. Keep Android's service main thread free so Stop can
@@ -191,7 +215,7 @@ class CoreVpnService : VpnService(), ServiceControl {
 
     /** Establishes TUN only after the Psiphon bootstrap has reported CONNECTED. */
     fun startVpnAfterPsiphon() {
-        if (::mInterface.isInitialized || !CoreServiceManager.isRunning()) return
+        if ((::mInterface.isInitialized && mInterface.fileDescriptor.valid()) || !CoreServiceManager.isRunning()) return
         LogUtil.i(AppConfig.TAG, "StartCore-VPN: Psiphon ready; establishing VPN interface")
         PingNgDiagnostics.record("Psiphon ready; establishing Android VPN interface")
         if (!setupVpnService()) return
@@ -229,6 +253,15 @@ class CoreVpnService : VpnService(), ServiceControl {
      * Prepares the VPN and configures it if preparation is successful.
      */
     private fun setupVpnService(): Boolean {
+        // Stop a previous HEV instance before creating/reusing the Android TUN for AmneziaWG.
+        // Otherwise the native HEV singleton can still own a recycled descriptor number when
+        // awgTurnOn receives the new interface.
+        val selectedProfile = MmkvManager.getSelectServer()
+            ?.let(MmkvManager::decodeServerConfig)
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG) {
+            tun2SocksService?.stopTun2Socks()
+            tun2SocksService = null
+        }
         val prepare = prepare(this)
         if (prepare != null) {
             LogUtil.e(AppConfig.TAG, "StartCore-VPN: Permission not granted")
@@ -241,13 +274,22 @@ class CoreVpnService : VpnService(), ServiceControl {
             return false
         }
 
-        runTun2socks()
+        // AmneziaWG's Go engine consumes the Android TUN directly. Starting HEV
+        // here would make two native engines read/own the same descriptor and
+        // can crash libwg-go before awgTurnOn returns. Keep tun2socks for the
+        // cores that actually need the userspace proxy path.
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG && !selectedProfile.psiphonEnabled) {
+            LogUtil.i(AppConfig.TAG, "StartCore-VPN: AmneziaWG selected; HEV startup skipped")
+        } else {
+            runTun2socks()
+        }
         return true
     }
 
     private fun shouldBootstrapPsiphon(): Boolean {
         val guid = MmkvManager.getSelectServer() ?: return false
-        return MmkvManager.decodeServerConfig(guid)?.psiphonEnabled == true
+        val profile = MmkvManager.decodeServerConfig(guid) ?: return false
+        return profile.psiphonEnabled
     }
 
     private fun prepareWarpMasqueRegistration() {
@@ -288,6 +330,17 @@ class CoreVpnService : VpnService(), ServiceControl {
         // Configure platform-specific features
         configurePlatformFeatures(builder)
 
+        // The official AmneziaWG backend clears any stale underlying network before establishing
+        // its TUN. This prevents Android from binding the native engine to a previous VPN/network
+        // instance after a reconnect or always-on VPN handoff.
+        val selectedProfile = MmkvManager.getSelectServer()
+            ?.let(MmkvManager::decodeServerConfig)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            selectedProfile?.configType == EConfigType.AMNEZIAWG
+        ) {
+            setUnderlyingNetworks(null)
+        }
+
         // Create a new interface using the builder and save the parameters
         try {
             mInterface = builder.establish()!!
@@ -313,6 +366,43 @@ class CoreVpnService : VpnService(), ServiceControl {
      * @param builder The VPN Builder to configure
      */
     private fun configureNetworkSettings(builder: Builder) {
+        val selectedProfile = MmkvManager.getSelectServer()
+            ?.let(MmkvManager::decodeServerConfig)
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG && !selectedProfile.psiphonEnabled) {
+            val text = selectedProfile.amneziawgConfig
+                ?: error("فایل کانفیگ AmneziaWG در پروفایل پیدا نشد")
+            val awg = AmneziaWgFmt.readConfig(text)
+            val addresses = awg.addresses
+            require(addresses.isNotEmpty()) { "Address در کانفیگ AmneziaWG پیدا نشد" }
+            builder.setMtu(awg.mtu ?: 1280)
+            addresses.forEach { cidr ->
+                val (address, prefix) = splitCidr(cidr, "Address")
+                builder.addAddress(address, prefix)
+            }
+            val routes = awg.routes.distinct()
+            require(routes.isNotEmpty()) { "AllowedIPs در کانفیگ AmneziaWG پیدا نشد" }
+            routes.forEach { cidr ->
+                val (address, prefix) = splitCidr(cidr, "AllowedIPs")
+                builder.addRoute(address, prefix)
+            }
+            val hasSinglePeerDefaultRoute = awg.peers.size == 1 && routes.any {
+                it.substringAfterLast('/', missingDelimiterValue = "-1") == "0"
+            }
+            if (!hasSinglePeerDefaultRoute) {
+                builder.allowFamily(OsConstants.AF_INET)
+                builder.allowFamily(OsConstants.AF_INET6)
+            }
+            val dns = awg.dnsServers.ifEmpty { SettingsManager.getVpnDnsServers() }
+            dns.forEach { server ->
+                if (Utils.isPureIpAddress(server)) builder.addDnsServer(server)
+                else builder.addSearchDomain(server)
+            }
+            builder.setSession(selectedProfile.remarks)
+            builder.setBlocking(true)
+            PingNgDiagnostics.record("AmneziaWG VPN routes configured from profile AllowedIPs")
+            return
+        }
+
         val vpnConfig = SettingsManager.getCurrentVpnInterfaceAddressConfig()
         val bypassLan = SettingsManager.routingRulesetsBypassLan()
 
@@ -345,13 +435,30 @@ class CoreVpnService : VpnService(), ServiceControl {
         //if (MmkvManager.decodeSettingsBool(AppConfig.PREF_LOCAL_DNS_ENABLED) == true) {
         //  builder.addDnsServer(PRIVATE_VLAN4_ROUTER)
         //} else {
-        SettingsManager.getVpnDnsServers().forEach {
+        val vpnDnsServers = if (selectedProfile?.configType == EConfigType.AMNEZIAWG && selectedProfile.psiphonEnabled) {
+            AmneziaWgFmt.readConfig(selectedProfile.amneziawgConfig.orEmpty()).dnsServers
+                .filter(Utils::isPureIpAddress).ifEmpty { SettingsManager.getVpnDnsServers() }
+        } else SettingsManager.getVpnDnsServers()
+        vpnDnsServers.forEach {
             if (Utils.isPureIpAddress(it)) {
                 builder.addDnsServer(it)
             }
         }
 
         //builder.setSession(V2RayServiceManager.getRunningServerName())
+    }
+
+    private fun splitCidr(value: String, field: String): Pair<String, Int> {
+        val parts = value.trim().split('/', limit = 2)
+        require(parts.size == 2 && Utils.isPureIpAddress(parts[0])) {
+            "$field باید یک آدرس IP با prefix معتبر باشد: $value"
+        }
+        val maxPrefix = if (parts[0].contains(':')) 128 else 32
+        val prefix = parts[1].toIntOrNull()
+        require(prefix != null && prefix in 0..maxPrefix) {
+            "$field دارای prefix نامعتبر است: $value"
+        }
+        return parts[0] to prefix
     }
 
     /**
@@ -365,11 +472,12 @@ class CoreVpnService : VpnService(), ServiceControl {
             builder.setMetered(false)
             val selectedProfile = MmkvManager.getSelectServer()
                 ?.let(MmkvManager::decodeServerConfig)
+            val isAmneziaWgTunnel = selectedProfile?.configType == EConfigType.AMNEZIAWG
             val isWarpFullDevice = selectedProfile != null && (
                 selectedProfile.configType == com.v2ray.ang.enums.EConfigType.WARP ||
                     WarpMasqueConfig.isDescription(selectedProfile.description) ||
                     WarpPlusConfig.isDescription(selectedProfile.description)
-                    || MasterDnsBridge.isProfile(selectedProfile)
+                    || MasterDnsBridge.isProfile(selectedProfile) || isAmneziaWgTunnel
                 )
             if (MmkvManager.decodeSettingsBool(AppConfig.PREF_APPEND_HTTP_PROXY) && !isWarpFullDevice) {
                 builder.setHttpProxy(ProxyInfo.buildDirectProxy(LOOPBACK, SettingsManager.getHttpPort()))
@@ -377,7 +485,10 @@ class CoreVpnService : VpnService(), ServiceControl {
                 // A stale Android system HTTP proxy can make browsers fail while
                 // UDP apps continue to work. WARP already routes the complete
                 // device through Xray, so leave browser proxy discovery alone.
-                PingNgDiagnostics.record("WARP full-device route: Android HTTP proxy bypassed")
+                PingNgDiagnostics.record(
+                    if (isAmneziaWgTunnel) "AmneziaWG tunnel: Android HTTP proxy bypassed"
+                    else "WARP full-device route: Android HTTP proxy bypassed"
+                )
             }
         }
     }
@@ -401,6 +512,25 @@ class CoreVpnService : VpnService(), ServiceControl {
         // avoid a loop, but route the rest of the device through WARP.
         val selectedProfile = MmkvManager.getSelectServer()
             ?.let(MmkvManager::decodeServerConfig)
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG) {
+            val perAppProxy = MmkvManager.decodeSettingsBool(AppConfig.PREF_PER_APP_PROXY) == true
+            val apps = MmkvManager.decodeSettingsStringSet(AppConfig.PREF_PER_APP_PROXY_SET)
+            if (!perAppProxy || apps.isNullOrEmpty()) {
+                // The Go engine protects its UDP sockets, so PingNG itself can safely
+                // use the tunnel for DNS, exit checks, and user-initiated requests.
+                return
+            }
+            val bypassApps = MmkvManager.decodeSettingsBool(AppConfig.PREF_BYPASS_APPS)
+            apps.forEach { packageName ->
+                try {
+                    if (bypassApps) builder.addDisallowedApplication(packageName)
+                    else builder.addAllowedApplication(packageName)
+                } catch (e: PackageManager.NameNotFoundException) {
+                    LogUtil.e(AppConfig.TAG, "StartCore-VPN: Failed to configure app $packageName", e)
+                }
+            }
+            return
+        }
         if (selectedProfile != null && (
                 selectedProfile.configType == com.v2ray.ang.enums.EConfigType.WARP ||
                     WarpMasqueConfig.isDescription(selectedProfile.description) ||
@@ -450,7 +580,19 @@ class CoreVpnService : VpnService(), ServiceControl {
      * Starts the tun2socks process with the appropriate parameters.
      */
     private fun runTun2socks() {
-        if (SettingsManager.isUsingHevTun()) {
+        val selectedProfile = MmkvManager.getSelectServer()
+            ?.let(MmkvManager::decodeServerConfig)
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG && selectedProfile.psiphonEnabled) {
+            val port = CoreServiceManager.amneziaFinalSocksPort()
+            check(port in 1..65535) { "AmneziaWG final SOCKS gateway unavailable" }
+            check(TProxyService.isNativeAvailable()) { "HEV native tunnel unavailable" }
+            tun2SocksService = TProxyService(applicationContext, mInterface, { isRunning },
+                { runTun2socks() }, socksPortOverride = port)
+        } else if (selectedProfile?.configType == EConfigType.AMNEZIAWG) {
+            tun2SocksService?.stopTun2Socks()
+            tun2SocksService = null
+            PingNgDiagnostics.record("AmneziaWG owns the Android TUN; tun2socks is skipped")
+        } else if (SettingsManager.isUsingHevTun()) {
             tun2SocksService = TProxyService(
                 context = applicationContext,
                 vpnInterface = mInterface,

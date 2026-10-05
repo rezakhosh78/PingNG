@@ -72,9 +72,10 @@ class MainRepository(
                     val fields = safeIntent.getStringExtra("content").orEmpty().split('|')
                     val completed = fields.getOrNull(1)?.toIntOrNull()
                     val total = fields.getOrNull(2)?.toIntOrNull()
-                    if (fields.size == 3 && completed != null && total != null &&
-                        completed in 0..total && total > 0
-                    ) MainServiceEvent.MasterDnsProgress(fields[0], completed, total) else null
+                    val valid = fields.getOrNull(3)?.toIntOrNull() ?: if (fields.size == 3) 0 else null
+                    if (fields.size in 3..4 && completed != null && total != null && valid != null &&
+                        completed in 0..total && total > 0 && valid in 0..completed
+                    ) MainServiceEvent.MasterDnsProgress(fields[0], completed, total, valid) else null
                 }
 
                 AppConfig.MSG_MEASURE_CONFIG_FINISH -> MainServiceEvent.MeasureConfigFinish(
@@ -207,8 +208,11 @@ class MainRepository(
     override suspend fun importBatchConfig(
         server: String?,
         subscriptionId: String,
-        updateUI: Boolean
-    ): Pair<Int, Int> = AngConfigManager.importBatchConfig(server, subscriptionId, updateUI)
+        updateUI: Boolean,
+        forceAmneziaWg: Boolean,
+    ): Pair<Int, Int> = AngConfigManager.importBatchConfig(
+        server, subscriptionId, updateUI, forceAmneziaWg,
+    )
 
     override fun updateConfigViaSubAll(): SubscriptionUpdateResult =
         AngConfigManager.updateConfigViaSubAll()

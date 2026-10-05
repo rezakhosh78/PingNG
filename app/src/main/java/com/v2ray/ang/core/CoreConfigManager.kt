@@ -1245,7 +1245,12 @@ object CoreConfigManager {
         )
         val isMasterDns = configContext.resolvedOutbounds.firstOrNull()
             ?.profile?.let(MasterDnsBridge::isProfile) == true
-        val remoteDns = SettingsManager.getRemoteDnsServers()
+        val isDnstt = configContext.resolvedOutbounds.firstOrNull()?.profile?.description == MasterDnsBridge.DNSTT
+        // DNSTT transports TCP only; bare resolver IPs must use DNS over TCP.
+        val remoteDns = SettingsManager.getRemoteDnsServers().map { address ->
+            if (isDnstt && com.v2ray.ang.util.Utils.isPureIpAddress(address))
+                "tcp://${com.v2ray.ang.util.Utils.getIpv6Address(address)}" else address
+        }
         val domesticDns = SettingsManager.getDomesticDnsServers()
 
         if (isWarpPlus) {
@@ -1274,8 +1279,8 @@ object CoreConfigManager {
         }
 
         val hosts = buildDnsHostsFromRoutingRules(configContext)
-        val cnDomesticDnsTags = if (isWarpPlus) mutableListOf<String>() else buildDnsCnModeFromRoutingRules(configContext, servers, domesticDns)
-        val domesticDnsTags = if (isWarpPlus) mutableListOf<String>() else buildDnsFromRoutingRules(
+        val cnDomesticDnsTags = if (isWarpPlus || isMasterDns) mutableListOf<String>() else buildDnsCnModeFromRoutingRules(configContext, servers, domesticDns)
+        val domesticDnsTags = if (isWarpPlus || isMasterDns) mutableListOf<String>() else buildDnsFromRoutingRules(
             configContext = configContext,
             servers = servers,
             remoteDns = remoteDns,

@@ -10,6 +10,8 @@ enum class EConfigType(val value: Int, val protocolScheme: String) {
     VLESS(5, AppConfig.VLESS),
     TROJAN(6, AppConfig.TROJAN),
     WIREGUARD(7, AppConfig.WIREGUARD),
+    /** Standalone AmneziaWG userspace tunnel; deliberately separate from Xray WireGuard. */
+    AMNEZIAWG(12, AppConfig.AMNEZIAWG),
 
     //    TUIC(8, AppConfig.TUIC),
     HYSTERIA2(9, AppConfig.HYSTERIA2),

@@ -30,7 +30,7 @@
 static char tun_name[IFNAMSIZ];
 
 int
-hev_tunnel_open (const char *name, int multi_queue)
+hev_tunnel_open (const char *name, int multi_queue, const char *guid)
 {
     char buf[256];
     int one = 1;

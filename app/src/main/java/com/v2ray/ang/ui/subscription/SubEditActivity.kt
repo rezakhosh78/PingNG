@@ -150,8 +150,7 @@ fun SubEditScreen(
 
     fun buildSubItem(): SubscriptionItem {
         val subItem = MmkvManager.decodeSubscription(editSubId) ?: SubscriptionItem()
-        subItem.remarks = remarks
-        subItem.url = url
+        subItem.applyUserEdit(remarks, url.trim(), initial.remarks)
         subItem.userAgent = userAgent
         subItem.requestHeaders = requestHeaders
         subItem.filter = filter

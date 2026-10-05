@@ -12,12 +12,24 @@ data class ProfileItem(
 
     var remarks: String = "",
     var description: String? = null,
-    /** MasterDnsVPN settings for the local SOCKS5 adapter. */
+    /** DNS tunnel settings; legacy field names retained for stored-profile compatibility. */
+    /** DNSTT resolver transport: udp, doh, or dot. */
+    var dnsTunnelTransport: String? = null,
+    /** DNSTT remote endpoint: SOCKS5 or SSH with local dynamic forwarding. */
+    var dnsTunnelMode: String? = null,
+    var dnsTunnelSshUsername: String? = null,
+    var dnsTunnelSshPassword: String? = null,
+    var dnsTunnelSshHost: String? = null,
+    var dnsTunnelSshPort: Int? = null,
+    /** DNSTT SSH keepalive interval in seconds; defaults to 6 seconds. */
+    var dnsTunnelSshKeepaliveSeconds: Int? = null,
     var masterDnsDomain: String? = null,
     var masterDnsEncryptionKey: String? = null,
     var masterDnsMethod: Int? = null,
     var masterDnsAdvanced: String? = null,
     var masterDnsResolvers: String? = null,
+    /** First successful MasterDNS scan is cached; later starts reuse its valid resolvers. */
+    var masterDnsReuseValidResolvers: Boolean = false,
     var server: String? = null,
     var serverPort: String? = null,
 
@@ -78,6 +90,8 @@ data class ProfileItem(
     var mldsa65Verify: String? = null,
 
     var secretKey: String? = null,
+    /** Original AmneziaWG .conf, retained losslessly for AWG 1.x/2.x/3.x fields. */
+    var amneziawgConfig: String? = null,
     var preSharedKey: String? = null,
     var localAddress: String? = null,
     var reserved: String? = null,

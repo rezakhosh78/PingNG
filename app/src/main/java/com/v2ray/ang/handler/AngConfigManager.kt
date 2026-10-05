@@ -27,6 +27,7 @@ import com.v2ray.ang.fmt.V2rayNFmt
 import com.v2ray.ang.fmt.VlessFmt
 import com.v2ray.ang.fmt.VmessFmt
 import com.v2ray.ang.fmt.WireguardFmt
+import com.v2ray.ang.fmt.AmneziaWgFmt
 import com.v2ray.ang.util.HttpUtil
 import com.v2ray.ang.util.JsonUtil
 import com.v2ray.ang.util.LogUtil
@@ -141,7 +142,14 @@ object AngConfigManager {
     fun shareFullContent2Clipboard(context: Context, guid: String?): Int {
         try {
             if (guid == null) return -1
-            if (MmkvManager.decodeServerConfig(guid)?.let(MasterDnsBridge::isProfile) == true) return -1
+            val profile = MmkvManager.decodeServerConfig(guid) ?: return -1
+            if (MasterDnsBridge.isProfile(profile)) return -1
+            if (profile.configType == EConfigType.AMNEZIAWG) {
+                val rawConfig = profile.amneziawgConfig ?: MmkvManager.decodeServerRaw(guid)
+                    ?: return -1
+                Utils.setClipboard(context, rawConfig)
+                return 0
+            }
             val result = CoreConfigManager.getV2rayConfig(context, guid)
             if (result.status) {
                 Utils.setClipboard(context, result.content)
@@ -173,6 +181,9 @@ object AngConfigManager {
             }
             if (WarpWireGuardConfig.isProfile(config)) {
                 return WarpShareCodec.encodeWireGuard(config)
+            }
+            if (config.configType == EConfigType.AMNEZIAWG) {
+                return config.amneziawgConfig.orEmpty()
             }
             if (config.configType == EConfigType.PROXYCHAIN &&
                 WarpPlusConfig.isDescription(config.description)
@@ -223,17 +234,39 @@ object AngConfigManager {
      * @param append Whether to append the configurations.
      * @return A pair containing the number of configurations and subscriptions imported.
      */
-    fun importBatchConfig(server: String?, subid: String, append: Boolean): Pair<Int, Int> {
+    fun importBatchConfig(
+        server: String?,
+        subid: String,
+        append: Boolean,
+        forceAmneziaWg: Boolean = false,
+    ): Pair<Int, Int> {
         return try {
             val warpShareCount = importWarpShare(server, subid, append)
             if (warpShareCount > 0) return warpShareCount to 0
 
-            var count = parseBatchConfig(Utils.decode(server), subid, append)
-            if (count <= 0) {
-                count = parseBatchConfig(server, subid, append)
-            }
-            if (count <= 0) {
-                count = parseCustomConfigServer(server, subid, append)
+            val decoded = Utils.decode(server)
+            var count = if (forceAmneziaWg) {
+                // The dedicated + action always creates the separate AWG type,
+                // even when its .conf contains only standard WireGuard keys.
+                parseCustomConfigServer(decoded, subid, append, forceAmneziaWg = true)
+                    .takeIf { it > 0 }
+                    ?: if (decoded != server) {
+                        parseCustomConfigServer(server, subid, append, forceAmneziaWg = true)
+                    } else {
+                        0
+                    }
+            } else {
+                var parsed = parseBatchConfig(decoded, subid, append)
+                if (parsed <= 0 && decoded != server) {
+                    parsed = parseCustomConfigServer(decoded, subid, append)
+                }
+                if (parsed <= 0) {
+                    parsed = parseBatchConfig(server, subid, append)
+                }
+                if (parsed <= 0) {
+                    parsed = parseCustomConfigServer(server, subid, append)
+                }
+                parsed
             }
 
             var countSub = parseBatchSubscription(server)
@@ -443,11 +476,16 @@ object AngConfigManager {
      * @param append Whether to append the configurations.
      * @return The number of configurations parsed.
      */
-    private fun parseCustomConfigServer(server: String?, subid: String, append: Boolean): Int {
+    private fun parseCustomConfigServer(
+        server: String?,
+        subid: String,
+        append: Boolean,
+        forceAmneziaWg: Boolean = false,
+    ): Int {
         if (server == null) {
             return 0
         }
-        if (server.contains("inbounds")
+        if (!forceAmneziaWg && server.contains("inbounds")
             && server.contains("outbounds")
             && server.contains("routing")
         ) {
@@ -491,9 +529,21 @@ object AngConfigManager {
                 LogUtil.e(AppConfig.TAG, "Failed to parse custom config server as single config", e)
             }
             return 0
-        } else if (server.startsWith("[Interface]") && server.contains("[Peer]")) {
+        } else if (server.lineSequence()
+                .map { it.trim().removePrefix("\uFEFF").trimStart() }
+                .firstOrNull { it.isNotEmpty() && !it.startsWith("#") && !it.startsWith(";") }
+                ?.substringBefore('#')?.trim()?.equals("[Interface]", ignoreCase = true) == true &&
+            server.lineSequence().any { it.trim().equals("[Peer]", ignoreCase = true) }
+        ) {
             try {
-                val config = WireguardFmt.parseWireguardConfFile(server)
+                // AWG keeps the WireGuard INI shape. Detect AWG-only keys first so
+                // these files never enter Xray's regular WireGuard outbound path.
+                val config = if (forceAmneziaWg || AmneziaWgFmt.isAmneziaWgConfig(server)) {
+                    AmneziaWgFmt.parse(server, forceAmneziaWg = true)
+                        ?: error("فایل AmneziaWG ناقص یا نامعتبر است")
+                } else {
+                    WireguardFmt.parseWireguardConfFile(server)
+                }
                 config.subscriptionId = subid
                 config.description = generateDescription(config)
                 commitProfiles(
@@ -549,7 +599,10 @@ object AngConfigManager {
 
             config.subscriptionId = subid
             config.description = if (MasterDnsBridge.isProfile(config)) {
-                MasterDnsBridge.LABEL
+                when (config.description) {
+                    MasterDnsBridge.DNSTT -> MasterDnsBridge.DNSTT
+                    else -> MasterDnsBridge.LABEL
+                }
             } else generateDescription(config)
 
             if (str.startsWith(AppConfig.V2RAYNFMTS, ignoreCase = true)
@@ -661,9 +714,15 @@ object AngConfigManager {
             response?.let { httpResponse ->
                 // Use the provider title when it is advertised. If the
                 // response has no title, keep the existing subscription remark.
-                SubscriptionNoticeParser.extractSubscriptionTitle(httpResponse)
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { remoteTitle -> it.subscription.remarks = remoteTitle }
+                // Editing an alias while the request is in flight must also survive.
+                val current = MmkvManager.decodeSubscription(it.guid)
+                    ?: return SubscriptionUpdateResult(failureCount = 1)
+                if (current.url != it.subscription.url) return SubscriptionUpdateResult(failureCount = 1)
+                it.subscription.customRemarks = current.customRemarks
+                it.subscription.providerRemarks = current.providerRemarks
+                it.subscription.remarks = current.remarks
+                it.subscription.applyProviderTitle(
+                    SubscriptionNoticeParser.extractSubscriptionTitle(httpResponse))
                 it.subscription.supportUrl = SubscriptionNoticeParser.extractSupportUrl(httpResponse)
                 SubscriptionNoticeParser.extractTrafficUsage(httpResponse, it.subscription.url)?.let { usage ->
                     it.subscription.trafficTotalBytes = usage.totalBytes
@@ -686,6 +745,12 @@ object AngConfigManager {
             if (count > 0) {
                 // A successful update also refreshes the timestamp. The notice
                 // was persisted above, including the case where it is cleared.
+                val latest = MmkvManager.decodeSubscription(it.guid)
+                    ?: return SubscriptionUpdateResult(failureCount = 1)
+                if (latest.url != it.subscription.url) return SubscriptionUpdateResult(failureCount = 1)
+                it.subscription.customRemarks = latest.customRemarks
+                it.subscription.remarks = latest.remarks
+                it.subscription.applyProviderTitle(it.subscription.providerRemarks)
                 it.subscription.lastUpdated = System.currentTimeMillis()
                 MmkvManager.encodeSubscription(it.guid, it.subscription)
                 LogUtil.i(AppConfig.TAG, "Subscription updated: ${it.subscription.remarks}, $count configs")
@@ -747,7 +812,11 @@ object AngConfigManager {
      * @return The number of configurations parsed.
      */
     private fun parseConfigViaSub(server: String?, subid: String, append: Boolean): Int {
-        var count = parseBatchConfig(Utils.decode(server), subid, append)
+        val decoded = Utils.decode(server)
+        var count = parseBatchConfig(decoded, subid, append)
+        if (count <= 0 && decoded != server) {
+            count = parseCustomConfigServer(decoded, subid, append)
+        }
         if (count <= 0) {
             count = parseBatchConfig(server, subid, append)
         }

@@ -144,7 +144,12 @@ class MainActivity : HelperBaseComponentActivity() {
                     MainAction.ImportQRcode -> importQRcode()
                     MainAction.ImportClipboard -> importClipboard()
                     MainAction.ImportConfigLocal -> importConfigLocal()
+                    MainAction.ImportAmneziaWG -> addAmneziaWg()
                     MainAction.AddServerLess -> addServerLessSubscription()
+                    MainAction.AddDnstt -> profileEditorLauncher.launch(Intent(this, MasterDnsActivity::class.java).apply {
+                        putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+                        putExtra("dnsEngine", MasterDnsBridge.DNSTT)
+                    })
                     MainAction.AddMasterDns -> profileEditorLauncher.launch(Intent(this, MasterDnsActivity::class.java).apply {
                         putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
                     })
@@ -233,12 +238,15 @@ class MainActivity : HelperBaseComponentActivity() {
     }
 
     private fun requestServiceStart() {
+        val selectedProfile = mainViewModel.uiState.value.selectedGuid
+            ?.let(MmkvManager::decodeServerConfig)
+        val requiresAndroidVpn = selectedProfile?.configType == EConfigType.AMNEZIAWG
         LogUtil.i(
             AppConfig.TAG,
             "Start button pressed; selected=${!mainViewModel.uiState.value.selectedGuid.isNullOrEmpty()}, " +
-                "vpnMode=${SettingsManager.isVpnMode()}"
+                "vpnMode=${SettingsManager.isVpnMode()}, requiresAndroidVpn=$requiresAndroidVpn"
         )
-        if (!SettingsManager.isVpnMode()) {
+        if (!SettingsManager.isVpnMode() && !requiresAndroidVpn) {
             startV2Ray()
             return
         }
@@ -416,6 +424,14 @@ class MainActivity : HelperBaseComponentActivity() {
         profileEditorLauncher.launch(intent)
     }
 
+    private fun addAmneziaWg() {
+        val intent = Intent(this, ServerWireguardActivity::class.java).apply {
+            putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+            putExtra("amneziaWg", true)
+        }
+        profileEditorLauncher.launch(intent)
+    }
+
     private fun importQRcode() {
         launchQRCodeScanner { scanResult ->
             if (scanResult != null) {
@@ -433,7 +449,7 @@ class MainActivity : HelperBaseComponentActivity() {
         }
     }
 
-    private fun importConfigLocal() {
+    private fun importConfigLocal(forceAmneziaWg: Boolean = false) {
         launchFileChooser { uri ->
             if (uri == null) return@launchFileChooser
             lifecycleScope.launch(Dispatchers.IO) {
@@ -443,7 +459,9 @@ class MainActivity : HelperBaseComponentActivity() {
                     }
                     withContext(Dispatchers.Main) {
                         if (content != null) {
-                            mainViewModel.onAction(MainAction.ImportBatchConfig(content))
+                            mainViewModel.onAction(
+                                MainAction.ImportBatchConfig(content, forceAmneziaWg)
+                            )
                         }
                     }
                 } catch (e: Exception) {
@@ -501,6 +519,7 @@ class MainActivity : HelperBaseComponentActivity() {
             EConfigType.HTTP -> ServerHttpActivity::class.java
             EConfigType.TROJAN -> ServerTrojanActivity::class.java
             EConfigType.WIREGUARD -> ServerWireguardActivity::class.java
+            EConfigType.AMNEZIAWG -> ServerWireguardActivity::class.java
             EConfigType.HYSTERIA2 -> ServerHysteria2Activity::class.java
             EConfigType.WARP -> WarpMasqueActivity::class.java
             else -> ServerHttpActivity::class.java

@@ -201,6 +201,66 @@ object HttpUtil {
         }
     }
 
+    /** Measures a URL through the Android app's normal network route, bypassing local proxies. */
+    fun measureUrlDelayDirect(request: UrlContentRequest): Long {
+        val url = request.url ?: return -1L
+        val client = OkHttpClient.Builder()
+            .proxy(Proxy.NO_PROXY)
+            .connectTimeout(request.timeout.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(request.timeout.toLong(), TimeUnit.MILLISECONDS)
+            .callTimeout(request.timeout.toLong(), TimeUnit.MILLISECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .build()
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .get()
+            .header("Connection", "close")
+        applyEmbeddedBasicAuthHeader(url, requestBuilder)
+
+        val startedAt = System.currentTimeMillis()
+        return try {
+            client.newCall(requestBuilder.build()).execute().use { _ ->
+                (System.currentTimeMillis() - startedAt).coerceAtLeast(0L)
+            }
+        } catch (e: Exception) {
+            LogUtil.w(AppConfig.TAG, "Direct tunnel delay probe failed: ${e.message}")
+            -1L
+        }
+    }
+
+    /** Retrieves response content through the Android app's normal network route. */
+    fun getUrlContentDirect(request: UrlContentRequest): String? {
+        val url = request.url ?: return null
+        val client = OkHttpClient.Builder()
+            .proxy(Proxy.NO_PROXY)
+            .connectTimeout(request.timeout.toLong(), TimeUnit.MILLISECONDS)
+            .readTimeout(request.timeout.toLong(), TimeUnit.MILLISECONDS)
+            .callTimeout(request.timeout.toLong(), TimeUnit.MILLISECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build()
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .get()
+            .header("Connection", "close")
+        applyEmbeddedBasicAuthHeader(url, requestBuilder)
+
+        return try {
+            client.newCall(requestBuilder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    LogUtil.w(AppConfig.TAG, "Direct URL probe failed, code=${response.code}")
+                    null
+                } else {
+                    response.body?.string()
+                }
+            }
+        } catch (e: Exception) {
+            LogUtil.w(AppConfig.TAG, "Direct URL probe failed: ${e.message}")
+            null
+        }
+    }
+
     /**
      * Retrieves the content of a URL as a string with a custom User-Agent header.
      *

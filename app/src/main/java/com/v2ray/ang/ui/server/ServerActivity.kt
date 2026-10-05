@@ -25,6 +25,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
@@ -100,6 +101,7 @@ class ServerActivity : BaseComponentActivity() {
             onFinalMaskSearch = { config, candidates, onResult, onProgress, onFinished ->
                 runFinalMaskSearch(config, candidates, onResult, onProgress, onFinished)
             },
+            onFinalMaskApply = { mask -> persistFinalMaskSelection(mask) },
             onFinalMaskCancel = { finalMaskSearchJob?.cancel() },
         )
     }
@@ -149,6 +151,18 @@ class ServerActivity : BaseComponentActivity() {
                 }
             }
         }.also { job -> job.invokeOnCompletion { if (finalMaskSearchJob === job) finalMaskSearchJob = null } }
+    }
+
+    /** Persist a selected search result immediately so a later scan cleanup or fast save tap
+     * cannot leave the profile with the value from before the selection. */
+    private fun persistFinalMaskSelection(mask: String) {
+        if (editGuid.isBlank()) return // New profiles are written by the normal Save action.
+        val current = MmkvManager.decodeServerConfig(editGuid) ?: initialConfig
+        val updated = current.copy(finalMask = mask.nullIfBlank())
+        if (updated.subscriptionId.isNotBlank()) {
+            SubscriptionProfileOverrides.save(editGuid, initialConfig, updated)
+        }
+        MmkvManager.encodeServerConfig(editGuid, updated)
     }
 
     private fun saveServer(config: ProfileItem): Boolean {
@@ -277,9 +291,11 @@ fun ServerScreen(
         (Int) -> Unit,
         () -> Unit,
     ) -> Unit,
+    onFinalMaskApply: (String) -> Unit,
     onFinalMaskCancel: () -> Unit,
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
 
     val securityOptions = stringArrayResource(R.array.securitys).toList()
     val ssSecurityOptions = stringArrayResource(R.array.ss_securitys).toList()
@@ -427,7 +443,8 @@ fun ServerScreen(
                         }
                     }
                     IconButton(onClick = {
-                        onSave(buildProfileItem())
+                        focusManager.clearFocus(force = true)
+                        onSave(buildProfileItem().copy(finalMask = finalMask.nullIfBlank()))
                     }) {
                         Icon(painterResource(R.drawable.ic_fab_check), stringResource(R.string.acc_save))
                     }
@@ -604,7 +621,10 @@ fun ServerScreen(
                 onFinalMaskSearch(buildProfileItem(), candidates, onResult, onProgress, onFinished)
             },
             onCancelSearch = onFinalMaskCancel,
-            onApply = { finalMask = it },
+            onApply = {
+                finalMask = it
+                onFinalMaskApply(it)
+            },
             onDismiss = { showFinalMaskSearch = false },
         )
     }

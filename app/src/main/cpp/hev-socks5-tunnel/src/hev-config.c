@@ -18,6 +18,7 @@
 #include "hev-config-const.h"
 
 static char tun_name[64];
+static char tun_guid[64];
 static unsigned int tun_mtu;
 static int multi_queue;
 static int icmp;
@@ -145,6 +146,8 @@ hev_config_parse_tunnel (yaml_document_t *doc, yaml_node_t *base)
 
             if (0 == strcmp (key, "name"))
                 strncpy (tun_name, value, 64 - 1);
+            else if (0 == strcmp (key, "guid"))
+                strncpy (tun_guid, value, 64 - 1);
             else if (0 == strcmp (key, "mtu"))
                 tun_mtu = strtoul (value, NULL, 10);
             else if (0 == strcmp (key, "multi-queue"))
@@ -462,6 +465,7 @@ hev_config_reset (void)
     memset (tun_post_up_script, 0, sizeof (tun_post_up_script));
     memset (tun_pre_down_script, 0, sizeof (tun_pre_down_script));
     memset (tun_name, 0, sizeof (tun_name));
+    memset (tun_guid, 0, sizeof (tun_guid));
     memset (log_file, 0, sizeof (log_file));
     memset (pid_file, 0, sizeof (pid_file));
     memset (&srv, 0, sizeof (srv));
@@ -559,6 +563,15 @@ hev_config_get_tunnel_name (void)
         return NULL;
 
     return tun_name;
+}
+
+const char *
+hev_config_get_tunnel_guid (void)
+{
+    if (!tun_guid[0])
+        return NULL;
+
+    return tun_guid;
 }
 
 unsigned int

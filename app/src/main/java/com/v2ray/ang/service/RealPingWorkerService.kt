@@ -1,6 +1,7 @@
 package com.v2ray.ang.service
 
 import android.content.Context
+import com.v2ray.ang.AppConfig
 import com.v2ray.ang.core.CoreConfigManager
 import com.v2ray.ang.core.CoreNativeManager
 import com.v2ray.ang.core.CoreServiceManager
@@ -115,6 +116,13 @@ class RealPingWorkerService(
         val config = MmkvManager.decodeServerConfig(guid) ?: return retFailure
         val isSelectedLiveProfile = guid == MmkvManager.getSelectServer() && CoreServiceManager.isRunning()
 
+        // DNSTT exposes its own local SOCKS listener. Probe that listener
+        // directly so the result measures the DNS/Noise + SSH/SOCKS path and
+        // does not depend on CoreNativeManager's separate Xray test instance.
+        if (config.description == MasterDnsBridge.DNSTT) {
+            return measureDnsttPing(guid, config, isSelectedLiveProfile)
+        }
+
         // Probe the live local SOCKS inbound first for the active profile. This follows the
         // exact running Xray route, including PingNG Desync, instead of a standalone probe
         // that can return -1 while ordinary traffic is healthy.
@@ -164,6 +172,38 @@ class RealPingWorkerService(
                 if (ownsMasterDns) synchronized(MasterDnsBridge) { measure() } else measure()
             } finally {
                 if (ownsMasque) WarpMasqueBridge.stop()
+            }
+        }
+    }
+
+    private suspend fun measureDnsttPing(
+        guid: String,
+        config: com.v2ray.ang.dto.entities.ProfileItem,
+        isSelectedLiveProfile: Boolean,
+    ): Long = RealPingExecutionLimiter.run(config.configType) {
+        synchronized(MasterDnsBridge) {
+            val ownsBridge = !isSelectedLiveProfile
+            if (ownsBridge && MasterDnsBridge.isActive()) return@synchronized -1L
+            if (!ownsBridge && !MasterDnsBridge.isActive()) return@synchronized -1L
+
+            try {
+                if (ownsBridge) MasterDnsBridge.start(context, guid, config)
+                val socksPort = MasterDnsBridge.outboundPort(config)
+                val primary = SpeedtestManager.liveTunnelDelay(
+                    SettingsManager.getDelayTestUrl(),
+                    timeoutMs = 5_000,
+                    socksPortOverride = socksPort,
+                )
+                if (primary >= 0L) primary else SpeedtestManager.liveTunnelDelay(
+                    SettingsManager.getDelayTestUrl(true),
+                    timeoutMs = 5_000,
+                    socksPortOverride = socksPort,
+                )
+            } catch (e: Exception) {
+                LogUtil.w(AppConfig.TAG, "DNSTT real-ping probe failed: ${e.message.orEmpty()}")
+                -1L
+            } finally {
+                if (ownsBridge) MasterDnsBridge.stop()
             }
         }
     }

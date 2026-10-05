@@ -21,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.stringArrayResource
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.annotation.StringRes
 import com.v2ray.ang.R
@@ -50,16 +49,9 @@ fun PsiphonEditorFields(
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         SettingsSwitchItem(
             title = enabledTitle ?: stringResource(R.string.pingng_psiphon_enabled),
+            summary = stringResource(hintResId),
             checked = enabled,
             onCheckedChange = onEnabledChange
-        )
-        Text(
-            text = stringResource(hintResId),
-            modifier = Modifier.padding(horizontal = 16.dp),
-            style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
-            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
         )
         if (enabled) {
             val modeAutoLabel = stringResource(R.string.pingng_psiphon_mode_auto)

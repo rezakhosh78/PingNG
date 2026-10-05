@@ -139,7 +139,7 @@ hev_tunnel_write (int fd, struct pbuf *buf)
 }
 #endif /* HEV_TUNNEL_GENERIC */
 
-int hev_tunnel_open (const char *name, int multi_queue);
+int hev_tunnel_open (const char *name, int multi_queue, const char *guid);
 void hev_tunnel_close (int fd);
 
 int hev_tunnel_set_mtu (int mtu);

@@ -1,5 +1,7 @@
 package com.v2ray.ang.ui.main
 
+import com.v2ray.ang.core.MasterDnsBridge
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -91,6 +93,7 @@ import kotlin.math.abs
 @Composable
 fun GroupPagerPage(
     groupId: String,
+    subscriptionRemarks: String,
     notice: String?,
     supportUrl: String?,
     trafficTotalBytes: Long,
@@ -101,7 +104,9 @@ fun GroupPagerPage(
     isWorkerSubscription: Boolean,
     hasSubscriptionLink: Boolean,
     isUpdatingSubscription: Boolean,
+    isTestingSubscription: Boolean,
     onUpdateSubscription: (() -> Unit)?,
+    onTestSubscriptionRealDelay: (() -> Unit)?,
     mainViewModel: MainViewModel,
     selectedGuid: String?,
     countryCode: String?,
@@ -126,7 +131,7 @@ fun GroupPagerPage(
     val canReorder = groupId.isNotEmpty() && searchQuery.isEmpty()
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (hasSubscriptionLink) SubscriptionNoticeBanner(notice)
+        if (hasSubscriptionLink) SubscriptionNoticeBanner(subscriptionRemarks, notice)
         SubscriptionMetadataRow(
             supportUrl = supportUrl,
             trafficTotalBytes = trafficTotalBytes,
@@ -136,7 +141,9 @@ fun GroupPagerPage(
             trafficUsedRequests = trafficUsedRequests,
             isWorkerSubscription = isWorkerSubscription,
             isUpdatingSubscription = isUpdatingSubscription,
+            isTestingSubscription = isTestingSubscription,
             onUpdateSubscription = onUpdateSubscription,
+            onTestSubscriptionRealDelay = onTestSubscriptionRealDelay,
         )
         Box(
             modifier = Modifier
@@ -169,7 +176,7 @@ fun GroupPagerPage(
 }
 
 @Composable
-private fun SubscriptionNoticeBanner(notice: String?) {
+private fun SubscriptionNoticeBanner(subscriptionRemarks: String, notice: String?) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -180,13 +187,13 @@ private fun SubscriptionNoticeBanner(notice: String?) {
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Text(
-                text = stringResource(R.string.subscription_notice_title),
+                text = "📢 ${subscriptionRemarks.ifBlank { stringResource(R.string.title_sub_update) }}",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
             )
             notice?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
                 Text(
-                    text = text,
+                    text = subscriptionNoticeText(text),
                     modifier = Modifier.padding(top = 2.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 6,
@@ -195,6 +202,20 @@ private fun SubscriptionNoticeBanner(notice: String?) {
             }
         }
     }
+}
+
+/** Renders simple **bold** spans used by built-in subscription notices. */
+private fun subscriptionNoticeText(text: String) = buildAnnotatedString {
+    val boldPattern = Regex("\\*\\*(.+?)\\*\\*")
+    var cursor = 0
+    boldPattern.findAll(text).forEach { match ->
+        append(text.substring(cursor, match.range.first))
+        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+            append(match.groupValues[1])
+        }
+        cursor = match.range.last + 1
+    }
+    append(text.substring(cursor))
 }
 
 @Composable
@@ -207,7 +228,9 @@ private fun SubscriptionMetadataRow(
     trafficUsedRequests: Long,
     isWorkerSubscription: Boolean,
     isUpdatingSubscription: Boolean,
+    isTestingSubscription: Boolean,
     onUpdateSubscription: (() -> Unit)?,
+    onTestSubscriptionRealDelay: (() -> Unit)?,
 ) {
     val context = LocalContext.current
     val isRequestQuota = trafficTotalRequests > 0L && trafficUsedRequests >= 0L
@@ -228,7 +251,9 @@ private fun SubscriptionMetadataRow(
         expirationEpochSeconds
     }
     val hasExpiry = displayExpirationEpochSeconds >= 0L
-    if (supportUrl == null && !shouldShowUsage && !hasExpiry && onUpdateSubscription == null) return
+    if (supportUrl == null && !shouldShowUsage && !hasExpiry && onUpdateSubscription == null &&
+        onTestSubscriptionRealDelay == null
+    ) return
 
     val usedFraction = when {
         isRequestQuota -> trafficUsedRequests.toFloat() / trafficTotalRequests.toFloat()
@@ -340,6 +365,19 @@ private fun SubscriptionMetadataRow(
                         painter = painterResource(R.drawable.ic_restore_24dp),
                         contentDescription = stringResource(R.string.title_sub_update),
                         tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            onTestSubscriptionRealDelay?.let { testSubscription ->
+                IconButton(
+                    onClick = testSubscription,
+                    enabled = !isTestingSubscription,
+                    modifier = Modifier.size(32.dp),
+                ) {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_speed_24dp),
+                        contentDescription = stringResource(R.string.title_real_ping_subscription),
+                        tint = MaterialTheme.colorScheme.secondary,
                     )
                 }
             }
@@ -607,7 +645,7 @@ private fun ServerItemRow(
     ).joinToString(" ").ifBlank { null }
 
     ServerListItem(
-        remarks = profile.remarks,
+        remarks = displayProfileRemark(profile),
         countryCode = null,
         statistics = serverStatistics(profile),
         exitInfo = exitInfo,
@@ -618,6 +656,7 @@ private fun ServerItemRow(
         doubleColumnDisplay = false,
         isDesyncEnabled = PingNgCompat.isNativeDesyncEnabled(profile),
         isDesyncCustom = profile.pingNgProfile == PingNgCompat.PROFILE_CUSTOM,
+        isFinalMaskEnabled = !profile.finalMask.isNullOrBlank(),
         isPsiphonEnabled = profile.psiphonEnabled,
         psiphonState = psiphonState,
         onClick = {
@@ -661,7 +700,7 @@ private fun ServerItemColumn(
     ).joinToString(" ").ifBlank { null }
     Column {
         ServerListItem(
-            remarks = profile.remarks,
+            remarks = displayProfileRemark(profile),
             countryCode = null,
             statistics = serverStatistics(profile),
             exitInfo = exitInfo,
@@ -672,6 +711,7 @@ private fun ServerItemColumn(
             doubleColumnDisplay = doubleColumnDisplay,
             isDesyncEnabled = PingNgCompat.isNativeDesyncEnabled(profile),
             isDesyncCustom = profile.pingNgProfile == PingNgCompat.PROFILE_CUSTOM,
+            isFinalMaskEnabled = !profile.finalMask.isNullOrBlank(),
             isPsiphonEnabled = profile.psiphonEnabled,
             psiphonState = psiphonState,
             onClick = {
@@ -699,6 +739,7 @@ fun ServerListItem(
     doubleColumnDisplay: Boolean,
     isDesyncEnabled: Boolean,
     isDesyncCustom: Boolean,
+    isFinalMaskEnabled: Boolean,
     isPsiphonEnabled: Boolean,
     psiphonState: String?,
     onClick: () -> Unit,
@@ -760,7 +801,13 @@ fun ServerListItem(
                     com.v2ray.ang.ui.compose.countryFlag(countryCode)?.let { flag ->
                         Text(flag, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(end = 6.dp))
                     }
-                    Text(remarks, style = MaterialTheme.typography.bodyLarge.copy(lineBreak = LineBreak.Paragraph), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        remarks,
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyLarge.copy(lineBreak = LineBreak.Paragraph),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 if (doubleColumnDisplay) {
                     IconButton(onClick = onMore, Modifier.size(36.dp)) {
@@ -821,6 +868,7 @@ fun ServerListItem(
             Spacer(modifier = Modifier.height(6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(
+                    modifier = Modifier.weight(1f, fill = false),
                     text = buildAnnotatedString {
                         typeDescription.split(" / ").forEachIndexed { index, part ->
                             if (index > 0) {
@@ -837,6 +885,7 @@ fun ServerListItem(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                Spacer(Modifier.width(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // Enabling Psiphon is itself a visible per-config state.
                     // Before the runtime emits its first event, show the
@@ -883,18 +932,45 @@ fun ServerListItem(
                         )
                         Spacer(Modifier.width(8.dp))
                     }
-                    Text(testResult, style = MaterialTheme.typography.bodySmall, color = if (testDelayMillis < 0L) colorPingRed else colorPing, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (isFinalMaskEnabled) {
+                        val finalMaskColor = Color(0xFFEF6C00)
+                        Text(
+                            text = "FinalMask",
+                            modifier = Modifier
+                                .clip(MaterialTheme.shapes.small)
+                                .background(finalMaskColor.copy(alpha = 0.14f))
+                                .padding(horizontal = 8.dp, vertical = 3.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = finalMaskColor,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        testResult,
+                        modifier = Modifier.weight(1f, fill = false),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (testDelayMillis < 0L) colorPingRed else colorPing,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.End,
+                    )
                 }
             }
         }
     }
 }
 
+private fun displayProfileRemark(profile: ProfileItem): String =
+    if (profile.remarks == "StormDNS") "MasterDNS" else profile.remarks
+
 private fun getProtocolDescription(profile: ProfileItem): String {
     if (WarpWireGuardConfig.isProfile(profile)) return "WARP WireGuard"
     if (WarpPlusConfig.isDescription(profile.description)) return "WARP PLUS"
     if (WarpMasqueConfig.isDescription(profile.description)) return "WARP MASQUE/H2"
-    if (profile.description == "MasterDNS") return "MasterDNS"
+    if (profile.description == "StormDNS") return "MasterDNS"
+    if (profile.description == MasterDnsBridge.DNSTT) return dnsttDisplayMode(profile)
+    if (profile.description == MasterDnsBridge.LABEL) return MasterDnsBridge.UI_LABEL
     if (profile.configType.isComplexType()) return profile.configType.name
     val parts = mutableListOf(profile.configType.name)
     profile.network?.let { net ->
@@ -922,6 +998,11 @@ private fun serverStatistics(profile: ProfileItem): String = when {
         profile.warpMasqueSelectedEndpoint?.takeIf { it.isNotBlank() }
             ?: listOfNotNull(profile.server?.takeIf { it.isNotBlank() }, profile.serverPort)
                 .joinToString(":")
+    MasterDnsBridge.isProfile(profile) ->
+        when (profile.description) {
+            MasterDnsBridge.DNSTT -> dnsttDisplayMode(profile)
+            else -> MasterDnsBridge.UI_LABEL
+        }
     else -> profile.description.nullIfBlank() ?: AngConfigManager.generateDescription(profile)
 }
 
@@ -931,9 +1012,14 @@ private fun formatWarpEndpointDisplay(value: String): String = value
     .filter(String::isNotBlank)
     .joinToString(" • ")
 
+private fun dnsttDisplayMode(profile: ProfileItem): String =
+    if (profile.dnsTunnelMode.equals("SSH", ignoreCase = true)) "DNSTT SSH" else "DNSTT SOCKS5"
+
 private fun protocolPartColor(part: String): Color {
     val value = part.trim().uppercase()
     return when {
+        value.startsWith("DNSTT") -> Color(0xFF2196F3)
+        value == "MASTERDNS" -> Color(0xFFFF9800)
         value.startsWith("WARP MASQUE") -> Color(0xFF00ACC1)
         value.startsWith("WARP WIREGUARD") -> Color(0xFFFFC107)
         value == "WARP" -> Color(0xFF00ACC1)
@@ -944,6 +1030,7 @@ private fun protocolPartColor(part: String): Color {
         value.startsWith("SHADOWSOCKS") -> Color(0xFF2979FF)
         value.startsWith("SOCKS") -> Color(0xFF00A878)
         value.startsWith("HTTP") -> Color(0xFFF9A825)
+        value.startsWith("AMNEZIAWG") -> Color(0xFF7E57C2)
         value.startsWith("WIREGUARD") -> Color(0xFF00ACC1)
         value.startsWith("HYSTERIA") -> Color(0xFFE91E63)
         value == "WS" || value.startsWith("WS ") -> Color(0xFF1E88E5)

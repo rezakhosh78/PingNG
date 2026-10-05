@@ -8,7 +8,8 @@
     <string name="pingng_psiphon_region">Country</string>
     <string name="pingng_psiphon_region_summary">Select</string>
     <string name="pingng_psiphon_short_hint">Xray connects first, then Psiphon carries the traffic.</string>
-    <string name="pingng_psiphon_masterdns_hint">MasterDNS connects first, then Psiphon carries the traffic.</string>
+    <string name="pingng_psiphon_awg_hint">AmneziaWG remains the active VPN tunnel; Psiphon values are saved with this profile.</string>
+    <string name="pingng_psiphon_masterdns_hint">The DNS tunnel connects first, then Psiphon carries the traffic.</string>
     <string name="pingng_psiphon_mode">Psiphon connection</string>
     <string name="pingng_psiphon_mode_auto">Automatic</string>
     <string name="pingng_psiphon_mode_cdn">CDN Fronting</string>
@@ -51,11 +52,13 @@
     <string name="menu_item_import_config_qrcode">Import from QR code</string>
     <string name="menu_item_import_config_clipboard">Import from Clipboard</string>
     <string name="menu_item_import_config_local">Import from a local file</string>
+    <string name="menu_item_import_config_amneziawg">Add [AmneziaWG]</string>
     <string name="menu_item_import_config_policy_group">Add [Policy group]</string>
     <string name="menu_item_import_config_proxy_chain">Add [Proxy chain]</string>
     <string name="menu_item_import_config_warp_in_warp">Add [WARP PLUS]</string>
     <string name="menu_item_add_warp">Add [WARP]</string>
     <string name="menu_item_add_masterdns" translatable="false">Add [MasterDNS]</string>
+    <string name="menu_item_add_dnstt" translatable="false">Add [DNSTT]</string>
     <string name="menu_item_import_config_warp">WARP MASQUE/H2</string>
     <string name="menu_item_import_config_warp_wireguard">WARP WireGuard</string>
     <string name="dialog_select_warp_type">Select WARP type</string>
@@ -435,6 +438,8 @@
     <string name="sub_setting_user_agent" translatable="false">User Agent</string>
     <string name="sub_setting_request_headers">Request Headers (JSON format)</string>
     <string name="subscription_notice_title">Notice</string>
+    <string name="subscription_worker_default_notice">☁️ CloudFlare Worker Configs</string>
+    <string name="subscription_serverless_default_notice">🌐 **Unrestricted Internet**&#10;🚫 **No server required**&#10;🇮🇷 **Iranian IP**&#10;📵 **Except Telegram**</string>
     <string name="subscription_support_url">Support URL</string>
     <string name="subscription_remaining_gb">%1$s GB remaining</string>
     <string name="subscription_bytes_usage">%1$sGB/%2$sGB</string>
@@ -455,6 +460,7 @@
     <string name="title_sub_update">Update subscription</string>
     <string name="title_ping_all_server">Test TCP delays (TCPing)</string>
     <string name="title_real_ping_all_server">Test real delays</string>
+    <string name="title_real_ping_subscription">Test real delays for this subscription</string>
     <string name="title_user_asset_setting">Asset files</string>
     <string name="title_sort_by_test_results">Sort by test results</string>
     <string name="title_filter_config">Filter configs</string>

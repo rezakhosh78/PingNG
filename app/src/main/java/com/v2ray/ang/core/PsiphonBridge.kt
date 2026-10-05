@@ -70,6 +70,7 @@ object PsiphonBridge {
     @Volatile private var tunnel: Any? = null
     @Volatile private var loader: DexClassLoader? = null
     @Volatile private var upstreamHttpPort = 0
+    @Volatile private var plannedSocksPort = 0
     @Volatile private var socksPort = 0
     @Volatile private var connected = false
     @Volatile private var activeGuid: String? = null
@@ -89,7 +90,31 @@ object PsiphonBridge {
     fun isRunning(): Boolean = runtimeRunning || tunnel != null
     fun isConnected(): Boolean = connected
     /** Port of the Psiphon SOCKS listener in the isolated runtime process. */
-    fun activeSocksPort(): Int = socksPort.takeIf { it in 1..65535 } ?: 0
+    // A listening socket can remain open while Psiphon is replacing its
+    // upstream tunnel. Treat it as usable only while the runtime reports an
+    // established tunnel; otherwise delay and exit-IP checks race reconnects.
+    fun activeSocksPort(): Int = socksPort.takeIf { connected && it in 1..65535 } ?: 0
+    fun usesStableEgress(profile: ProfileItem?): Boolean = profile?.let {
+        // HEV can attach the Android VPN to Xray's already-running SOCKS
+        // inbound after Psiphon connects. Prepare the final route up front for
+        // every HEV + Psiphon profile so we never restart Xray underneath
+        // Psiphon's HTTP upstream (which immediately drops its tunnel).
+        it.psiphonEnabled && (it.configType == com.v2ray.ang.enums.EConfigType.AMNEZIAWG || SettingsManager.isUsingHevTun()) &&
+            plannedSocksPort in 1..65535
+    } == true
+    /** Reserve the final Psiphon listener before the native AWG gateway starts. */
+    @Synchronized
+    fun prepareAmneziaEgress(): Int {
+        if (plannedSocksPort !in 1..65535) plannedSocksPort = findFreePort()
+        return plannedSocksPort
+    }
+
+    @Synchronized
+    fun setAmneziaUpstream(port: Int) {
+        require(port in 1..65535)
+        upstreamHttpPort = port
+    }
+
     fun selectedRegion(profile: ProfileItem): String = profile.psiphonRegion.orEmpty().ifBlank { "ANY" }.uppercase()
 
     /** Adds the bootstrap HTTP inbound and, after Psiphon connects, its final SOCKS route. */
@@ -102,6 +127,8 @@ object PsiphonBridge {
         if (upstreamHttpPort !in 1..65535) {
             upstreamHttpPort = findFreePort()
         }
+        if (profile.psiphonEnabled && SettingsManager.isUsingHevTun() &&
+            plannedSocksPort !in 1..65535) plannedSocksPort = findFreePort()
         if (inbounds.none { it.isJsonObject && it.asJsonObject.get("tag")?.asString == UPSTREAM_TAG }) {
             inbounds.add(JsonObject().apply {
                 addProperty("tag", UPSTREAM_TAG)
@@ -156,7 +183,8 @@ object PsiphonBridge {
             rules.add(rule)
         }
 
-        if (connected && socksPort in 1..65535) {
+        val finalSocksPort = if (usesStableEgress(profile)) plannedSocksPort else activeSocksPort()
+        if (finalSocksPort in 1..65535 && (connected || usesStableEgress(profile))) {
             if (outbounds.none { it.isJsonObject && it.asJsonObject.get("tag")?.asString == EGRESS_TAG }) {
                 outbounds.add(JsonObject().apply {
                     addProperty("tag", EGRESS_TAG)
@@ -167,7 +195,7 @@ object PsiphonBridge {
                         add("servers", JsonArray().also { servers ->
                             servers.add(JsonObject().apply {
                                 addProperty("address", "127.0.0.1")
-                                addProperty("port", socksPort)
+                                addProperty("port", finalSocksPort)
                             })
                         })
                     })
@@ -184,6 +212,32 @@ object PsiphonBridge {
                 })
             }
             val finalRules = JsonArray()
+            // The Psiphon HTTP bootstrap inbound must keep using the original
+            // proxy outbound. Put this explicit rule before the untagged TCP
+            // fallback below; otherwise that catch-all sends Psiphon's own
+            // server connections back into Psiphon's SOCKS listener and the
+            // tunnel can never finish connecting.
+            rules.firstOrNull()?.let { finalRules.add(it) }
+            // Xray's built-in DNS client also enters the routing table. The
+            // generic TCP catch-all below used to send its DoH requests to
+            // Psiphon itself (dns-module -> Psiphon SOCKS). During a Psiphon
+            // reconnect that created the closed-pipe errors seen in logs and
+            // broke fresh DNS lookups. Keep internal DoH on the first-hop
+            // outbound, just like Psiphon's own bootstrap traffic.
+            val dnsModuleTag = root.getAsJsonObject("dns")
+                ?.get("tag")?.takeIf { it.isJsonPrimitive }?.asString
+                ?.takeIf { it.isNotBlank() } ?: "dns-module"
+            if (dnsModuleTag != UPSTREAM_TAG && dnsModuleTag != EGRESS_TAG) {
+                finalRules.add(JsonObject().apply {
+                    addProperty("type", "field")
+                    add("inboundTag", JsonArray().also { it.add(dnsModuleTag) })
+                    addProperty("network", "tcp")
+                    addProperty("outboundTag", upstreamOutbound)
+                })
+                PingNgDiagnostics.record(
+                    "Psiphon internal DNS route: $dnsModuleTag -> $upstreamOutbound",
+                )
+            }
             // Custom JSON files do not necessarily call their TUN/mixed inbound
             // "tun". Route every user-facing inbound explicitly; otherwise the
             // Psiphon switch appears enabled but traffic keeps using the old
@@ -228,7 +282,14 @@ object PsiphonBridge {
                 addProperty("network", "tcp")
                 addProperty("outboundTag", EGRESS_TAG)
             })
-            rules.forEach(finalRules::add)
+            // Some generated or imported inbounds have no tag. Keep this
+            // fallback after the explicit Psiphon upstream rule above.
+            finalRules.add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("network", "tcp")
+                addProperty("outboundTag", EGRESS_TAG)
+            })
+            rules.drop(1).forEach { finalRules.add(it) }
             routing.add("rules", finalRules)
             PingNgDiagnostics.record(
                 "Psiphon final route applied: TCP -> $EGRESS_TAG; upstream -> $upstreamOutbound",
@@ -255,7 +316,9 @@ object PsiphonBridge {
                 .putExtra(AppConfig.EXTRA_PSIPHON_CDN_IPS, profile.psiphonCdnIps.orEmpty())
                 .putExtra(AppConfig.EXTRA_PSIPHON_CDN_SNI, profile.psiphonCdnSni.orEmpty())
                 .putExtra(AppConfig.EXTRA_PSIPHON_CDN_SETS, profile.psiphonCdnSets.orEmpty())
+                .putExtra(AppConfig.EXTRA_PSIPHON_FORCE_LOCAL_UPSTREAM, profile.configType == com.v2ray.ang.enums.EConfigType.AMNEZIAWG)
                 .putExtra(AppConfig.EXTRA_PSIPHON_UPSTREAM_PORT, upstreamHttpPort)
+                .putExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, if (usesStableEgress(profile)) plannedSocksPort else 0)
             ContextCompat.startForegroundService(service, intent)
         } catch (e: Throwable) {
             runtimeRunning = false
@@ -290,6 +353,7 @@ object PsiphonBridge {
         routeApplied.set(false)
         socksPort = 0
         upstreamHttpPort = 0
+        plannedSocksPort = 0
         starting.set(false)
         if (active != null) {
             try {
@@ -327,11 +391,25 @@ object PsiphonBridge {
         val context = statusContext ?: return
         when (state) {
             PsiphonStatus.CONNECTING -> {
+                val wasConnected = connected
+                connected = false
+                if (wasConnected) {
+                    PingNgDiagnostics.record("Psiphon tunnel reconnecting; pausing connection probes")
+                    CoreServiceManager.onPsiphonConnecting()
+                }
                 publishStatus(PsiphonStatus.CONNECTING, guid, context)
             }
             PsiphonStatus.CONNECTED -> {
                 val reportedPort = intent.getIntExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, 0)
-                val duplicateConnected = connected && socksPort == reportedPort &&
+                if (plannedSocksPort in 1..65535 && reportedPort != plannedSocksPort) {
+                    PingNgDiagnostics.record("Psiphon SOCKS port mismatch: expected $plannedSocksPort, got $reportedPort")
+                    CoreServiceManager.onPsiphonFailed("Psiphon SOCKS port changed unexpectedly")
+                    return
+                }
+                // A reconnect on the same listener does not require another
+                // Xray reload. routeApplied stays true across CONNECTING, so
+                // use it to recognize that route as already installed.
+                val duplicateConnected = routeApplied.get() && socksPort == reportedPort &&
                     reportedPort in 1..65535
                 socksPort = reportedPort
                 connected = socksPort in 1..65535
@@ -344,6 +422,8 @@ object PsiphonBridge {
                 if (!duplicateConnected) routeApplied.set(false)
                 if (connected && !duplicateConnected && routeApplied.compareAndSet(false, true)) {
                     CoreServiceManager.onPsiphonConnected()
+                } else if (connected && duplicateConnected) {
+                    CoreServiceManager.onPsiphonRecovered()
                 }
             }
             PsiphonStatus.FAILED -> {

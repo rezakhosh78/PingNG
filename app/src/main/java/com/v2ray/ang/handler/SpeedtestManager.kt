@@ -55,16 +55,28 @@ object SpeedtestManager {
     }
 
     /** Measures the selected live tunnel, preserving its Xray + Desync route. */
-    fun liveTunnelDelay(url: String, timeoutMs: Int = 5000): Long {
+    fun liveTunnelDelay(
+        url: String,
+        timeoutMs: Int = 5000,
+        socksPortOverride: Int? = null,
+    ): Long {
         return HttpUtil.measureUrlDelayThroughSocks(
             request = UrlContentRequest(url = url, timeout = timeoutMs),
-            socksPort = SettingsManager.getSocksPort(),
+            socksPort = socksPortOverride?.takeIf { it in 1..65535 }
+                ?: SettingsManager.getSocksPort(),
         )
     }
 
+    /** Measures the app's Android VPN route directly, without relying on Xray's SOCKS listener. */
+    fun directTunnelDelay(url: String, timeoutMs: Int = 5000): Long =
+        HttpUtil.measureUrlDelayDirect(UrlContentRequest(url = url, timeout = timeoutMs))
+
+    /** URL used for exit-IP checks; delay probing can measure this endpoint through any SOCKS. */
+    fun getRemoteIpInfoUrl(): String = MmkvManager.decodeSettingsString(AppConfig.PREF_IP_API_URL)
+        .takeIf { !it.isNullOrBlank() } ?: AppConfig.IP_API_URL
+
     fun getRemoteIPInfo(): RemoteEndpointInfo? {
-        val url = MmkvManager.decodeSettingsString(AppConfig.PREF_IP_API_URL)
-            .takeIf { !it.isNullOrBlank() } ?: AppConfig.IP_API_URL
+        val url = getRemoteIpInfoUrl()
 
         val proxyUsername = SettingsManager.getSocksUsername()
         val proxyPassword = SettingsManager.getSocksPassword()
@@ -84,8 +96,7 @@ object SpeedtestManager {
 
     /** Reads the exit IP/country through the same SOCKS route used by Desync search. */
     fun getRemoteIPInfoThroughSocks(socksPortOverride: Int? = null): RemoteEndpointInfo? {
-        val url = MmkvManager.decodeSettingsString(AppConfig.PREF_IP_API_URL)
-            .takeIf { !it.isNullOrBlank() } ?: AppConfig.IP_API_URL
+        val url = getRemoteIpInfoUrl()
         val socksPort = socksPortOverride?.takeIf { it in 1..65535 }
             ?: SettingsManager.getSocksPort()
         val content = HttpUtil.getUrlContentThroughSocks(
@@ -94,6 +105,11 @@ object SpeedtestManager {
         ) ?: return null
         return parseRemoteEndpoint(content)
     }
+
+    /** Reads the exit IP through the app's Android VPN route, without a local proxy. */
+    fun getRemoteIPInfoDirect(): RemoteEndpointInfo? = HttpUtil.getUrlContentDirect(
+        UrlContentRequest(url = getRemoteIpInfoUrl(), timeout = 5000),
+    )?.let(::parseRemoteEndpoint)
 
     private fun parseRemoteEndpoint(content: String): RemoteEndpointInfo? {
         val ipInfo = JsonUtil.fromJsonSafe(content, IPAPIInfo::class.java) ?: return null

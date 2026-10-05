@@ -3,6 +3,9 @@ package com.v2ray.ang.dto.entities
 data class SubscriptionItem(
     var remarks: String = "",
     var url: String = "",
+    /** User alias is independent of the title advertised by the provider. */
+    var customRemarks: String? = null,
+    var providerRemarks: String? = null,
     var enabled: Boolean = true,
     val addedTime: Long = System.currentTimeMillis(),
     var lastUpdated: Long = -1,
@@ -26,4 +29,22 @@ data class SubscriptionItem(
     /** Worker.dev subscriptions may expose request quota instead of byte quota. */
     var trafficTotalRequests: Long = -1,
     var trafficUsedRequests: Long = -1,
-)
+) {
+    fun applyProviderTitle(title: String?) {
+        title?.takeIf { it.isNotBlank() }?.let { providerRemarks = it }
+        remarks = customRemarks?.takeIf { it.isNotBlank() }
+            ?: providerRemarks?.takeIf { it.isNotBlank() } ?: remarks
+    }
+
+    fun applyUserEdit(name: String, newUrl: String, previousName: String) {
+        if (newUrl.isBlank()) {
+            customRemarks = null
+            providerRemarks = null
+            remarks = "Default"
+        } else {
+            if (name != previousName) customRemarks = name.takeIf { it.isNotBlank() }
+            remarks = customRemarks ?: providerRemarks ?: name
+        }
+        url = newUrl
+    }
+}

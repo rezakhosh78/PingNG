@@ -19,7 +19,8 @@ typedef void HevWinTunSession;
 HevWinTun *hev_wintun_open (void);
 void hev_wintun_close (HevWinTun *self);
 
-HevWinTunAdapter *hev_wintun_adapter_create (const char *name);
+HevWinTunAdapter *hev_wintun_adapter_create (const char *name,
+                                             const char *guid);
 void hev_wintun_adapter_close (HevWinTunAdapter *adapter);
 
 int hev_wintun_adapter_get_index (HevWinTunAdapter *adapter);

@@ -2,8 +2,11 @@ package com.v2ray.ang.ui.logcat
 
 import android.app.Application
 import com.v2ray.ang.AppConfig
+import com.v2ray.ang.BuildConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.core.PingNgDiagnostics
+import com.v2ray.ang.core.MasterDnsBridge
+import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.ui.base.BaseViewModel
 import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
@@ -32,8 +35,16 @@ class LogcatViewModel(application: Application) : BaseViewModel(application) {
                 val persistentLogs = PingNgDiagnostics.snapshot().asReversed()
 
                 logsetsAll.clear()
-                logsetsAll.add("===== PingNG persistent diagnostics =====")
+                logsetsAll.add("===== PingNG persistent diagnostics · ${BuildConfig.VERSION_NAME} =====")
                 logsetsAll.addAll(persistentLogs)
+                val selectedGuid = MmkvManager.getSelectServer().orEmpty()
+                val selectedProfile = MmkvManager.decodeServerConfig(selectedGuid)
+                if (selectedGuid.isNotBlank() && selectedProfile != null &&
+                    MasterDnsBridge.isProfile(selectedProfile)) {
+                    logsetsAll.add("===== ${selectedProfile.description} tunnel and SSH log =====")
+                    logsetsAll.addAll(MasterDnsBridge.readLog(app, selectedGuid,
+                        selectedProfile.description.orEmpty()).lineSequence().toList())
+                }
                 logsetsAll.add("===== Android runtime log =====")
                 logsetsAll.addAll(runtimeLogs)
                 applyFilter()

@@ -277,6 +277,7 @@ fun MainScreen(
                         key(group.id) {
                             GroupPagerPage(
                             groupId = group.id,
+                            subscriptionRemarks = group.remarks,
                             notice = group.notice,
                             supportUrl = group.supportUrl,
                             trafficTotalBytes = group.trafficTotalBytes,
@@ -287,8 +288,14 @@ fun MainScreen(
                             isWorkerSubscription = group.isWorkerSubscription,
                             hasSubscriptionLink = group.hasSubscriptionLink,
                             isUpdatingSubscription = isLoading,
+                            isTestingSubscription = uiState.isTesting,
                             onUpdateSubscription = if (group.hasSubscriptionLink) {
                                 { onAction(MainAction.UpdateSubscription(group.id)) }
+                            } else {
+                                null
+                            },
+                            onTestSubscriptionRealDelay = if (group.hasSubscriptionLink) {
+                                { onAction(MainAction.TestRealSubscription(group.id)) }
                             } else {
                                 null
                             },

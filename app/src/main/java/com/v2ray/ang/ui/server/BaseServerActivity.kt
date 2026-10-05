@@ -454,7 +454,11 @@ abstract class BaseServerActivity : BaseComponentActivity() {
     }
 
     @Composable
-    protected fun PsiphonFields(state: ServerUiState) {
+    protected fun PsiphonFields(
+        state: ServerUiState,
+        title: String? = null,
+        hintResId: Int = R.string.pingng_psiphon_short_hint,
+    ) {
         PsiphonEditorFields(
             enabled = state.psiphonEnabled,
             region = state.psiphonRegion,
@@ -468,6 +472,8 @@ abstract class BaseServerActivity : BaseComponentActivity() {
             onCdnSniChange = { state.psiphonCdnSni = it },
             cdnSets = state.psiphonCdnSets,
             onCdnSetsChange = { state.psiphonCdnSets = it },
+            enabledTitle = title,
+            hintResId = hintResId,
         )
     }
 

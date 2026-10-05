@@ -94,8 +94,9 @@ class PsiphonRuntimeService : Service() {
                 val cdnSni = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_CDN_SNI).orEmpty()
                 val cdnSets = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_CDN_SETS).orEmpty()
                 val upstreamPort = intent.getIntExtra(AppConfig.EXTRA_PSIPHON_UPSTREAM_PORT, 0)
+                val requestedSocksPort = intent.getIntExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, 0)
                 if (guid.isNotBlank() && upstreamPort in 1..65535) {
-                    startRuntime(guid, region, mode, cdnIps, cdnSni, cdnSets, upstreamPort)
+                    startRuntime(guid, region, mode, cdnIps, cdnSni, cdnSets, upstreamPort, requestedSocksPort, intent.getBooleanExtra(AppConfig.EXTRA_PSIPHON_FORCE_LOCAL_UPSTREAM, false))
                 } else {
                     emit(PsiphonStatus.FAILED, guid, message = "Invalid Psiphon startup parameters")
                     stopSelf(startId)
@@ -124,6 +125,8 @@ class PsiphonRuntimeService : Service() {
         cdnSni: String,
         cdnSets: String,
         upstreamPort: Int,
+        requestedSocksPort: Int,
+        forceLocalUpstream: Boolean,
     ) {
         // A stop/start can arrive before Android has delivered onDestroy for
         // the previous foreground-service instance. Tear down that stale
@@ -137,7 +140,7 @@ class PsiphonRuntimeService : Service() {
         emit(PsiphonStatus.CONNECTING, guid)
         Thread {
             try {
-                startInternal(guid, region, mode, cdnIps, cdnSni, cdnSets, upstreamPort)
+                startInternal(guid, region, mode, cdnIps, cdnSni, cdnSets, upstreamPort, requestedSocksPort, forceLocalUpstream)
             } catch (error: Throwable) {
                 val cause = unwrapInvocation(error)
                 LogUtil.e(TAG, "Psiphon start failed", cause)
@@ -159,6 +162,8 @@ class PsiphonRuntimeService : Service() {
         cdnSni: String,
         cdnSets: String,
         upstreamPort: Int,
+        requestedSocksPort: Int,
+        forceLocalUpstream: Boolean,
     ) {
         // The Android VPN is created after Psiphon reports CONNECTED. Without
         // an explicit process binding, Android changes the default network of
@@ -199,7 +204,7 @@ class PsiphonRuntimeService : Service() {
 
         val tunnelClass = loader.loadClass("ca.psiphon.PsiphonTunnel")
         val hostClass = loader.loadClass("ca.psiphon.PsiphonTunnel\$HostService")
-        val config = buildConfig(region, mode, cdnIps, cdnSni, cdnSets, upstreamPort)
+        val config = buildConfig(region, mode, cdnIps, cdnSni, cdnSets, upstreamPort, requestedSocksPort, forceLocalUpstream)
         val entries = assets.open(ENTRIES_ASSET).bufferedReader().use { it.readText() }
         val host = Proxy.newProxyInstance(
             loader,
@@ -243,6 +248,10 @@ class PsiphonRuntimeService : Service() {
                     }
                     "onConnecting" -> {
                         PingNgDiagnostics.record("Psiphon tunnel is connecting")
+                        // Propagate tunnel replacement to the main process so
+                        // PingNG does not test a still-listening SOCKS port
+                        // against a tunnel that is temporarily unavailable.
+                        emit(PsiphonStatus.CONNECTING, guid)
                         null
                     }
                     "onAvailableEgressRegions" -> {
@@ -370,6 +379,8 @@ class PsiphonRuntimeService : Service() {
         cdnSni: String,
         cdnSets: String,
         upstreamPort: Int,
+        requestedSocksPort: Int,
+        forceLocalUpstream: Boolean,
     ): String {
         val base = assets.open(CONFIG_ASSET).bufferedReader().use { it.readText() }
         val root = JsonParser.parseString(base).asJsonObject
@@ -390,7 +401,8 @@ class PsiphonRuntimeService : Service() {
         // Psiphon region and would filter every server entry out.
         root.addProperty("EgressRegion", normalizedEgressRegion(region))
         root.addProperty("TunnelWholeDevice", 0)
-        val configuredProxy = SettingsManager.getConnectHttpProxy()
+        if (requestedSocksPort in 1..65535) root.addProperty("LocalSocksProxyPort", requestedSocksPort)
+        val configuredProxy = if (forceLocalUpstream) null else SettingsManager.getConnectHttpProxy()
         val upstreamProxyUrl = configuredProxy?.asHttpUrl() ?: "http://127.0.0.1:$upstreamPort"
         root.addProperty("UpstreamProxyUrl", upstreamProxyUrl)
         if (configuredProxy != null) {

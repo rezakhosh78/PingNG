@@ -16,6 +16,7 @@ import com.v2ray.ang.root.RootManager
 import com.v2ray.ang.service.CoreProxyOnlyService
 import com.v2ray.ang.service.CoreRootService
 import com.v2ray.ang.service.CoreVpnService
+import com.v2ray.ang.service.AmneziaWgVpnService
 import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
 
@@ -91,12 +92,15 @@ object LauncherManager {
     }
 
     fun stopService(context: Context) {
+        // The DNS core can still be scanning before CoreServiceManager registers a running service.
+        MasterDnsBridge.cancelStartup()
         MessageHelper.sendMsg2Service(context, AppConfig.MSG_STATE_STOP, "")
 
         // The daemon receiver normally performs the graceful teardown. Keep a direct Android
         // stop as a fallback for stale/missed broadcasts; each service's onDestroy now closes
         // its own core/VPN resources safely.
         listOf(
+            AmneziaWgVpnService::class.java,
             CoreVpnService::class.java,
             CoreRootService::class.java,
             CoreProxyOnlyService::class.java,
@@ -157,8 +161,9 @@ object LauncherManager {
             context.toast(R.string.toast_services_start)
         }
 
+        val requiresAndroidVpn = config.configType == com.v2ray.ang.enums.EConfigType.AMNEZIAWG
         val isRootMode = SettingsManager.isRootMode()
-        if (!forceProxyOnly && isRootMode && !RootManager.isRootAvailable()) {
+        if (!forceProxyOnly && !requiresAndroidVpn && isRootMode && !RootManager.isRootAvailable()) {
             LogUtil.e(AppConfig.TAG, "LauncherManager: root mode requires root but none available")
             error(context.getString(R.string.toast_root_required))
         }
@@ -166,6 +171,9 @@ object LauncherManager {
         val intent = if (forceProxyOnly) {
             LogUtil.i(AppConfig.TAG, "LauncherManager: Starting proxy-only diagnostic service")
             Intent(context.applicationContext, CoreProxyOnlyService::class.java)
+        } else if (requiresAndroidVpn) {
+            LogUtil.i(AppConfig.TAG, "LauncherManager: AmneziaWG FIX14 uses isolated :AmneziaWG VPN process")
+            Intent(context.applicationContext, AmneziaWgVpnService::class.java)
         } else if (isRootMode) {
             LogUtil.i(AppConfig.TAG, "LauncherManager: Starting Root service")
             Intent(context.applicationContext, CoreRootService::class.java)

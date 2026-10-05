@@ -272,12 +272,19 @@ object WarpMasqueBridge {
         activeConfigSignature = null
     }
 
-    private fun resolveBinary(context: Context): File =
-        File(context.applicationInfo.nativeLibraryDir, "libwarpmasque.so").also {
-            check(it.isFile) {
-                "WARP MASQUE needs the bundled Android arm64 core; binary was not found"
-            }
+    private fun resolveBinary(context: Context): File {
+        val binary = File(context.applicationInfo.nativeLibraryDir, "libwarpmasque.so")
+        val supportedAbi = if (android.os.Process.is64Bit()) "arm64-v8a" else "armeabi-v7a"
+        check(supportedAbi in android.os.Build.SUPPORTED_ABIS) {
+            "WARP MASQUE requires an ARM64 or ARMv7 device; supported device ABIs: " +
+                android.os.Build.SUPPORTED_ABIS.joinToString()
         }
+        check(binary.isFile && binary.canExecute()) {
+            "WARP MASQUE core for $supportedAbi was not extracted from the APK. Install the matching ABI APK " +
+                "built with extractNativeLibs=true (expected: ${binary.absolutePath})"
+        }
+        return binary
+    }
 
     private fun ensureRegistered(
         binary: File,

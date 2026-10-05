@@ -251,10 +251,11 @@ object WarpRegistrationProxy {
             ?: throw IllegalStateException("Bundled VLESS registration Proxy-1 profile is invalid")
         check(profile.configType == EConfigType.VLESS) { "Bundled Proxy-1 must use VLESS" }
         check(
-            profile.server == "104.17.71.206" && profile.serverPort == "443" &&
+            profile.server == "162.248.164.71" && profile.serverPort == "443" &&
                 profile.network == "ws" && profile.security == "tls" &&
-                profile.path == "/vl/VhUzrJSK2tMhgryGTPJqfR?ed=2560" &&
-                profile.sni.equals("n5YmPfFTwt17MZQjB9tfv.WOUDhB.workERs.dEV", ignoreCase = true)
+                profile.path == "/vl/xQOpMuRO7CPFyYVETu0PJ55RX?ed=2560" &&
+                profile.host == "n5ympfftwt17mzqjb9tfv.woudhb.workers.dev" &&
+                profile.sni.equals("N5yMPFfTWt17MzQjB9tFV.woudhb.WOrKers.dEV", ignoreCase = true)
         ) { "Bundled VLESS registration Proxy-1 settings are incomplete" }
         return profile.apply {
             remarks = PUBLIC_PROXY_REMARK

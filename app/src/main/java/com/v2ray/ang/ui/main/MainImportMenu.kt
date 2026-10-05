@@ -31,11 +31,13 @@ private enum class ImportMenuAction(@StringRes val labelRes: Int, val action: Ma
     Http(R.string.menu_item_import_config_manually_http, MainAction.ImportManually(EConfigType.HTTP.value)),
     Trojan(R.string.menu_item_import_config_manually_trojan, MainAction.ImportManually(EConfigType.TROJAN.value)),
     WireGuard(R.string.menu_item_import_config_manually_wireguard, MainAction.ImportManually(EConfigType.WIREGUARD.value)),
+    AmneziaWG(R.string.menu_item_import_config_amneziawg, MainAction.ImportAmneziaWG),
     Hysteria2(R.string.menu_item_import_config_manually_hysteria2, MainAction.ImportManually(EConfigType.HYSTERIA2.value)),
     Warp(R.string.menu_item_add_warp, null),
     WarpInWarp(R.string.menu_item_import_config_warp_in_warp, MainAction.AddWarpInWarp),
     ServerLess(R.string.menu_item_import_config_serverless, MainAction.AddServerLess),
-    MasterDns(R.string.menu_item_add_masterdns, MainAction.AddMasterDns)
+    MasterDns(R.string.menu_item_add_masterdns, MainAction.AddMasterDns),
+    Dnstt(R.string.menu_item_add_dnstt, MainAction.AddDnstt)
 }
 
 private enum class WarpTypeOption(@StringRes val labelRes: Int, val action: MainAction) {
@@ -72,8 +74,10 @@ internal fun serverMenuActions(
     isComplexProfile: Boolean,
     includeManagementActions: Boolean,
     hasDedicatedProfileLink: Boolean = false,
+    isReadOnlyProfile: Boolean = false,
 ): List<ServerMenuAction> = ServerMenuAction.entries.filter { action ->
     (includeManagementActions || action.isShareAction) &&
+        !(isReadOnlyProfile && action == ServerMenuAction.Edit) &&
         !(hasDedicatedProfileLink && action == ServerMenuAction.ShareFullContent) &&
         (!isComplexProfile || action.supportsComplexProfiles || hasDedicatedProfileLink)
 }
@@ -131,6 +135,7 @@ fun ShareMethodDialog(
                 WarpPlusConfig.isDescription(profile.description)) ||
             WarpMasqueConfig.isDescription(profile.description) ||
             WarpWireGuardConfig.isProfile(profile),
+        isReadOnlyProfile = false,
     )
     SelectListDialog(
         options = menuActions,

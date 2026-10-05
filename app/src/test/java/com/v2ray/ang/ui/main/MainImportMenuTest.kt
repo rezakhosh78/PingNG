@@ -1,7 +1,7 @@
 package com.v2ray.ang.ui.main
 
-import org.junit.Assert.assertEquals
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Test
 
 class MainImportMenuTest {
 
@@ -39,5 +39,21 @@ class MainImportMenuTest {
             ServerMenuAction.Delete,
         )
         assertEquals(expected, serverMenuActions(isComplexProfile = true, includeManagementActions = true))
+    }
+
+    @Test
+    fun importedAmneziaProfilesCanBeSharedAndDeletedButNotOpenedInWrongEditor() {
+        val expected = listOf(
+            ServerMenuAction.ShareFullContent,
+            ServerMenuAction.Delete,
+        )
+        assertEquals(
+            expected,
+            serverMenuActions(
+                isComplexProfile = true,
+                includeManagementActions = true,
+                isReadOnlyProfile = true,
+            ),
+        )
     }
 }

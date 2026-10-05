@@ -12,7 +12,11 @@
 #include <wintun.h>
 #include <netioapi.h>
 #include <iphlpapi.h>
+#include <stdio.h>
+#include <string.h>
+#include <ctype.h>
 
+#include "hev-logger.h"
 #include "hev-wintun.h"
 
 static WINTUN_CREATE_ADAPTER_FUNC *WintunCreateAdapter;
@@ -59,9 +63,44 @@ hev_wintun_close (HevWinTun *self)
     FreeLibrary (self);
 }
 
-HevWinTunAdapter *
-hev_wintun_adapter_create (const char *name)
+static int
+hev_wintun_parse_guid (const char *str, GUID *guid)
 {
+    unsigned int data1 = 0, data2 = 0, data3 = 0, data4[8] = { 0 };
+    int i;
+
+    if (!str || 36 != strlen (str))
+        return -1;
+
+    for (i = 0; i < 36; i++) {
+        if (8 == i || 13 == i || 18 == i || 23 == i) {
+            if ('-' != str[i])
+                return -1;
+        } else if (!isxdigit ((unsigned char)str[i])) {
+            return -1;
+        }
+    }
+
+    if (11 != sscanf (str, "%8x-%4x-%4x-%2x%2x-%2x%2x%2x%2x%2x%2x", &data1,
+                      &data2, &data3, &data4[0], &data4[1], &data4[2],
+                      &data4[3], &data4[4], &data4[5], &data4[6], &data4[7]))
+        return -1;
+
+    guid->Data1 = data1;
+    guid->Data2 = (unsigned short)data2;
+    guid->Data3 = (unsigned short)data3;
+
+    for (i = 0; i < 8; i++)
+        guid->Data4[i] = (unsigned char)data4[i];
+
+    return 0;
+}
+
+HevWinTunAdapter *
+hev_wintun_adapter_create (const char *name, const char *guid)
+{
+    const GUID *requested_guid = NULL;
+    GUID adapter_guid;
     wchar_t tun[256];
     int len;
 
@@ -70,7 +109,13 @@ hev_wintun_adapter_create (const char *name)
         return NULL;
 
     MultiByteToWideChar (CP_UTF8, 0, name, -1, tun, len);
-    return WintunCreateAdapter (tun, L"Socks5", NULL);
+
+    if (0 == hev_wintun_parse_guid (guid, &adapter_guid))
+        requested_guid = &adapter_guid;
+    else if (guid && guid[0])
+        LOG_W ("wintun adapter guid (%s)", guid);
+
+    return WintunCreateAdapter (tun, L"Socks5", requested_guid);
 }
 
 void
