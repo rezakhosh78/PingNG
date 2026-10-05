@@ -542,8 +542,4 @@
     <string name="connection_test_empty_message">دووسمندی نؽ</string>
     <string name="value_unknown">نا موشخس</string>
 
-    <string name="server_lab_remote_dns">remoteDNS (اختياری، نشۊویا IPv4/IPv6 جوڌا وابیڌه وا کاما، یا «local» سی و کار گرؽڌن DNS دسگا)</string>
-    <string name="title_privacy_policy">هریم سیخومی</string>
-    <string name="title_translators">ولرنی کارووݩ</string>
-    <string name="title_pref_promotion">تبلیقات</string>
 </resources>
