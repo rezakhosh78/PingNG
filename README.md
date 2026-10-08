@@ -2,7 +2,7 @@
 
 # 🚀 PingNG
 
-### A v2rayNG fork with native Desync, WARP, AmneziaWG, DNS tunnels, and Psiphon
+### A v2rayNG fork with native Desync, WARP, the Oberon core, DNS tunnels, and Psiphon
 
 Control connection behavior per profile, configure WARP tunnels, customize TLS, and troubleshoot from one Android client.
 
@@ -30,6 +30,7 @@ PingNG is synced with v2rayNG 2.3.10 and keeps its familiar experience while add
 | Per-profile Desync settings | — | ✅ |
 | WARP Plus (Outer + Inner) | — | ✅ |
 | WARP WireGuard | — | ✅ |
+| WARP over AmneziaWG with the Oberon core | — | ✅ |
 | WARP MASQUE/H2 | — | ✅ |
 | MasterDNS profiles, Fast resolver cache, and live logs | — | ✅ |
 | DNSTT DNS tunnels and DNSTT-to-SSH profiles | — | ✅ |
@@ -89,11 +90,18 @@ PingNG provides three WARP options:
 
 - **WARP Plus** — Outer and Inner WARP profiles with endpoint discovery modes, verification, and FinalMask settings.
 - **WARP WireGuard** — A single-hop WireGuard-based WARP profile with automatic account/key generation and endpoint scanning.
+- **Oberon** — The WARP-over-AmneziaWG core, with configuration creation, endpoint scanning, and automatic route recovery.
 - **WARP MASQUE/H2** — A standalone MASQUE tunnel over HTTP/2 with endpoint scanning and configurable SNI.
 
 ### Endpoint scanning and FinalMask
 
 WARP scanning supports selectable modes and Custom endpoints. Verification uses endpoints discovered by the scan and reports progress from the candidates being tested. FinalMask fields and **Find FinalMask Setting** are available for WARP Plus and WARP WireGuard profiles.
+
+### Oberon: WARP over AmneziaWG
+
+Choose **Add [WARP AWG]** from the `+` menu to create an Oberon profile. The WARP configuration runs over AmneziaWG. The editor places the registration **Proxy** selector above the remark field. This proxy is used only to register the WARP account; it does not carry tunnel traffic.
+
+Oberon can scan endpoints manually and show reachable results ranked by latency. **Auto Scan Endpoint** runs a scan on every connection and is enabled by default. After connecting, PingNG checks whether traffic can actually pass through the tunnel. If the route fails two consecutive checks, it switches to the next scanned endpoint when one is available. Automatic failover is limited to two switches per connection session.
 
 ### WARP key registration proxy
 
