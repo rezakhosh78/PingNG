@@ -5,9 +5,16 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -19,11 +26,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
 import com.v2ray.ang.R
+import com.v2ray.ang.core.AwgWarpConfig
+import com.v2ray.ang.core.AwgEndpointScanState
+import com.v2ray.ang.core.AwgEndpointScanManager
+import com.v2ray.ang.handler.MmkvManager
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.height
+import com.v2ray.ang.core.WarpAccount
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.core.WarpPlusConfig
+import com.v2ray.ang.core.EndpointScannerCli
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.extension.toast
@@ -31,6 +49,7 @@ import com.v2ray.ang.extension.toastSuccess
 import com.v2ray.ang.fmt.AmneziaWgFmt
 import com.v2ray.ang.ui.compose.FormTextField
 import com.v2ray.ang.ui.compose.FormDropdownField
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -46,8 +65,12 @@ class ServerWireguardActivity : BaseServerActivity() {
         get() = intent.getBooleanExtra("warpWireGuard", false) ||
             WarpWireGuardConfig.isDescription(initialConfig.description)
 
+    private val isAwgWarp: Boolean
+        get() = intent.getBooleanExtra("awgWarp", false) || AwgWarpConfig.isProfile(initialConfig)
+
     private val isAmneziaWg: Boolean
         get() = intent.getBooleanExtra("amneziaWg", false) ||
+            isAwgWarp ||
             initialConfig.configType == EConfigType.AMNEZIAWG
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,6 +79,15 @@ class ServerWireguardActivity : BaseServerActivity() {
             initialConfig.description = WarpWireGuardConfig.DESCRIPTION
             if (initialConfig.remarks.isBlank() || initialConfig.remarks.equals("WireGuard", true)) {
                 initialConfig.remarks = "WARP WireGuard"
+            }
+        }
+        if (intent.getBooleanExtra("awgWarp", false)) {
+            initialConfig = initialConfig.copy(configType = EConfigType.AMNEZIAWG)
+            initialConfig.description = AwgWarpConfig.DESCRIPTION
+            initialConfig.amneziawgConfig = initialConfig.amneziawgConfig
+                ?.takeIf(String::isNotBlank) ?: AmneziaWgFmt.EMPTY_EDIT_CONFIG
+            if (initialConfig.remarks.isBlank() || initialConfig.remarks.equals("AmneziaWG", true)) {
+                initialConfig.remarks = AwgWarpConfig.DEFAULT_REMARK
             }
         }
         if (intent.getBooleanExtra("amneziaWg", false)) {
@@ -98,6 +130,10 @@ class ServerWireguardActivity : BaseServerActivity() {
                         val config = AmneziaWgFmt.readEditableConfig(text)
                             ?: error("The selected file does not contain Interface and Peer sections")
                         uiState.amneziawgConfig = text.trim()
+                        if (isAwgWarp) {
+                            uiState.awgEndpointCandidates = ""
+                            uiState.awgSkipAutoScanOnce = false
+                        }
                         val endpoint = config.peers.firstOrNull()?.get("endpoint").orEmpty()
                         val (host, port) = AmneziaWgFmt.splitEndpoint(endpoint)
                         if (!host.isNullOrBlank()) uiState.address = host
@@ -123,6 +159,26 @@ class ServerWireguardActivity : BaseServerActivity() {
         var generating by remember { mutableStateOf(false) }
         var generationJob by remember { mutableStateOf<Job?>(null) }
         var generationToken by remember { mutableStateOf(0) }
+        var awgWarpGenerating by remember { mutableStateOf(false) }
+        var awgWarpProgress by remember { mutableStateOf("") }
+        var awgWarpSelectedEndpoint by rememberSaveable { mutableStateOf("") }
+        var awgScanGuid by rememberSaveable { mutableStateOf(editGuid) }
+        val awgScanState by AwgEndpointScanState.state.collectAsStateWithLifecycle()
+        val awgCandidates = remember(uiState.awgEndpointCandidates) {
+            EndpointScannerCli.decodeCandidates(uiState.awgEndpointCandidates)
+        }
+
+        fun recordAwgWarpProgress(line: String) {
+            val raw = line.trim()
+            val lower = raw.lowercase()
+            if (raw.isBlank() || lower.contains("scan -p") || lower == "-p" ||
+                lower.contains(" -p ") || lower.contains("github.com/") ||
+                lower.startsWith("panic:") || lower.startsWith("goroutine ") ||
+                lower.startsWith("main.") || lower.startsWith("runtime.")) return
+            val text = raw.take(180)
+            if (text.isBlank()) return
+            awgWarpProgress = text
+        }
         val proxyLabel = if (registrationProxyGuid == WarpRegistrationProxy.AUTO) {
             WarpRegistrationProxy.AUTO_LABEL
         } else {
@@ -168,6 +224,8 @@ class ServerWireguardActivity : BaseServerActivity() {
                     uiState.localAddress = account.localAddress
                     uiState.reserved = account.reserved
                     uiState.mtu = account.mtu.toString()
+                    uiState.awgEndpointCandidates = ""
+                    uiState.awgSkipAutoScanOnce = false
                     toastSuccess(R.string.toast_success)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -182,6 +240,84 @@ class ServerWireguardActivity : BaseServerActivity() {
             }
         }
 
+        fun accountFromAwgConfig(): WarpAccount? = EndpointScannerCli.accountFromConfig(
+            uiState.amneziawgConfig,
+            uiState.reserved,
+        )
+
+        fun createAwgWarpConfig() {
+            if (awgWarpGenerating) return
+            AwgEndpointScanState.clear(editGuid)
+            awgWarpGenerating = true
+            recordAwgWarpProgress("Registering a WARP account…")
+            scope.launch {
+                try {
+                    val account = WarpRegistrationProxy.register(
+                        this@ServerWireguardActivity,
+                        registrationProxyGuid,
+                        editGuid,
+                    )
+                    val defaultEndpoint = AwgWarpConfig.DEFAULT_ENDPOINT
+                    uiState.amneziawgConfig = AwgWarpConfig.render(account, defaultEndpoint)
+                    uiState.remarks = AwgWarpConfig.DEFAULT_REMARK
+                    uiState.secretKey = account.privateKey
+                    uiState.publicKey = account.peerPublicKey
+                    val (defaultHost, defaultPort) = AmneziaWgFmt.splitEndpoint(defaultEndpoint)
+                    uiState.address = defaultHost.orEmpty()
+                    uiState.port = defaultPort.orEmpty()
+                    uiState.localAddress = account.localAddress
+                    uiState.reserved = account.reserved
+                    uiState.mtu = account.mtu.toString()
+                    recordAwgWarpProgress("WARP AWG config created. Use Scan Endpoint to find a faster endpoint.")
+                    proxyChoices = WarpRegistrationProxy.choices(editGuid)
+                    toastSuccess(R.string.toast_success)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    recordAwgWarpProgress(error.message ?: "WARP AWG generation failed")
+                    toast(awgWarpProgress)
+                } finally {
+                    awgWarpGenerating = false
+                }
+            }
+        }
+
+        fun scanAwgWarpConfig() {
+            if (awgWarpGenerating || AwgEndpointScanManager.isRunning) return
+            if (accountFromAwgConfig() == null) {
+                toast("Create a WARP AWG config before scanning")
+                return
+            }
+            val guid = saveDraftForDesyncSearch(uiState) ?: return
+            val profile = MmkvManager.decodeServerConfig(guid) ?: return
+            awgScanGuid = guid
+            AwgEndpointScanManager.start(this@ServerWireguardActivity, guid, profile, true)
+        }
+
+        LaunchedEffect(awgScanState.running, awgScanState.selectedEndpoint, awgScanGuid) {
+            if (awgScanState.guid == awgScanGuid && !awgScanState.running && awgScanState.selectedEndpoint.isNotBlank()) {
+                MmkvManager.decodeServerConfig(awgScanGuid)?.let { saved ->
+                    uiState.amneziawgConfig = saved.amneziawgConfig.orEmpty()
+                    uiState.address = saved.server.orEmpty()
+                    uiState.port = saved.serverPort.orEmpty()
+                    uiState.awgEndpointCandidates = saved.awgEndpointCandidates.orEmpty()
+                    uiState.awgSkipAutoScanOnce = true
+                    awgWarpSelectedEndpoint = awgScanState.selectedEndpoint
+                }
+            }
+        }
+
+        fun selectAwgEndpoint(candidate: EndpointScannerCli.EndpointCandidate) {
+            uiState.amneziawgConfig = AmneziaWgFmt.setField(
+                uiState.amneziawgConfig, "Peer", "Endpoint", candidate.endpoint,
+            )
+            val (host, port) = AmneziaWgFmt.splitEndpoint(candidate.endpoint)
+            uiState.address = host.orEmpty()
+            uiState.port = port.orEmpty()
+            uiState.awgSkipAutoScanOnce = true
+            awgWarpSelectedEndpoint = candidate.endpoint
+        }
+
         LaunchedEffect(isWarpWireGuard, initialConfig.secretKey) {
             if (isWarpWireGuard && uiState.finalMask.isBlank()) {
                 uiState.finalMask = WarpPlusConfig.DEFAULT_FINAL_MASK
@@ -190,16 +326,38 @@ class ServerWireguardActivity : BaseServerActivity() {
                 startWarpGeneration(registrationProxyGuid)
             }
         }
+        LaunchedEffect(isAwgWarp) {
+            if (isAwgWarp && AmneziaWgFmt.value(
+                    uiState.amneziawgConfig,
+                    "Interface",
+                    "PrivateKey",
+                ).isBlank()
+            ) {
+                createAwgWarpConfig()
+            }
+        }
         ServerEditorScaffold(
             title = when {
+                isAwgWarp -> "WARP AWG"
                 isAmneziaWg -> "AmneziaWG"
                 isWarpWireGuard -> "WARP WireGuard"
                 else -> serverConfigType.toString()
             },
             onSaveClick = {
-                if (isWarpWireGuard && (generating || uiState.secretKey.isBlank())) {
+                if (isAwgWarp && awgWarpGenerating) {
+                    toast("Wait for WARP AWG config creation or endpoint scanning to finish")
+                } else if (isAwgWarp && AmneziaWgFmt.value(
+                        uiState.amneziawgConfig,
+                        "Interface",
+                        "PrivateKey",
+                    ).isBlank()
+                ) {
+                    toast("Generate a WARP AWG config before saving")
+                } else if (isWarpWireGuard && (generating || uiState.secretKey.isBlank())) {
                     toast(if (generating) "Wait for WARP key generation to finish" else "Generate a WARP key before saving")
                 } else {
+                    if (isAwgWarp) initialConfig.description = AwgWarpConfig.DESCRIPTION
+                    if (isAwgWarp) initialConfig.warpRegistrationProxyGuid = registrationProxyGuid
                     if (isWarpWireGuard) {
                         initialConfig.description = WarpWireGuardConfig.DESCRIPTION
                         initialConfig.warpEndpointTestMode = endpointMode
@@ -214,7 +372,111 @@ class ServerWireguardActivity : BaseServerActivity() {
             }
         ) {
             if (isAmneziaWg) {
-                AmneziaWgFields(uiState) {
+                if (isAwgWarp) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Auto Scan Endpoint", style = MaterialTheme.typography.bodyLarge)
+                                Text("Scan on every connect", style = MaterialTheme.typography.bodySmall)
+                            }
+                            Switch(
+                                checked = uiState.autoScanEndpoint,
+                                onCheckedChange = { uiState.autoScanEndpoint = it },
+                            )
+                        }
+                        Button(
+                            enabled = !awgWarpGenerating && !AwgEndpointScanManager.isRunning,
+                            onClick = { scanAwgWarpConfig() },
+                        ) {
+                            Text("Scan Endpoint")
+                        }
+                        if (awgScanState.guid == awgScanGuid && awgScanState.running) {
+                            Text(awgScanState.message, fontSize = 12.sp, maxLines = 2)
+                            Text("Found: ${awgScanState.endpoints.size}", fontSize = 12.sp)
+                            Column(Modifier.fillMaxWidth().height(72.dp).verticalScroll(rememberScrollState())) {
+                                awgScanState.endpoints.forEach { Text(it, fontSize = 12.sp) }
+                            }
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            OutlinedButton(onClick = { AwgEndpointScanManager.cancel() }) { Text("Cancel Scan") }
+                        }
+                        if (awgCandidates.isNotEmpty()) {
+                            Text("Reachable endpoints · lowest ping first", style = MaterialTheme.typography.titleSmall)
+                            Column(Modifier.fillMaxWidth().height(192.dp).verticalScroll(rememberScrollState())) {
+                            awgCandidates.forEachIndexed { index, candidate ->
+                                OutlinedButton(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    onClick = { selectAwgEndpoint(candidate) },
+                                    enabled = !awgWarpGenerating && !AwgEndpointScanManager.isRunning,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            "${index + 1}. ${candidate.endpoint}" +
+                                                if (AmneziaWgFmt.value(uiState.amneziawgConfig, "Peer", "Endpoint") == candidate.endpoint) " ✓" else "",
+                                            modifier = Modifier.weight(1f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(if (candidate.latencyMs >= 0) "${candidate.latencyMs} ms" else "—")
+                                    }
+                                }
+                            }
+                            }
+                        }
+                        Button(
+                            enabled = !awgWarpGenerating && !AwgEndpointScanManager.isRunning,
+                            onClick = {
+                                // A new WARP account starts a fresh flow: create
+                                // the config first, then let the user press
+                                // Scan Endpoint runs discovery for the new key.
+                                awgWarpSelectedEndpoint = ""
+                                uiState.awgEndpointCandidates = ""
+                                uiState.awgSkipAutoScanOnce = false
+                                AwgEndpointScanState.clear(editGuid)
+                                uiState.amneziawgConfig = AmneziaWgFmt.EMPTY_EDIT_CONFIG
+                                uiState.secretKey = ""
+                                uiState.publicKey = ""
+                                uiState.address = ""
+                                uiState.port = ""
+                                uiState.localAddress = ""
+                                uiState.reserved = ""
+                                uiState.mtu = ""
+                                createAwgWarpConfig()
+                            },
+                        ) {
+                            Text("Generate New WARP Key")
+                        }
+                    }
+                }
+                AmneziaWgFields(uiState, beforeRemarks = if (isAwgWarp) {
+                    {
+                        FormDropdownField(
+                            label = "Proxy",
+                            value = proxyLabel,
+                            options = listOf(WarpRegistrationProxy.AUTO_LABEL) + proxyChoices.map { it.label },
+                            onValueChange = { selected ->
+                                registrationProxyGuid = if (selected == WarpRegistrationProxy.AUTO_LABEL) {
+                                    WarpRegistrationProxy.AUTO
+                                } else {
+                                    proxyChoices.firstOrNull { it.label == selected }?.guid
+                                        ?: WarpRegistrationProxy.AUTO
+                                }
+                            },
+                            enabled = !awgWarpGenerating && !AwgEndpointScanManager.isRunning,
+                            supportingText = "Used only to generate a new WARP key",
+                        )
+                    }
+                } else null) {
                     importAmneziaConfig.launch(arrayOf("text/*", "application/octet-stream"))
                 }
             } else {
@@ -317,11 +579,16 @@ class ServerWireguardActivity : BaseServerActivity() {
     }
 
     @Composable
-    private fun AmneziaWgFields(state: ServerUiState, onAddConfig: () -> Unit) {
+    private fun AmneziaWgFields(
+        state: ServerUiState,
+        beforeRemarks: (@Composable () -> Unit)? = null,
+        onAddConfig: () -> Unit,
+    ) {
         Button(
             modifier = Modifier.padding(start = 16.dp, top = 8.dp),
             onClick = onAddConfig,
         ) { Text("Add Config") }
+        beforeRemarks?.invoke()
         FormTextField(
             stringResource(R.string.server_lab_remarks),
             state.remarks,
@@ -350,6 +617,10 @@ class ServerWireguardActivity : BaseServerActivity() {
                         state.amneziawgConfig = AmneziaWgFmt.setField(
                             state.amneziawgConfig, "Interface", key, value,
                         )
+                        if (isAwgWarp && key.equals("PrivateKey", ignoreCase = true)) {
+                            state.awgEndpointCandidates = ""
+                            state.awgSkipAutoScanOnce = false
+                        }
                     },
                 )
             }
@@ -363,6 +634,10 @@ class ServerWireguardActivity : BaseServerActivity() {
                             state.amneziawgConfig = AmneziaWgFmt.setField(
                                 state.amneziawgConfig, "Peer", key, value, peerIndex,
                             )
+                            if (isAwgWarp && key.equals("PublicKey", ignoreCase = true)) {
+                                state.awgEndpointCandidates = ""
+                                state.awgSkipAutoScanOnce = false
+                            }
                             if (peerIndex == 0 && key.equals("Endpoint", ignoreCase = true)) {
                                 val (host, port) = AmneziaWgFmt.splitEndpoint(value)
                                 state.address = host.orEmpty()

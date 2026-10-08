@@ -53,6 +53,7 @@
     <string name="menu_item_import_config_clipboard">Import from Clipboard</string>
     <string name="menu_item_import_config_local">Import from a local file</string>
     <string name="menu_item_import_config_amneziawg">Add [AmneziaWG]</string>
+    <string name="menu_item_add_awg_warp" translatable="false">Add [WARP AWG]</string>
     <string name="menu_item_import_config_policy_group">Add [Policy group]</string>
     <string name="menu_item_import_config_proxy_chain">Add [Proxy chain]</string>
     <string name="menu_item_import_config_warp_in_warp">Add [WARP PLUS]</string>

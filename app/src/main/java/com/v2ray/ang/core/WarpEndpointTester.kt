@@ -33,14 +33,14 @@ object WarpEndpointTester {
     private const val DISCOVERY_HITS_TO_VERIFY = 128
     private const val MEDIUM_DISCOVERY_STOP_HITS = 16
     private const val SLOW_PAIR_LIMIT = 256
-    // WARPSCOUT's phase-2 target. The app's native delay probe supplies the
+    // ENDPOINT_SCANNER's phase-2 target. The app's native delay probe supplies the
     // tunnel, while this URL verifies that traffic actually crosses it. Use
     // HTTP here: the device log showed HTTPS/TLS handshakes timing out even
     // while the WARP chain accepted ordinary TCP/UDP traffic, which caused a
     // healthy endpoint to be reported as failed.
     private const val SEARCH_PROBE_URL = "http://cp.cloudflare.com/generate_204"
     private const val SEARCH_PROBE_URL_FALLBACK = "http://connectivitycheck.gstatic.com/generate_204"
-    private const val WARPSCOUT_SAMPLE_HOSTS_PER_SUBNET = 12
+    private const val ENDPOINT_SCANNER_SAMPLE_HOSTS_PER_SUBNET = 12
 
     suspend fun testAndSelect(
         context: Context,
@@ -249,21 +249,21 @@ object WarpEndpointTester {
         // verifies the same-endpoint pairs for both hops.
         // Slow intentionally scans the complete pool for separate, different
         // inner/outer endpoints.
-        val innerDiscoveryIdentity = WarpScoutEndpointScanner.Identity(
+        val innerDiscoveryIdentity = AwgEndpointScanner.Identity(
             privateKey = inner.secretKey.orEmpty(),
             peerPublicKey = inner.publicKey.orEmpty(),
         )
-        val outerDiscoveryIdentity = WarpScoutEndpointScanner.Identity(
+        val outerDiscoveryIdentity = AwgEndpointScanner.Identity(
             privateKey = outer.secretKey.orEmpty(),
             peerPublicKey = outer.publicKey.orEmpty(),
         )
         val discoveryRate = if (mode == WarpPlusConfig.ENDPOINT_MODE_MEDIUM) 3_500L else 1_500L
         suspend fun discover(
             endpoints: List<Endpoint>,
-            identity: WarpScoutEndpointScanner.Identity,
+            identity: AwgEndpointScanner.Identity,
             label: String,
-        ): List<WarpScoutEndpointScanner.Hit> {
-            val primaryHits = WarpScoutEndpointScanner.scan(
+        ): List<AwgEndpointScanner.Hit> {
+            val primaryHits = AwgEndpointScanner.scan(
                 endpoints = endpoints,
                 identity = identity,
                 ratePerSecond = discoveryRate,
@@ -279,17 +279,17 @@ object WarpEndpointTester {
                 return primaryHits
             }
 
-            // WARPSCOUT does not pay every extended-port timeout for every
+            // ENDPOINT_SCANNER does not pay every extended-port timeout for every
             // address. It samples addresses first, remembers which alternate
             // ports answered, and only then sweeps those ports across the
             // complete pool. This is the important speed/accuracy tradeoff
             // missing from the previous large-pool implementation.
-            val sample = buildWarpscoutPool(
-                WarpPlusConfig.WARPSCOUT_EXTENDED_ENDPOINT_PORTS,
-                WARPSCOUT_SAMPLE_HOSTS_PER_SUBNET,
+            val sample = buildEndpointScannerPool(
+                WarpPlusConfig.ENDPOINT_SCANNER_EXTENDED_ENDPOINT_PORTS,
+                ENDPOINT_SCANNER_SAMPLE_HOSTS_PER_SUBNET,
             )
             onProgress("WARP Plus discovery: $label alternate-port sample 0/${sample.size}")
-            val sampleHits = WarpScoutEndpointScanner.scan(
+            val sampleHits = AwgEndpointScanner.scan(
                 endpoints = sample,
                 identity = identity,
                 ratePerSecond = discoveryRate,
@@ -305,9 +305,9 @@ object WarpEndpointTester {
             )
             val reachablePorts = sampleHits.map { it.endpoint.port }.distinct()
             if (reachablePorts.isEmpty()) return emptyList()
-            val extendedPool = buildWarpscoutPool(reachablePorts, null).shuffled()
+            val extendedPool = buildEndpointScannerPool(reachablePorts, null).shuffled()
             onProgress("WARP Plus discovery: $label extended sweep 0/${extendedPool.size}")
-            return WarpScoutEndpointScanner.scan(
+            return AwgEndpointScanner.scan(
                 endpoints = extendedPool,
                 identity = identity,
                 ratePerSecond = discoveryRate,
@@ -322,8 +322,8 @@ object WarpEndpointTester {
                 },
             )
         }
-        val innerDiscoveryHits: List<WarpScoutEndpointScanner.Hit>
-        val outerDiscoveryHits: List<WarpScoutEndpointScanner.Hit>
+        val innerDiscoveryHits: List<AwgEndpointScanner.Hit>
+        val outerDiscoveryHits: List<AwgEndpointScanner.Hit>
         if (mode == WarpPlusConfig.ENDPOINT_MODE_MEDIUM) {
             // An Outer handshake does not prove that this endpoint works with
             // the Inner account. Check the shortlisted Outer hits against the
@@ -332,7 +332,7 @@ object WarpEndpointTester {
             val innerShortlist = outerDiscoveryHits.map { it.endpoint }.distinct()
             innerDiscoveryHits = if (innerShortlist.isEmpty()) emptyList() else {
                 onProgress("WARP Plus discovery: inner 0/${innerShortlist.size}")
-                WarpScoutEndpointScanner.scan(
+                AwgEndpointScanner.scan(
                     endpoints = innerShortlist,
                     identity = innerDiscoveryIdentity,
                     ratePerSecond = discoveryRate,
@@ -585,7 +585,7 @@ object WarpEndpointTester {
             Endpoint(host, port)
         }
 
-    private fun buildWarpscoutPool(ports: List<Int>, sampleHostsPerSubnet: Int?): List<Endpoint> =
+    private fun buildEndpointScannerPool(ports: List<Int>, sampleHostsPerSubnet: Int?): List<Endpoint> =
         WarpPlusConfig.ALL_ENDPOINT_SUBNETS.flatMap { subnet ->
             val hosts = if (sampleHostsPerSubnet == null) {
                 (0..255).toList()

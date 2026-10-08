@@ -283,6 +283,7 @@ class MainViewModel(
             MainAction.ImportConfigLocal,
             MainAction.ImportAmneziaWG,
             MainAction.AddServerLess,
+            MainAction.AddAwgWarp,
             MainAction.AddWarpMasque,
             MainAction.AddWarpWireGuard,
             MainAction.AddWarpInWarp,

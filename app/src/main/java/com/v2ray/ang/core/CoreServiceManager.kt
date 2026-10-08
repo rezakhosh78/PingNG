@@ -68,6 +68,8 @@ object CoreServiceManager {
     @Volatile
     private var currentConfigGuid: String? = null
     private var autoExitProbeJob: Job? = null
+    /** Bounds automatic endpoint recovery within a single VPN session. */
+    private var awgFailoverCount = 0
     private var probeScope: CoroutineScope? = null
     private var coreStopJob: Job? = null
     @Volatile
@@ -196,6 +198,7 @@ object CoreServiceManager {
     @Throws(Exception::class)
     private fun doStartCoreLoop(service: Service, vpnInterface: ParcelFileDescriptor?) {
         stopping = false
+        awgFailoverCount = 0
         lifecycleGeneration += 1
         val mFilter = IntentFilter(AppConfig.BROADCAST_ACTION_SERVICE)
         mFilter.addAction(Intent.ACTION_SCREEN_ON)
@@ -743,6 +746,9 @@ object CoreServiceManager {
                 LogUtil.i(AppConfig.TAG, "StartCore-Manager: AmneziaWG network reload start")
                 stopAmneziaWgEngine()
                 launchCore(service, reloadTun, isReload = true)
+                if (currentConfig?.let(AwgWarpConfig::isProfile) == true) {
+                    currentConfigGuid?.let(::scheduleAutomaticExitProbe)
+                }
                 LogUtil.i(AppConfig.TAG, "StartCore-Manager: AmneziaWG network reload finished")
                 true
             } catch (e: Exception) {
@@ -1062,6 +1068,52 @@ object CoreServiceManager {
                 measureV2rayDelay()?.join()
                 if (!quickSearchProbe && !psiphonActive && attempt < 2) delay(1200L)
             }
+            if (currentConfig?.let(AwgWarpConfig::isProfile) == true &&
+                currentConfig?.autoScanEndpoint != false && !psiphonProfile
+            ) monitorAwgEndpoint(guid, generation)
+        }
+    }
+
+    /** A started Go engine is not proof of a completed handshake or working route. */
+    private suspend fun monitorAwgEndpoint(guid: String, generation: Long) {
+        var consecutiveFailures = 0
+        while (isProbeCurrent(generation) && currentConfigGuid == guid) {
+            delay(10_000L)
+            if (!isProbeCurrent(generation) || currentConfigGuid != guid) return
+            val reachable = SpeedtestManager.directTunnelDelay(
+                "http://1.1.1.1/cdn-cgi/trace", 3_000,
+            ) >= 0L || SpeedtestManager.directTunnelDelay(
+                "http://1.0.0.1/cdn-cgi/trace", 3_000,
+            ) >= 0L
+            if (reachable) {
+                consecutiveFailures = 0
+                continue
+            }
+            consecutiveFailures++
+            if (consecutiveFailures < 2 || awgFailoverCount >= 2) continue
+            val profile = currentConfig ?: return
+            val candidates = EndpointScannerCli.decodeCandidates(profile.awgEndpointCandidates)
+                .filter { it.latencyMs >= 0L }
+            val currentEndpoint = AmneziaWgFmt.value(profile.amneziawgConfig.orEmpty(), "Peer", "Endpoint")
+            val currentIndex = candidates.indexOfFirst { it.endpoint == currentEndpoint }
+            val next = candidates.drop(currentIndex + 1).firstOrNull { it.endpoint != currentEndpoint }
+                ?: return
+            if (!isProbeCurrent(generation) || currentConfigGuid != guid) return
+            awgFailoverCount++
+            PingNgDiagnostics.record("WARP AWG route failed twice; trying next scanned endpoint: ${next.endpoint}")
+            val (host, port) = AmneziaWgFmt.splitEndpoint(next.endpoint)
+            val updated = profile.copy(
+                amneziawgConfig = AmneziaWgFmt.setField(
+                    profile.amneziawgConfig.orEmpty(), "Peer", "Endpoint", next.endpoint,
+                ),
+                server = host,
+                serverPort = port,
+            )
+            MmkvManager.encodeServerConfig(guid, updated)
+            if (!reloadCore()) {
+                MmkvManager.encodeServerConfig(guid, profile)
+            }
+            return
         }
     }
 

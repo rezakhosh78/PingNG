@@ -45,7 +45,7 @@ object WarpPlusConfig {
     )
     /** Fast pool is materialized from a distinct list so duplicate additions cannot multiply probes. */
     val FAST_ENDPOINTS: String = FAST_ENDPOINT_SEEDS.distinct().joinToString(",")
-    // WARP Plus All pool requested for the WARPSCOUT-style scan. Keep this
+    // WARP Plus All pool requested for the ENDPOINT_SCANNER-style scan. Keep this
     // list separate from the MASQUE endpoint path and from Fast's curated
     // list: All deliberately scans these four /24 ranges with the primary
     // ports first, then samples the extended port list if needed.
@@ -56,8 +56,8 @@ object WarpPlusConfig {
         "8.6.112",
     )
     val ALL_ENDPOINT_PORTS = listOf(2408, 500, 1701, 4500)
-    /** Alternate ports used by WARPSCOUT only after primary ports are silent. */
-    val WARPSCOUT_EXTENDED_ENDPOINT_PORTS = listOf(
+    /** Alternate ports used by ENDPOINT_SCANNER only after primary ports are silent. */
+    val ENDPOINT_SCANNER_EXTENDED_ENDPOINT_PORTS = listOf(
         854, 859, 864, 878, 880, 890, 891, 894, 903, 908,
         928, 934, 939, 942, 943, 945, 946, 955, 968, 987,
         988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387, 1843,

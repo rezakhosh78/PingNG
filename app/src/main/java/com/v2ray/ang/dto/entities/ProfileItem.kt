@@ -92,6 +92,12 @@ data class ProfileItem(
     var secretKey: String? = null,
     /** Original AmneziaWG .conf, retained losslessly for AWG 1.x/2.x/3.x fields. */
     var amneziawgConfig: String? = null,
+    /** AWG WARP editor option; null keeps the default (enabled) for old profiles. */
+    var autoScanEndpoint: Boolean? = null,
+    /** Verified AWG WARP endpoints from the most recent scan, ordered by latency. */
+    var awgEndpointCandidates: String? = null,
+    /** Consume the editor's successful scan on the next connection. */
+    var awgSkipAutoScanOnce: Boolean? = null,
     var preSharedKey: String? = null,
     var localAddress: String? = null,
     var reserved: String? = null,

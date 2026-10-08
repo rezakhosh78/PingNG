@@ -66,6 +66,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.util.Locale
 import com.v2ray.ang.R
+import com.v2ray.ang.core.AwgWarpConfig
 import com.v2ray.ang.core.PingNgCompat
 import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpPlusConfig
@@ -867,24 +868,33 @@ fun ServerListItem(
             }
             Spacer(modifier = Modifier.height(6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(
-                    modifier = Modifier.weight(1f, fill = false),
-                    text = buildAnnotatedString {
-                        typeDescription.split(" / ").forEachIndexed { index, part ->
-                            if (index > 0) {
-                                withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                                    append(" / ")
+                if (typeDescription == "WARP AWG") {
+                    val badgeBlue = Color(0xFF2196F3)
+                    Text(
+                        text = typeDescription,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = badgeBlue,
+                    )
+                } else {
+                    Text(
+                        modifier = Modifier.weight(1f, fill = false),
+                        text = buildAnnotatedString {
+                            typeDescription.split(" / ").forEachIndexed { index, part ->
+                                if (index > 0) {
+                                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                                        append(" / ")
+                                    }
+                                }
+                                withStyle(SpanStyle(color = protocolPartColor(part))) {
+                                    append(part)
                                 }
                             }
-                            withStyle(SpanStyle(color = protocolPartColor(part))) {
-                                append(part)
-                            }
-                        }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Spacer(Modifier.width(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // Enabling Psiphon is itself a visible per-config state.
@@ -961,10 +971,14 @@ fun ServerListItem(
     }
 }
 
-private fun displayProfileRemark(profile: ProfileItem): String =
-    if (profile.remarks == "StormDNS") "MasterDNS" else profile.remarks
+private fun displayProfileRemark(profile: ProfileItem): String = when {
+    profile.remarks == "StormDNS" -> "MasterDNS"
+    AwgWarpConfig.isProfile(profile) && profile.remarks == "AWG WARP" -> "WARP AWG"
+    else -> profile.remarks
+}
 
 private fun getProtocolDescription(profile: ProfileItem): String {
+    if (AwgWarpConfig.isProfile(profile)) return "WARP AWG"
     if (WarpWireGuardConfig.isProfile(profile)) return "WARP WireGuard"
     if (WarpPlusConfig.isDescription(profile.description)) return "WARP PLUS"
     if (WarpMasqueConfig.isDescription(profile.description)) return "WARP MASQUE/H2"
@@ -989,6 +1003,8 @@ private fun getProtocolDescription(profile: ProfileItem): String {
 }
 
 private fun serverStatistics(profile: ProfileItem): String = when {
+    AwgWarpConfig.isProfile(profile) ->
+        listOfNotNull(profile.server?.takeIf { it.isNotBlank() }, profile.serverPort).joinToString(":")
     WarpWireGuardConfig.isProfile(profile) ->
         profile.warpWireGuardSelectedEndpoint?.takeIf { it.isNotBlank() }
             ?: listOfNotNull(profile.server?.takeIf { it.isNotBlank() }, profile.serverPort).joinToString(":")
@@ -1018,6 +1034,7 @@ private fun dnsttDisplayMode(profile: ProfileItem): String =
 private fun protocolPartColor(part: String): Color {
     val value = part.trim().uppercase()
     return when {
+        value == "WARP AWG" -> Color(0xFF2196F3)
         value.startsWith("DNSTT") -> Color(0xFF2196F3)
         value == "MASTERDNS" -> Color(0xFFFF9800)
         value.startsWith("WARP MASQUE") -> Color(0xFF00ACC1)

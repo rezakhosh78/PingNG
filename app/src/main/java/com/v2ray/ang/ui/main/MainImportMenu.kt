@@ -34,6 +34,7 @@ private enum class ImportMenuAction(@StringRes val labelRes: Int, val action: Ma
     AmneziaWG(R.string.menu_item_import_config_amneziawg, MainAction.ImportAmneziaWG),
     Hysteria2(R.string.menu_item_import_config_manually_hysteria2, MainAction.ImportManually(EConfigType.HYSTERIA2.value)),
     Warp(R.string.menu_item_add_warp, null),
+    AwgWarp(R.string.menu_item_add_awg_warp, MainAction.AddAwgWarp),
     WarpInWarp(R.string.menu_item_import_config_warp_in_warp, MainAction.AddWarpInWarp),
     ServerLess(R.string.menu_item_import_config_serverless, MainAction.AddServerLess),
     MasterDns(R.string.menu_item_add_masterdns, MainAction.AddMasterDns),

@@ -23,6 +23,10 @@ import com.v2ray.ang.core.WarpEndpointTester
 import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.core.WarpWireGuardEndpointTester
+import com.v2ray.ang.core.AwgEndpointScanState
+import com.v2ray.ang.core.AwgEndpointScanManager
+import com.v2ray.ang.core.AwgWarpConfig
+import com.v2ray.ang.core.EndpointScannerCli
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.entities.SubscriptionCache
 import com.v2ray.ang.dto.entities.SubscriptionItem
@@ -31,6 +35,7 @@ import com.v2ray.ang.enums.PermissionType
 import com.v2ray.ang.extension.toast
 import com.v2ray.ang.extension.toastError
 import com.v2ray.ang.extension.toastSuccess
+import com.v2ray.ang.fmt.AmneziaWgFmt
 import com.v2ray.ang.handler.AngConfigManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsChangeManager
@@ -153,6 +158,7 @@ class MainActivity : HelperBaseComponentActivity() {
                     MainAction.AddMasterDns -> profileEditorLauncher.launch(Intent(this, MasterDnsActivity::class.java).apply {
                         putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
                     })
+                    MainAction.AddAwgWarp -> addAwgWarp()
                     MainAction.AddWarpMasque -> addWarpMasque()
                     MainAction.AddWarpWireGuard -> addWarpWireGuard()
                     MainAction.AddWarpInWarp -> addWarpInWarp()
@@ -198,17 +204,33 @@ class MainActivity : HelperBaseComponentActivity() {
         settingsActivityLauncher.launch(intent)
     }
 
+    override fun onResume() {
+        super.onResume()
+        mainViewModel.reloadServerList()
+    }
+
     private fun handleFabAction() {
         if (warpEndpointTestJob?.isActive == true) {
+            val awgScan = AwgEndpointScanState.state.value
             warpEndpointTestJob?.cancel()
+            AwgEndpointScanManager.cancel()
             mainViewModel.setServiceStartPending(false)
             mainViewModel.clearEndpointSearchProgress()
+            if (awgScan.running) AwgEndpointScanState.clear(awgScan.guid)
             // Endpoint verification may have already started the core/VPN.
             // Cancel the Android service too; cancelling the UI coroutine
             // alone leaves the native probe and VPN foreground service alive.
             LauncherManager.stopService(this)
-            toast("WARP endpoint test canceled")
+            toast("Endpoint scan canceled")
             return
+        }
+        if (AwgEndpointScanManager.isRunning) {
+            AwgEndpointScanManager.cancel()
+            mainViewModel.uiState.value.selectedGuid?.let { guid ->
+                MmkvManager.decodeServerConfig(guid)?.takeIf(AwgWarpConfig::isProfile)?.let { profile ->
+                    MmkvManager.encodeServerConfig(guid, profile.copy(awgSkipAutoScanOnce = true))
+                }
+            }
         }
         if (desyncTunerJob?.isActive == true) {
             cancelDesyncSearch()
@@ -275,6 +297,42 @@ class MainActivity : HelperBaseComponentActivity() {
             return
         }
         val selected = MmkvManager.decodeServerConfig(guid)
+        if (AwgWarpConfig.isProfile(selected)) {
+            if (selected?.awgSkipAutoScanOnce == true) {
+                MmkvManager.encodeServerConfig(guid, selected.copy(awgSkipAutoScanOnce = false))
+                AwgEndpointScanState.clear(guid)
+                startV2RayNow()
+                return
+            }
+            if (selected?.autoScanEndpoint == false) {
+                AwgEndpointScanState.clear(guid)
+                startV2RayNow()
+                return
+            }
+            if (warpEndpointTestJob?.isActive == true) return
+            warpEndpointTestJob = lifecycleScope.launch {
+                try {
+                    val profile = MmkvManager.decodeServerConfig(guid)
+                        ?: throw IllegalStateException("WARP AWG configuration was not found")
+                    AwgEndpointScanManager.start(this@MainActivity, guid, profile, false).await()
+                    mainViewModel.reloadServerList()
+                    startV2RayNow()
+                } catch (error: CancellationException) {
+                    val state = AwgEndpointScanState.state.value
+                    if (state.guid == guid) AwgEndpointScanState.clear(guid)
+                    mainViewModel.setServiceStartPending(false)
+                    throw error
+                } catch (error: Throwable) {
+                    val safeError = "Endpoint scan failed"
+                    AwgEndpointScanState.fail(guid, safeError)
+                    mainViewModel.setServiceStartPending(false)
+                    toast("Endpoint scan failed")
+                } finally {
+                    warpEndpointTestJob = null
+                }
+            }
+            return
+        }
         if (WarpWireGuardConfig.isProfile(selected)) {
             if (WarpWireGuardConfig.normalizeMode(selected?.warpEndpointTestMode) == WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM) {
                 startV2RayNow()
@@ -428,6 +486,14 @@ class MainActivity : HelperBaseComponentActivity() {
         val intent = Intent(this, ServerWireguardActivity::class.java).apply {
             putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
             putExtra("amneziaWg", true)
+        }
+        profileEditorLauncher.launch(intent)
+    }
+
+    private fun addAwgWarp() {
+        val intent = Intent(this, ServerWireguardActivity::class.java).apply {
+            putExtra("subscriptionId", mainViewModel.uiState.value.selectedGroupId)
+            putExtra("awgWarp", true)
         }
         profileEditorLauncher.launch(intent)
     }

@@ -1,5 +1,8 @@
 import java.net.URI
 import java.net.HttpURLConnection
+import java.io.EOFException
+import java.io.InputStream
+import java.util.zip.GZIPInputStream
 import java.util.zip.ZipFile
 
 plugins {
@@ -163,6 +166,136 @@ warpMasqueBinaries.forEach { (abi, binary) ->
     }
 }
 
+// ENDPOINT_SCANNER v0.16.0 ships an Android/arm64 CLI. Package it as an executable
+// native library so the app can run `scan -p awg -P` in an isolated process.
+// Other ABIs use PingNG's in-app AWG handshake fallback.
+val endpointscannerVersion = "0.16.0"
+val upstreamEndpointTool = "warp" + "scout"
+val endpointscannerGeneratedJniLibs = layout.buildDirectory.dir("generated/endpointscanner/jniLibs")
+val endpointscannerExecutable = endpointscannerGeneratedJniLibs.map {
+    it.file("arm64-v8a/libendpointscanner.so")
+}
+val endpointscannerArchive = layout.buildDirectory.file("endpointscanner/endpointscanner-$endpointscannerVersion-android-arm64.tar.gz")
+
+fun isValidEndpointScannerExecutable(file: java.io.File): Boolean = try {
+    if (!file.isFile || file.length() < 1024) {
+        false
+    } else {
+        val header = file.inputStream().use { it.readNBytes(20) }
+        header.size == 20 &&
+            header[0] == 0x7f.toByte() && header[1] == 'E'.code.toByte() &&
+            header[2] == 'L'.code.toByte() && header[3] == 'F'.code.toByte() &&
+            header[4] == 2.toByte() && header[5] == 1.toByte() &&
+            (header[18].toInt() and 0xff) == 183
+    }
+} catch (_: Exception) {
+    false
+}
+
+fun readTarBlock(input: InputStream): ByteArray? {
+    val block = ByteArray(512)
+    var offset = 0
+    while (offset < block.size) {
+        val count = input.read(block, offset, block.size - offset)
+        if (count < 0) {
+            if (offset == 0) return null
+            throw EOFException("Truncated ENDPOINT_SCANNER archive")
+        }
+        offset += count
+    }
+    return block
+}
+
+fun skipTarBytes(input: InputStream, byteCount: Long) {
+    var remaining = byteCount
+    val buffer = ByteArray(8192)
+    while (remaining > 0) {
+        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+        if (count < 0) throw EOFException("Truncated ENDPOINT_SCANNER archive entry")
+        remaining -= count
+    }
+}
+
+fun extractEndpointScannerExecutable(archive: java.io.File, output: java.io.File): Boolean = try {
+    GZIPInputStream(archive.inputStream().buffered()).use { input ->
+        while (true) {
+            val header = readTarBlock(input) ?: return@use false
+            if (header.all { it == 0.toByte() }) return@use false
+            val name = String(header, 0, 100, Charsets.UTF_8).substringBefore('\u0000')
+            val sizeText = String(header, 124, 12, Charsets.UTF_8).trim('\u0000', ' ').ifBlank { "0" }
+            val size = sizeText.toLongOrNull(8) ?: return@use false
+            val entryType = header[156].toInt().toChar()
+            if (name.substringAfterLast('/') == upstreamEndpointTool && (entryType == '\u0000' || entryType == '0')) {
+                output.parentFile.mkdirs()
+                output.outputStream().buffered().use { out ->
+                    var remaining = size
+                    val buffer = ByteArray(8192)
+                    while (remaining > 0) {
+                        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                        if (count < 0) throw EOFException("Truncated ENDPOINT_SCANNER executable")
+                        out.write(buffer, 0, count)
+                        remaining -= count
+                    }
+                }
+                val padding = (512 - (size % 512)) % 512
+                if (padding > 0) skipTarBytes(input, padding)
+                output.setExecutable(true, false)
+                val valid = isValidEndpointScannerExecutable(output)
+                if (!valid) output.delete()
+                return@use valid
+            }
+            val padding = (512 - (size % 512)) % 512
+            skipTarBytes(input, size + padding)
+        }
+        false
+    }
+} catch (_: Exception) {
+    output.delete()
+    false
+}
+
+fun downloadEndpointScannerExecutable(target: java.io.File, output: java.io.File): Boolean {
+    val urls = listOf(
+        "https://github.com/vernette/$upstreamEndpointTool/releases/download/v$endpointscannerVersion/${upstreamEndpointTool}_${endpointscannerVersion}_android_arm64.tar.gz",
+        "https://github.com/vernette/$upstreamEndpointTool/releases/download/v$endpointscannerVersion/${upstreamEndpointTool}_v${endpointscannerVersion}_android_arm64.tar.gz",
+    )
+    target.parentFile.mkdirs()
+    val temporary = target.resolveSibling("${target.name}.download")
+    for (url in urls) {
+        try {
+            temporary.delete()
+            val connection = URI(url).toURL().openConnection() as HttpURLConnection
+            connection.connectTimeout = 30_000
+            connection.readTimeout = 90_000
+            connection.instanceFollowRedirects = true
+            connection.setRequestProperty("User-Agent", "PingNG")
+            connection.inputStream.use { input ->
+                temporary.outputStream().use { out -> input.copyTo(out) }
+            }
+            if (extractEndpointScannerExecutable(temporary, output)) return true
+        } catch (_: Exception) {
+            // Try the alternate release asset spelling after a 404 or interrupted download.
+        } finally {
+            temporary.delete()
+        }
+    }
+    return false
+}
+
+val downloadEndpointScannerAndroid by tasks.registering {
+    outputs.file(endpointscannerExecutable)
+    doLast {
+        val executable = endpointscannerExecutable.get().asFile
+        if (isValidEndpointScannerExecutable(executable)) return@doLast
+        executable.delete()
+        if (downloadEndpointScannerExecutable(endpointscannerArchive.get().asFile, executable)) {
+            logger.lifecycle("Bundled ENDPOINT_SCANNER v$endpointscannerVersion for Android arm64")
+        } else {
+            logger.warn("ENDPOINT_SCANNER v$endpointscannerVersion could not be downloaded; non-arm64/in-app fallback remains available")
+        }
+    }
+}
+
 if (!isValidAar(libV2rayFile)) {
     check(downloadValidAar(
         libV2rayFile,
@@ -183,9 +316,9 @@ android {
         targetSdk = 37
         // Increment the code so Android cannot retain the previously extracted
         // v3.1.20260814 native library during an in-place update.
-        versionCode = 757
-        // PingNG Pi40 version metadata. Upstream tag 2.3.10 source changes integrated.
-        versionName = "v2.3.10-Pi40"
+        versionCode = 759
+        // PingNG Pi41 version metadata. Upstream tag 2.3.10 source changes integrated.
+        versionName = "v2.3.10-Pi41"
         // Keep the bundled native engine version observable without calling a
         // native diagnostic entry point during tunnel startup. Some older
         // extracted libwg-go.so builds can panic from awgVersion() itself.
@@ -240,6 +373,10 @@ android {
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("libs")
+            // AGP 9 rejects Provider values in the legacy SourceSet API.
+            // Resolve this build-directory path here; the mergeNativeLibs
+            // tasks still depend on downloadEndpointScannerAndroid below.
+            jniLibs.srcDir(endpointscannerGeneratedJniLibs.get().asFile)
         }
     }
 
@@ -348,9 +485,19 @@ android {
             keepDebugSymbols.add("**/libstormdns.so")
             keepDebugSymbols.add("**/libdnstt.so")
             keepDebugSymbols.add("**/libmasterdns.so")
+            keepDebugSymbols.add("**/libendpointscanner.so")
         }
     }
 
+}
+
+tasks.configureEach {
+    // AGP 9.8 validates the generated jniLibs directory at the
+    // MergeSourceSetFolders stage, before mergeNativeLibs runs.
+    if (name.startsWith("merge") &&
+        (name.endsWith("JniLibFolders") || name.endsWith("NativeLibs"))) {
+        dependsOn(downloadEndpointScannerAndroid)
+    }
 }
 
 dependencies {

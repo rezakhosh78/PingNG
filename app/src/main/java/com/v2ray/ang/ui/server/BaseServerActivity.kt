@@ -557,6 +557,10 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         if (initialConfig.description == com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION) {
             config.description = com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION
         }
+        if (initialConfig.description == com.v2ray.ang.core.AwgWarpConfig.DESCRIPTION) {
+            config.description = com.v2ray.ang.core.AwgWarpConfig.DESCRIPTION
+            if (config.remarks.isBlank()) config.remarks = com.v2ray.ang.core.AwgWarpConfig.DEFAULT_REMARK
+        }
         if (config.subscriptionId.isEmpty() && !subscriptionId.isNullOrEmpty()) {
             config.subscriptionId = subscriptionId.orEmpty()
         }
@@ -749,6 +753,10 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         if (initialConfig.description == com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION) {
             config.description = com.v2ray.ang.core.WarpWireGuardConfig.DESCRIPTION
             if (config.remarks.isBlank()) config.remarks = "WARP WireGuard"
+        }
+        if (initialConfig.description == com.v2ray.ang.core.AwgWarpConfig.DESCRIPTION) {
+            config.description = com.v2ray.ang.core.AwgWarpConfig.DESCRIPTION
+            if (config.remarks.isBlank()) config.remarks = com.v2ray.ang.core.AwgWarpConfig.DEFAULT_REMARK
         }
         if (config.subscriptionId.isEmpty() && !subscriptionId.isNullOrEmpty()) {
             config.subscriptionId = subscriptionId.orEmpty()

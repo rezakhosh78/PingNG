@@ -26,7 +26,7 @@ object WarpWireGuardEndpointTester {
         val result = CoreConfigManager.getV2rayConfig(context, guid)
         if (!result.status || result.content.isBlank()) return false
         CoreNativeManager.initCoreEnv(context)
-        val identity = WarpScoutEndpointScanner.Identity(
+        val identity = AwgEndpointScanner.Identity(
             privateKey = original.secretKey.orEmpty(),
             peerPublicKey = original.publicKey.orEmpty(),
         )
@@ -66,7 +66,7 @@ object WarpWireGuardEndpointTester {
         val pool = parse(rawPool).filterNot { it == fixed || it == previous }.distinct()
         if (pool.isEmpty()) return false
         onProgress("WARP WireGuard discovery: 0/${pool.size}")
-        val hits = WarpScoutEndpointScanner.scan(
+        val hits = AwgEndpointScanner.scan(
             endpoints = pool,
             identity = identity,
             ratePerSecond = if (mode == WarpWireGuardConfig.ENDPOINT_MODE_FAST) 1_500L else 3_500L,

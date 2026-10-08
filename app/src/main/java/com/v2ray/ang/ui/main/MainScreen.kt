@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.v2ray.ang.dto.PsiphonStatus
 import com.v2ray.ang.dto.entities.ProfileItem
+import com.v2ray.ang.core.AwgEndpointScanState
 import com.v2ray.ang.ui.compose.QRCodeDialog
 import com.v2ray.ang.extension.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -42,6 +43,7 @@ fun MainScreen(
     onNavigate: (MainDestination) -> Unit,
 ) {
     val uiState by mainViewModel.uiState.collectAsStateWithLifecycle()
+    val awgScan by AwgEndpointScanState.state.collectAsStateWithLifecycle()
     val groups = uiState.groups
     val isLoading by mainViewModel.isLoading.collectAsStateWithLifecycle()
     val isRunning = uiState.isRunning || uiState.isStarting ||
@@ -236,6 +238,8 @@ fun MainScreen(
                 MainBottomBar(
                     displayText = displayText,
                     isRunning = isRunning,
+                    scanSteps = awgScan.takeIf { it.running }?.steps.orEmpty(),
+                    scanEndpoints = awgScan.takeIf { it.running }?.endpoints.orEmpty(),
                     onAction = onAction
                 )
             },

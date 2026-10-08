@@ -46,6 +46,10 @@ object AngConfigManager {
     // Parser mapping for different config types (lazy initialized)
     private val configFmtParsers: Map<String, (String) -> ProfileItem?> by lazy {
         mapOf(
+            MasterDnsShareCodec.DNSTT_PREFIX to MasterDnsShareCodec::decode,
+            MasterDnsShareCodec.MASTER_DNS_PREFIX to MasterDnsShareCodec::decode,
+            MasterDnsShareCodec.COMPACT_PREFIX_V2 to MasterDnsShareCodec::decode,
+            MasterDnsShareCodec.COMPACT_PREFIX to MasterDnsShareCodec::decode,
             MasterDnsShareCodec.PREFIX to MasterDnsShareCodec::decode,
             EConfigType.VMESS.protocolScheme to VmessFmt::parse,
             EConfigType.SHADOWSOCKS.protocolScheme to ShadowsocksFmt::parse,
@@ -583,7 +587,7 @@ object AngConfigManager {
             }
 
             val config = configFmtParsers.firstNotNullOfOrNull { (scheme, parser) ->
-                if (str.startsWith(scheme)) parser(str) else null
+                if (str.startsWith(scheme, ignoreCase = true)) parser(str) else null
             }
 
             if (config == null) {

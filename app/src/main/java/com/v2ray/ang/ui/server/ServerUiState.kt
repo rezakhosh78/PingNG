@@ -8,6 +8,7 @@ import com.v2ray.ang.AppConfig.DEFAULT_PORT
 import com.v2ray.ang.AppConfig.REALITY
 import com.v2ray.ang.AppConfig.WIREGUARD_LOCAL_ADDRESS_V4
 import com.v2ray.ang.AppConfig.WIREGUARD_LOCAL_MTU
+import com.v2ray.ang.core.AwgWarpConfig
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.enums.NetworkType
@@ -35,6 +36,9 @@ class ServerUiState(
     username: String = "",
     secretKey: String = "",
     amneziawgConfig: String = "",
+    autoScanEndpoint: Boolean = AwgWarpConfig.DEFAULT_AUTO_SCAN_ENDPOINT,
+    awgEndpointCandidates: String = "",
+    awgSkipAutoScanOnce: Boolean = false,
     publicKey: String = "",
     preSharedKey: String = "",
     reserved: String = "0,0,0",
@@ -93,6 +97,9 @@ class ServerUiState(
     var username by mutableStateOf(username)
     var secretKey by mutableStateOf(secretKey)
     var amneziawgConfig by mutableStateOf(amneziawgConfig)
+    var autoScanEndpoint by mutableStateOf(autoScanEndpoint)
+    var awgEndpointCandidates by mutableStateOf(awgEndpointCandidates)
+    var awgSkipAutoScanOnce by mutableStateOf(awgSkipAutoScanOnce)
     var publicKey by mutableStateOf(publicKey)
     var preSharedKey by mutableStateOf(preSharedKey)
     var reserved by mutableStateOf(reserved)
@@ -170,6 +177,17 @@ class ServerUiState(
             username = if (isSocksOrHttp) username else null,
             secretKey = if (isWireguard || isAmneziaWg) secretKey else null,
             amneziawgConfig = if (isAmneziaWg) amneziawgConfig else null,
+            autoScanEndpoint = if (isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) {
+                autoScanEndpoint
+            } else {
+                null
+            },
+            awgEndpointCandidates = if (isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) {
+                awgEndpointCandidates.ifBlank { null }
+            } else null,
+            awgSkipAutoScanOnce = if (isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) {
+                awgSkipAutoScanOnce
+            } else null,
             publicKey = when {
                 isWireguard || isAmneziaWg -> publicKey
                 streamSecurity == REALITY -> publicKeyReality
@@ -255,6 +273,9 @@ class ServerUiState(
                 username = initialConfig.username ?: "",
                 secretKey = initialConfig.secretKey ?: "",
                 amneziawgConfig = initialConfig.amneziawgConfig ?: "",
+                autoScanEndpoint = initialConfig.autoScanEndpoint ?: AwgWarpConfig.DEFAULT_AUTO_SCAN_ENDPOINT,
+                awgEndpointCandidates = initialConfig.awgEndpointCandidates.orEmpty(),
+                awgSkipAutoScanOnce = initialConfig.awgSkipAutoScanOnce == true,
                 publicKey = initialConfig.publicKey ?: "",
                 preSharedKey = initialConfig.preSharedKey ?: "",
                 reserved = initialConfig.reserved ?: "0,0,0",

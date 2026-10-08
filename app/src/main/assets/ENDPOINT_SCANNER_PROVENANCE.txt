@@ -1,0 +1,5 @@
+ENDPOINT_SCANNER CLI v0.16.0
+Upstream: https://github.com/vernette/warpscout
+Android executable: warpscout_0.16.0_android_arm64.tar.gz
+Invocation: scan -p awg -P -n 3 -jt 24 -a <account.json> -conf <config.conf> -o <report.txt>
+License: MIT; see ENDPOINT_SCANNER_LICENSE.txt

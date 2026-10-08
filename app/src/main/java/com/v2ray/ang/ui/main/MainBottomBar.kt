@@ -28,6 +28,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.painterResource
@@ -41,10 +43,22 @@ import kotlinx.coroutines.launch
 fun MainBottomBar(
     displayText: String,
     isRunning: Boolean,
+    scanSteps: List<String>,
+    scanEndpoints: List<String>,
     onAction: (MainAction) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val rotationAnim = remember { Animatable(0f) }
+    val liveScanText = if (scanSteps.isNotEmpty()) {
+        val latest = scanSteps.last().trim().replace(Regex("\\s+"), " ")
+        if (scanEndpoints.isNotEmpty()) {
+            "$latest\nFound: ${scanEndpoints.size}"
+        } else {
+            latest
+        }
+    } else {
+        displayText
+    }
 
     LaunchedEffect(isRunning) {
         if (!isRunning) rotationAnim.snapTo(0f)
@@ -68,11 +82,16 @@ fun MainBottomBar(
                 horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = displayText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.semantics {
-                        contentDescription = displayText
-                    }
+                        text = liveScanText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .weight(1f)
+                            .semantics {
+                                contentDescription = liveScanText
+                            },
+                        maxLines = 2,
+                        textAlign = TextAlign.Start,
+                        overflow = TextOverflow.Ellipsis,
                     )
                 }
         }

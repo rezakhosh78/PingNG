@@ -12,6 +12,7 @@ import java.nio.ByteOrder
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetSocketAddress
+import java.net.SocketTimeoutException
 import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -22,16 +23,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
 /**
- * WARPSCOUT-compatible WARP Plus discovery pass.
+ * ENDPOINT_SCANNER-compatible WARP Plus discovery pass.
  *
- * The upstream WARPSCOUT scanner treats a completed WireGuard handshake as
+ * The upstream ENDPOINT_SCANNER scanner treats a completed WireGuard handshake as
  * the only reliable reachability signal, then brings up a real tunnel for the
  * second phase. This Android adapter keeps that two-phase design while using
  * the app's existing native WARP Plus chain for the real tunnel phase.
  *
- * Upstream: https://github.com/vernette/warpscout (MIT, vernette).
+ * Upstream binary provenance and license are recorded in the bundled asset.
  */
-object WarpScoutEndpointScanner {
+object AwgEndpointScanner {
     data class Hit(
         val endpoint: WarpEndpointTester.Endpoint,
         val latencyMs: Long,
@@ -60,6 +61,7 @@ object WarpScoutEndpointScanner {
         maxHits: Int = DEFAULT_MAX_HITS_TO_VERIFY,
         stopAfterHits: Int? = null,
         acceptCookieReplies: Boolean = false,
+        awgJunkCount: Int = 0,
         onProgress: suspend (tested: Int, total: Int) -> Unit = { _, _ -> },
     ): List<Hit> = coroutineScope {
         if (endpoints.isEmpty()) return@coroutineScope emptyList()
@@ -100,7 +102,14 @@ object WarpScoutEndpointScanner {
                 for (endpoint in queue) {
                     ensureActive()
                     if (stopRequested.get()) break
-                    val hit = probe(endpoint, prepared, limiter, timeoutMs, acceptCookieReplies)
+                    val hit = probe(
+                        endpoint,
+                        prepared,
+                        limiter,
+                        timeoutMs,
+                        acceptCookieReplies,
+                        awgJunkCount.coerceIn(0, 128),
+                    )
                     ensureActive()
                     val tested = testedCount.incrementAndGet()
                     val now = System.nanoTime()
@@ -115,7 +124,7 @@ object WarpScoutEndpointScanner {
                     if (hit != null) {
                         val hitsSeen = hitCount.incrementAndGet()
                         synchronized(hits) {
-                            // WARPSCOUT's first usable answers are fed into the
+                            // ENDPOINT_SCANNER's first usable answers are fed into the
                             // real-tunnel phase. Preserve discovery order;
                             // sorting by raw UDP latency made All pair the
                             // wrong endpoints and inflated Verify work.
@@ -146,20 +155,43 @@ object WarpScoutEndpointScanner {
         limiter: PacketRateLimiter,
         timeoutMs: Int,
         acceptCookieReplies: Boolean,
+        awgJunkCount: Int,
     ): Hit? = withContext(Dispatchers.IO) {
         limiter.awaitSlot()
-        val startedAt = System.nanoTime()
         val response = ByteArray(128)
         try {
             val initiation = WireGuardInitiation.create(prepared) ?: return@withContext null
             DatagramSocket().use { socket ->
-                socket.soTimeout = timeoutMs.coerceIn(50, 2_000)
                 val address = InetSocketAddress(endpoint.host, endpoint.port)
+                // AmneziaWG's Jc/Jmin/Jmax settings send randomized UDP junk
+                // datagrams before the normal WireGuard initiation. This keeps
+                // the in-app fallback useful on networks that filter plain WG.
+                repeat(awgJunkCount) {
+                    val junk = ByteArray(10 + random.nextInt(31)).also(random::nextBytes)
+                    socket.send(DatagramPacket(junk, junk.size, address))
+                }
+                val startedAt = System.nanoTime()
                 socket.send(DatagramPacket(initiation.packet, initiation.packet.size, address))
-                val packet = DatagramPacket(response, response.size)
-                socket.receive(packet)
-                if (!packet.isWireGuardResponse(initiation.senderIndex, acceptCookieReplies)) return@withContext null
-                Hit(endpoint, ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L))
+                val deadline = startedAt + timeoutMs.coerceIn(50, 2_000) * 1_000_000L
+                while (true) {
+                    val remainingMs = ((deadline - System.nanoTime()) / 1_000_000L).toInt()
+                    if (remainingMs <= 0) return@withContext null
+                    socket.soTimeout = remainingMs.coerceAtLeast(1)
+                    val packet = DatagramPacket(response, response.size)
+                    try {
+                        socket.receive(packet)
+                    } catch (_: SocketTimeoutException) {
+                        return@withContext null
+                    }
+                    if (packet.isWireGuardResponse(initiation.senderIndex, acceptCookieReplies)) {
+                        return@withContext Hit(
+                            endpoint,
+                            ((System.nanoTime() - startedAt) / 1_000_000L).coerceAtLeast(0L),
+                        )
+                    }
+                }
+                @Suppress("UNREACHABLE_CODE")
+                null
             }
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
             throw cancelled

@@ -219,6 +219,12 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="pingng-warp" android:host="profile" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="pmd" android:host="p" />
+            </intent-filter>
         </activity>
         <activity
             android:name=".ui.checkupdate.CheckUpdateActivity"

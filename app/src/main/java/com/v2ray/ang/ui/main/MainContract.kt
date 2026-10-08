@@ -60,6 +60,7 @@ sealed interface MainAction {
     data object AddServerLess : MainAction
     data object AddMasterDns : MainAction
     data object AddDnstt : MainAction
+    data object AddAwgWarp : MainAction
     data object AddWarpMasque : MainAction
     data object AddWarpWireGuard : MainAction
     data object AddWarpInWarp : MainAction
