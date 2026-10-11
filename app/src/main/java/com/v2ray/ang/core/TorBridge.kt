@@ -35,6 +35,7 @@ object TorBridge {
     private const val TAG = "PingNG-Tor"
     private const val UPSTREAM_TAG = "pingng-tor-upstream"
     private const val SNOWFLAKE_UPSTREAM_TAG = "pingng-snowflake-upstream"
+    private const val SNOWFLAKE_UDP_TAG = "pingng-snowflake-direct-udp"
     private const val EGRESS_TAG = "pingng-tor-egress"
     private const val BLOCK_UDP_TAG = "pingng-tor-block-udp"
     private const val BLOCK_IPV6_TAG = "pingng-tor-block-ipv6"
@@ -282,6 +283,7 @@ object TorBridge {
 
         val outbounds = root.getAsJsonArray("outbounds") ?: JsonArray().also { root.add("outbounds", it) }
         removeTagged(outbounds, EGRESS_TAG)
+        removeTagged(outbounds, SNOWFLAKE_UDP_TAG)
         removeTagged(outbounds, BLOCK_UDP_TAG)
         removeTagged(outbounds, BLOCK_IPV6_TAG)
         // Remove the former direct-DNSPort outbound when updating a running
@@ -302,6 +304,18 @@ object TorBridge {
             })
             add("streamSettings", JsonObject().apply {
                 addProperty("network", "tcp")
+                add("sockopt", JsonObject().apply { addProperty("domainStrategy", "UseIPv4") })
+            })
+        })
+        // Snowflake broker HTTPS uses the selected profile, while STUN and
+        // WebRTC peer datagrams need a native UDP socket for ICE/NAT traversal.
+        // Sending those datagrams into a TCP-only VLESS/WS hop causes repeated
+        // peer timeouts before Tor can build its first circuit.
+        outbounds.add(JsonObject().apply {
+            addProperty("tag", SNOWFLAKE_UDP_TAG)
+            addProperty("protocol", "freedom")
+            add("settings", JsonObject())
+            add("streamSettings", JsonObject().apply {
                 add("sockopt", JsonObject().apply { addProperty("domainStrategy", "UseIPv4") })
             })
         })
@@ -366,7 +380,8 @@ object TorBridge {
         val snowflakeBootstrapIps = addUpstreamHostMappings(dns, profile, outbounds, upstreamOutbound)
         val torRules = arrayListOf(
             rule(inboundTags = listOf(UPSTREAM_TAG), outboundTag = upstreamOutbound),
-            rule(inboundTags = listOf(SNOWFLAKE_UPSTREAM_TAG), outboundTag = upstreamOutbound),
+            rule(inboundTags = listOf(SNOWFLAKE_UPSTREAM_TAG), network = "udp", outboundTag = SNOWFLAKE_UDP_TAG),
+            rule(inboundTags = listOf(SNOWFLAKE_UPSTREAM_TAG), network = "tcp", outboundTag = upstreamOutbound),
             rule(inboundTags = listOf(DNS_MODULE_TAG), outboundTag = EGRESS_TAG),
             rule(inboundTags = userInboundTags, network = "udp", port = "53", outboundTag = "dns-out"),
             // Tor only transports TCP. Drop QUIC early so browsers immediately
@@ -398,7 +413,7 @@ object TorBridge {
             otherRules.forEach { add(it) }
         })
         PingNgDiagnostics.record(
-            "Tor route prepared: bootstrap -> $upstreamOutbound; app IPv4 TCP -> Tor; IPv6 TCP blocked for IPv4 fallback; app DNS -> Cloudflare/Google DoH over Tor SOCKS (IPv4, Tor-only fallback); QUIC UDP/443 blocked for TCP fallback; other UDP -> $upstreamOutbound",
+            "Tor route prepared: Snowflake broker TCP -> $upstreamOutbound; Snowflake STUN/WebRTC UDP -> direct (IPv4 preferred); bootstrap -> $upstreamOutbound; app IPv4 TCP -> Tor; IPv6 TCP blocked for IPv4 fallback; app DNS -> Cloudflare/Google DoH over Tor SOCKS (IPv4, Tor-only fallback); QUIC UDP/443 blocked for TCP fallback; other UDP -> $upstreamOutbound",
         )
         return root.toString()
     }
@@ -790,7 +805,8 @@ object TorBridge {
         val port = obj.get("port")?.asString
         val outbound = obj.get("outboundTag")?.asString
         return inbounds == listOf(UPSTREAM_TAG) ||
-            inbounds == listOf(SNOWFLAKE_UPSTREAM_TAG) ||
+            (inbounds == listOf(SNOWFLAKE_UPSTREAM_TAG) && outbound == upstream) ||
+            (inbounds == listOf(SNOWFLAKE_UPSTREAM_TAG) && outbound == SNOWFLAKE_UDP_TAG) ||
             inbounds == listOf(DNS_MODULE_TAG) ||
             (inbounds == userTags && network == "udp" && port == "53" && outbound == "dns-out") ||
             (inbounds == userTags && network == "udp" && (outbound == BLOCK_UDP_TAG || outbound == upstream)) ||
