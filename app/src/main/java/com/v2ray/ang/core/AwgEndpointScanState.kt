@@ -12,6 +12,8 @@ object AwgEndpointScanState {
         val message: String = "",
         val steps: List<String> = emptyList(),
         val endpoints: List<String> = emptyList(),
+        val scannedCount: Long = 0,
+        val totalCount: Long = 0,
         val selectedEndpoint: String = "",
         val error: Boolean = false,
     )
@@ -22,6 +24,7 @@ object AwgEndpointScanState {
     private val endpointPattern = Regex(
         """(?:\[(?:[0-9A-Fa-f:]+)\]|(?:\d{1,3}\.){3}\d{1,3}|[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?)(?::\d{1,5})(?!\d)"""
     )
+    private val scanCountPattern = Regex("""\b(\d+)\s*(?:/|of)\s*(\d+)\b""", RegexOption.IGNORE_CASE)
 
     fun begin(guid: String, message: String) {
         _state.value = Snapshot(guid = guid, running = true, message = message, steps = listOf(message))
@@ -39,6 +42,9 @@ object AwgEndpointScanState {
                 Snapshot(guid = guid, running = true, message = text)
             } else {
                 val found = endpointPattern.find(text)?.value
+                val count = scanCountPattern.find(text)
+                val scanned = count?.groupValues?.get(1)?.toLongOrNull()
+                val total = count?.groupValues?.get(2)?.toLongOrNull()
                 val steps = if (current.steps.lastOrNull() == text) current.steps
                     else (current.steps + text).takeLast(4)
                 val endpoints = if (found.isNullOrBlank() || current.endpoints.contains(found)) {
@@ -46,7 +52,15 @@ object AwgEndpointScanState {
                 } else {
                     (current.endpoints + found).takeLast(100)
                 }
-                current.copy(running = true, message = text, steps = steps, endpoints = endpoints, error = false)
+                current.copy(
+                    running = true,
+                    message = text,
+                    steps = steps,
+                    endpoints = endpoints,
+                    scannedCount = scanned ?: current.scannedCount,
+                    totalCount = total ?: current.totalCount,
+                    error = false,
+                )
             }
         }
     }

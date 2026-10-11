@@ -2,6 +2,7 @@ package com.v2ray.ang.ui.main
 
 import com.v2ray.ang.dto.ConnectionTestResult
 import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.dto.TorStatus
 
 sealed class MainServiceEvent {
     data object StateRunning : MainServiceEvent()
@@ -15,5 +16,6 @@ sealed class MainServiceEvent {
     data class MasterDnsProgress(val guid: String, val completed: Int, val total: Int, val valid: Int = 0) : MainServiceEvent()
     data class MeasureConfigFinish(val finishedCount: String?) : MainServiceEvent()
     data class PsiphonStatusChanged(val status: PsiphonStatus) : MainServiceEvent()
+    data class TorStatusChanged(val status: TorStatus) : MainServiceEvent()
     data class SubscriptionUpdated(val subscriptionId: String) : MainServiceEvent()
 }

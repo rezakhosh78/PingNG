@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.AlertDialog
@@ -16,7 +19,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -26,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -36,6 +39,10 @@ import com.v2ray.ang.R
 import com.v2ray.ang.core.LauncherManager
 import com.v2ray.ang.core.PingNgCompat
 import com.v2ray.ang.core.WarpAccount
+import com.v2ray.ang.core.EndpointScannerCli
+import com.v2ray.ang.core.AwgEndpointScanState
+import com.v2ray.ang.fmt.AmneziaWgFmt
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.dto.entities.ProfileItem
@@ -59,9 +66,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
-import kotlin.random.Random
-
-private data class WarpEndpoint(val host: String, val port: Int)
 
 internal data class WarpFinalMaskState(
     val enabled: Boolean = true,
@@ -175,7 +179,6 @@ private data class WarpLayerState(
     val reserved: String = "0,0,0",
     val mtu: String = "1280",
     val keepAlive: String = WarpPlusConfig.DEFAULT_KEEP_ALIVE.toString(),
-    val endpointCandidates: String = "",
 ) {
     fun withAccount(account: WarpAccount) = copy(
         // Keep the endpoint fields user-controlled. A fresh registration
@@ -191,13 +194,11 @@ private data class WarpLayerState(
         fun outerDefault() = WarpLayerState(
             server = "engage.cloudflareclient.com",
             port = "2408",
-            endpointCandidates = WarpPlusConfig.DEFAULT_OUTER_ENDPOINTS,
         )
 
         fun innerDefault() = WarpLayerState(
             server = "162.159.192.1",
             port = "2408",
-            endpointCandidates = WarpPlusConfig.DEFAULT_INNER_ENDPOINTS,
         )
 
         fun from(profile: ProfileItem?, fallback: WarpLayerState): WarpLayerState = profile?.let {
@@ -210,13 +211,13 @@ private data class WarpLayerState(
                 reserved = it.reserved.orEmpty().ifBlank { fallback.reserved },
                 mtu = it.mtu?.toString() ?: fallback.mtu,
                 keepAlive = it.warpKeepAlive?.toString() ?: fallback.keepAlive,
-                endpointCandidates = it.warpEndpointCandidates.orEmpty().ifBlank { fallback.endpointCandidates },
             )
         } ?: fallback
     }
 }
 
 class WarpInWarpActivity : BaseComponentActivity() {
+    private var warpPlusDraftGuid: String? = null
     private val editGuid by lazy { intent.getStringExtra("guid").orEmpty() }
     private val subscriptionId by lazy { intent.getStringExtra("subscriptionId").orEmpty() }
     private val isRunning by lazy {
@@ -235,18 +236,19 @@ class WarpInWarpActivity : BaseComponentActivity() {
     private var initialDesync = PingNgCompat.PROFILE_OFF
     private var initialDesyncArgs = ""
     private var initialPsiphon = false
+    private var initialTor = false
     private var initialRegion = "ANY"
     private var initialPsiphonMode = "auto"
     private var initialPsiphonCdnIps = ""
     private var initialPsiphonCdnSni = ""
     private var initialPsiphonCdnSets = ""
-    private var initialEndpointTestMode = "Fast"
+    private var initialEndpointTestMode = WarpPlusConfig.ENDPOINT_MODE_AUTO
+    private var initialAutoScanEndpoint = true
     private var initialRegistrationProxyGuid = WarpRegistrationProxy.AUTO
     private var initialChildGuids = emptyList<String>()
     private var initialOuterGuid: String? = null
     private var initialInnerGuid: String? = null
     private var finalMaskSearchJob: Job? = null
-    private var endpointSearchJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -260,12 +262,15 @@ class WarpInWarpActivity : BaseComponentActivity() {
         initialDesync = parent?.pingNgProfile.orEmpty().ifBlank { PingNgCompat.PROFILE_OFF }
         initialDesyncArgs = parent?.pingNgDesyncArgs.orEmpty()
         initialPsiphon = parent?.psiphonEnabled == true
+        initialTor = parent?.torEnabled == true
         initialRegion = parent?.psiphonRegion.orEmpty().ifBlank { "ANY" }
         initialPsiphonMode = parent?.psiphonMode.orEmpty().ifBlank { "auto" }
         initialPsiphonCdnIps = parent?.psiphonCdnIps.orEmpty()
         initialPsiphonCdnSni = parent?.psiphonCdnSni.orEmpty()
         initialPsiphonCdnSets = parent?.psiphonCdnSets.orEmpty()
         initialEndpointTestMode = WarpPlusConfig.normalizeEndpointTestMode(parent?.warpEndpointTestMode)
+        initialAutoScanEndpoint = parent?.autoScanEndpoint
+            ?: (initialEndpointTestMode != WarpPlusConfig.ENDPOINT_MODE_CUSTOM)
         initialRegistrationProxyGuid = parent?.warpRegistrationProxyGuid ?: WarpRegistrationProxy.AUTO
         val childRemarks = parent?.proxyChainProfiles.orEmpty().split(",")
             .map(String::trim).filter(String::isNotBlank)
@@ -287,23 +292,16 @@ class WarpInWarpActivity : BaseComponentActivity() {
         initialCustomFinalMask = storedOuterFinalMask.ifBlank { WarpPlusConfig.DEFAULT_FINAL_MASK }
         initialFastFinalMask = parent?.warpFastFinalMask.orEmpty()
         initialAllFinalMask = parent?.warpAllFinalMask.orEmpty()
-        initialFinalMask = when (initialEndpointTestMode) {
-            WarpPlusConfig.ENDPOINT_MODE_FAST -> initialFastFinalMask.ifBlank { WarpPlusConfig.DEFAULT_FINAL_MASK }
-            WarpPlusConfig.ENDPOINT_MODE_MEDIUM,
-            WarpPlusConfig.ENDPOINT_MODE_SLOW -> initialAllFinalMask.ifBlank { WarpPlusConfig.DEFAULT_FINAL_MASK }
-            else -> initialCustomFinalMask
+        initialFinalMask = if (initialAutoScanEndpoint) {
+            initialFastFinalMask.ifBlank { initialAllFinalMask.ifBlank { WarpPlusConfig.DEFAULT_FINAL_MASK } }
+        } else {
+            initialCustomFinalMask
         }
         initialFinalMaskEnabled = parent?.warpFinalMaskEnabled ?: true
         initialOuterGuid = children.getOrNull(outerIndex)?.first
         initialInnerGuid = children.getOrNull(innerIndex)?.first
-        val outerFallback = WarpLayerState.outerDefault().copy(
-            endpointCandidates = parent?.warpOuterEndpointCandidates.orEmpty()
-                .ifBlank { WarpPlusConfig.DEFAULT_OUTER_ENDPOINTS },
-        )
-        val innerFallback = WarpLayerState.innerDefault().copy(
-            endpointCandidates = parent?.warpInnerEndpointCandidates.orEmpty()
-                .ifBlank { WarpPlusConfig.DEFAULT_INNER_ENDPOINTS },
-        )
+        val outerFallback = WarpLayerState.outerDefault()
+        val innerFallback = WarpLayerState.innerDefault()
         initialOuter = WarpLayerState.from(children.getOrNull(outerIndex)?.second, outerFallback)
         initialInner = WarpLayerState.from(children.getOrNull(innerIndex)?.second, innerFallback)
     }
@@ -325,14 +323,27 @@ class WarpInWarpActivity : BaseComponentActivity() {
         var fastFinalMaskJson by remember { mutableStateOf(initialFastFinalMask) }
         var allFinalMaskJson by remember { mutableStateOf(initialAllFinalMask) }
         var customFinalMaskJson by remember { mutableStateOf(initialCustomFinalMask) }
-        var finalMaskPickedFromFinder by remember { mutableStateOf(false) }
         var psiphon by remember { mutableStateOf(initialPsiphon) }
+        var tor by remember { mutableStateOf(initialTor) }
         var region by remember { mutableStateOf(initialRegion) }
         var psiphonMode by remember { mutableStateOf(initialPsiphonMode) }
         var psiphonCdnIps by remember { mutableStateOf(initialPsiphonCdnIps) }
         var psiphonCdnSni by remember { mutableStateOf(initialPsiphonCdnSni) }
         var psiphonCdnSets by remember { mutableStateOf(initialPsiphonCdnSets) }
-        var endpointTestMode by remember { mutableStateOf(initialEndpointTestMode) }
+        var autoScanEndpoint by remember { mutableStateOf(initialAutoScanEndpoint) }
+        val scanGuid = rememberSaveable(editGuid) {
+            editGuid.ifBlank {
+                warpPlusDraftGuid ?: UUID.randomUUID().toString().also { warpPlusDraftGuid = it }
+            }
+        }
+        warpPlusDraftGuid = scanGuid
+        val scanState by AwgEndpointScanState.state.collectAsStateWithLifecycle()
+        var scanJob by remember { mutableStateOf<Job?>(null) }
+        var outerCandidates by remember { mutableStateOf(
+            editGuid.takeIf { it.isNotBlank() }?.let(MmkvManager::decodeServerConfig)
+                ?.awgEndpointCandidates.orEmpty(),
+        ) }
+        var innerCandidates by remember { mutableStateOf("") }
         var registrationProxyGuid by remember { mutableStateOf(initialRegistrationProxyGuid) }
         var proxyChoices by remember(editGuid) { mutableStateOf(WarpRegistrationProxy.choices(editGuid)) }
         val proxyLabel = if (registrationProxyGuid == WarpRegistrationProxy.AUTO) {
@@ -419,16 +430,17 @@ class WarpInWarpActivity : BaseComponentActivity() {
                                     finalMask.toJsonOrNull(),
                                     finalMask.enabled,
                                     psiphon,
+                                    tor,
                                     region,
                                     psiphonMode,
                                     psiphonCdnIps,
                                     psiphonCdnSni,
                                     psiphonCdnSets,
-                                    endpointTestMode,
-                                    finalMaskPickedFromFinder,
                                     fastFinalMaskJson,
                                     allFinalMaskJson,
                                     registrationProxyGuid,
+                                    outerCandidates,
+                                    autoScanEndpoint,
                                 )
                             },
                         ) { Text(stringResource(R.string.action_save)) }
@@ -441,6 +453,73 @@ class WarpInWarpActivity : BaseComponentActivity() {
                 modifier = Modifier.fillMaxSize().padding(padding).verticalScrollbar(lazyListState),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                item {
+                    AutoScanEndpointSwitch(
+                        checked = autoScanEndpoint,
+                        onCheckedChange = { autoScanEndpoint = it },
+                    )
+                }
+                item {
+                    EndpointScanPanel(
+                        guid = scanGuid,
+                        state = scanState,
+                        scanInProgress = generating || scanJob?.isActive == true,
+                        candidateGroups = listOf("WARP Plus" to EndpointScannerCli.decodeCandidates(innerCandidates)),
+                        selectedEndpoints = mapOf("WARP Plus" to "${inner.server}:${inner.port}"),
+                        onScan = {
+                            fun account(layer: WarpLayerState) = EndpointScannerCli.accountFromProfile(
+                                ProfileItem.create(EConfigType.WIREGUARD).copy(
+                                    server = layer.server,
+                                    serverPort = layer.port,
+                                    secretKey = layer.privateKey,
+                                    publicKey = layer.peerPublicKey,
+                                    localAddress = layer.localAddress,
+                                    reserved = layer.reserved,
+                                    mtu = layer.mtu.toIntOrNull() ?: 1280,
+                                ),
+                            )
+                            val innerAccount = account(inner)
+                            if (innerAccount == null) {
+                                toast("Generate the inner WARP key before scanning")
+                            } else {
+                                scanJob = scope.launch {
+                                    try {
+                                        val foundInner = EndpointScannerCli.scanWireGuardEndpoints(
+                                            this@WarpInWarpActivity,
+                                            innerAccount,
+                                            scanGuid = scanGuid,
+                                            progressLabel = "Inner WARP",
+                                        )
+                                        innerCandidates = EndpointScannerCli.encodeCandidates(foundInner)
+                                        outerCandidates = innerCandidates
+                                        AwgEndpointScanState.complete(
+                                            scanGuid,
+                                            "Endpoint selected: ${foundInner.first().endpoint}",
+                                            foundInner.first().endpoint,
+                                        )
+                                    } catch (cancelled: CancellationException) {
+                                        AwgEndpointScanState.clear(scanGuid)
+                                        throw cancelled
+                                    } catch (_: Throwable) {
+                                        AwgEndpointScanState.fail(scanGuid, "Endpoint scan failed")
+                                    }
+                                }
+                            }
+                        },
+                        onCancel = {
+                            scanJob?.cancel()
+                            EndpointScannerCli.cancelActiveScans()
+                        },
+                        onSelect = { title, candidate ->
+                            val (host, port) = AmneziaWgFmt.splitEndpoint(candidate.endpoint)
+                            if (!host.isNullOrBlank() && !port.isNullOrBlank()) {
+                                inner = inner.copy(server = host, port = port)
+                                outer = outer.copy(server = host, port = port)
+                                autoScanEndpoint = false
+                            }
+                        },
+                    )
+                }
                 item { FormTextField(stringResource(R.string.server_lab_remarks), remarks, { remarks = it }) }
                 item {
                     FormDropdownField(
@@ -468,7 +547,10 @@ class WarpInWarpActivity : BaseComponentActivity() {
                         title = "Outer WARP",
                         state = outer,
                         generating = generating,
-                        onStateChange = { outer = it },
+                        onStateChange = {
+                            if (it.server != outer.server || it.port != outer.port) autoScanEndpoint = false
+                            outer = it
+                        },
                         onGenerate = {
                             outer = outer.copy(privateKey = "")
                             startWarpGeneration(registrationProxyGuid, regenerateBoth = false, generateOuter = true)
@@ -481,7 +563,10 @@ class WarpInWarpActivity : BaseComponentActivity() {
                         title = "Inner WARP",
                         state = inner,
                         generating = generating,
-                        onStateChange = { inner = it },
+                        onStateChange = {
+                            if (it.server != inner.server || it.port != inner.port) autoScanEndpoint = false
+                            inner = it
+                        },
                         onGenerate = {
                             inner = inner.copy(privateKey = "")
                             startWarpGeneration(registrationProxyGuid, regenerateBoth = false, generateOuter = false)
@@ -494,12 +579,7 @@ class WarpInWarpActivity : BaseComponentActivity() {
                         onStateChange = {
                             finalMask = it
                             val json = it.toJsonOrNull().orEmpty()
-                            when (WarpPlusConfig.normalizeEndpointTestMode(endpointTestMode)) {
-                                WarpPlusConfig.ENDPOINT_MODE_FAST -> fastFinalMaskJson = json
-                                WarpPlusConfig.ENDPOINT_MODE_MEDIUM,
-                                WarpPlusConfig.ENDPOINT_MODE_SLOW -> allFinalMaskJson = json
-                                WarpPlusConfig.ENDPOINT_MODE_CUSTOM -> customFinalMaskJson = json
-                            }
+                            if (autoScanEndpoint) fastFinalMaskJson = json else customFinalMaskJson = json
                         },
                         onFind = { showFinalMaskFinder = true },
                         onReset = {
@@ -510,48 +590,14 @@ class WarpInWarpActivity : BaseComponentActivity() {
                     )
                 }
                 item {
-                    FormDropdownField(
-                        label = "Endpoint test mode",
-                        value = endpointTestMode,
-                        options = listOf(
-                            WarpPlusConfig.ENDPOINT_MODE_FAST,
-                            WarpPlusConfig.ENDPOINT_MODE_MEDIUM,
-                            WarpPlusConfig.ENDPOINT_MODE_SLOW,
-                            WarpPlusConfig.ENDPOINT_MODE_CUSTOM,
-                        ),
-                        onValueChange = {
-                            val currentMode = WarpPlusConfig.normalizeEndpointTestMode(endpointTestMode)
-                            val currentJson = finalMask.toJsonOrNull().orEmpty()
-                            when (currentMode) {
-                                WarpPlusConfig.ENDPOINT_MODE_FAST -> fastFinalMaskJson = currentJson
-                                WarpPlusConfig.ENDPOINT_MODE_MEDIUM,
-                                WarpPlusConfig.ENDPOINT_MODE_SLOW -> allFinalMaskJson = currentJson
-                                WarpPlusConfig.ENDPOINT_MODE_CUSTOM -> customFinalMaskJson = currentJson
-                            }
-                            endpointTestMode = it
-                            val nextMaskJson = when (WarpPlusConfig.normalizeEndpointTestMode(it)) {
-                                WarpPlusConfig.ENDPOINT_MODE_FAST -> fastFinalMaskJson
-                                WarpPlusConfig.ENDPOINT_MODE_MEDIUM,
-                                WarpPlusConfig.ENDPOINT_MODE_SLOW -> allFinalMaskJson
-                                WarpPlusConfig.ENDPOINT_MODE_CUSTOM -> customFinalMaskJson
-                                else -> ""
-                            }.ifBlank { WarpPlusConfig.DEFAULT_FINAL_MASK }
-                            finalMask = WarpFinalMaskState.fromJson(nextMaskJson)
-                                .copy(enabled = finalMask.enabled)
-                        },
-                        supportingText = when (endpointTestMode) {
-                            WarpPlusConfig.ENDPOINT_MODE_FAST -> "First responding endpoint is selected automatically when Start is pressed."
-                            WarpPlusConfig.ENDPOINT_MODE_MEDIUM -> "Scans Outer only, then uses its best endpoint for inner and outer."
-                            WarpPlusConfig.ENDPOINT_MODE_SLOW -> "Searches separate healthy endpoints for inner and outer."
-                            else -> "Tests the endpoint lists entered in the two WARP sections."
-                        },
-                    )
-                }
-                item {
                     PsiphonEditorFields(
                         enabled = psiphon,
+                        torEnabled = tor,
                         region = region,
-                        onEnabledChange = { psiphon = it },
+                        onEnabledChange = { psiphon = it; if (it) tor = false },
+                        onTorEnabledChange = { tor = it; if (it) psiphon = false },
+                        enabledTitle = "Psiphon Over WARP In WARP",
+                        torEnabledTitle = "Tor Over WARP In WARP",
                         onRegionChange = { region = it },
                         mode = psiphonMode,
                         onModeChange = { psiphonMode = it },
@@ -575,26 +621,8 @@ class WarpInWarpActivity : BaseComponentActivity() {
                 },
                 onCancelSearch = { finalMaskSearchJob?.cancel() },
                 onApply = {
-                    val appliedMode = WarpPlusConfig.normalizeEndpointTestMode(endpointTestMode)
                     finalMask = WarpFinalMaskState.fromJson(it).copy(enabled = true)
-                    when (appliedMode) {
-                        WarpPlusConfig.ENDPOINT_MODE_FAST -> fastFinalMaskJson = it
-                        WarpPlusConfig.ENDPOINT_MODE_MEDIUM,
-                        WarpPlusConfig.ENDPOINT_MODE_SLOW -> allFinalMaskJson = it
-                        WarpPlusConfig.ENDPOINT_MODE_CUSTOM -> customFinalMaskJson = it
-                    }
-                    finalMaskPickedFromFinder = true
-                    // Pin the pair that was used while finding this mask in
-                    // Custom mode. The next Start must not retest it and
-                    // replace it with a default/random endpoint.
-                    if (appliedMode == WarpPlusConfig.ENDPOINT_MODE_CUSTOM) {
-                        val innerEndpoint = formatWarpEndpoint(inner.server, inner.port)
-                        val outerEndpoint = formatWarpEndpoint(outer.server, outer.port)
-                        if (innerEndpoint != null && outerEndpoint != null) {
-                            inner = inner.copy(endpointCandidates = innerEndpoint)
-                            outer = outer.copy(endpointCandidates = outerEndpoint)
-                        }
-                    }
+                    if (autoScanEndpoint) fastFinalMaskJson = it else customFinalMaskJson = it
                     showFinalMaskFinder = false
                 },
                 onDismiss = { showFinalMaskFinder = false },
@@ -659,190 +687,6 @@ class WarpInWarpActivity : BaseComponentActivity() {
         }.also { job -> job.invokeOnCompletion { if (finalMaskSearchJob === job) finalMaskSearchJob = null } }
     }
 
-    private fun runWarpEndpointSearch(
-        outer: WarpLayerState,
-        inner: WarpLayerState,
-        finalMask: String?,
-        endpointTestMode: String,
-        onFound: (Pair<WarpEndpoint, WarpEndpoint>, Long) -> Unit,
-        onProgress: (Int, Int) -> Unit,
-        onFinished: () -> Unit,
-    ) {
-        val parentGuid = editGuid.takeIf { it.isNotBlank() }
-        val outerGuid = initialOuterGuid
-        val innerGuid = initialInnerGuid
-        if (parentGuid == null || outerGuid.isNullOrBlank() || innerGuid.isNullOrBlank()) {
-            toast("ابتدا WARP Plus را ذخیره کنید، سپس endpointها را تست کنید")
-            onFinished()
-            return
-        }
-
-        val mode = WarpPlusConfig.normalizeEndpointTestMode(endpointTestMode)
-        val isBuiltInMode = mode == WarpPlusConfig.ENDPOINT_MODE_FAST ||
-            mode == WarpPlusConfig.ENDPOINT_MODE_MEDIUM ||
-            mode == WarpPlusConfig.ENDPOINT_MODE_SLOW
-        val builtInEndpoints = when (mode) {
-            WarpPlusConfig.ENDPOINT_MODE_FAST -> WarpPlusConfig.FAST_ENDPOINTS
-            WarpPlusConfig.ENDPOINT_MODE_MEDIUM,
-            WarpPlusConfig.ENDPOINT_MODE_SLOW -> WarpPlusConfig.ALL_ENDPOINTS
-            else -> ""
-        }
-        // Parse the built-in pool once. In Medium/Slow mode it contains
-        // thousands of addresses; making two copies and then materializing
-        // every candidate pair caused the GC storm seen in the runtime log.
-        val builtInPool = if (isBuiltInMode) {
-            parseWarpEndpoints(builtInEndpoints, inner.server, inner.port)
-        } else {
-            null
-        }
-        val innerCandidates = builtInPool ?: parseWarpEndpoints(inner.endpointCandidates, inner.server, inner.port)
-        val outerCandidates = builtInPool ?: parseWarpEndpoints(outer.endpointCandidates, outer.server, outer.port)
-        val fastFirstEndpoint = WarpEndpoint("188.114.96.206", 878)
-        val pairs = if (mode == WarpPlusConfig.ENDPOINT_MODE_FAST) {
-            // Probe the requested endpoint on both WARP hops before trying
-            // any other pair. A failed four-second probe then falls through
-            // to the normal Fast candidate queue.
-            listOf(fastFirstEndpoint to fastFirstEndpoint) +
-                (outerCandidates.map { fastFirstEndpoint to it } + innerCandidates.map { it to fastFirstEndpoint })
-                    .distinct()
-                    .shuffled()
-        } else if (mode == WarpPlusConfig.ENDPOINT_MODE_MEDIUM) {
-            innerCandidates.distinct().map { endpoint -> endpoint to endpoint }
-        } else if (mode == WarpPlusConfig.ENDPOINT_MODE_SLOW) {
-            buildRandomEndpointPairs(innerCandidates, outerCandidates, 256)
-                .filter { (innerEndpoint, outerEndpoint) -> innerEndpoint != outerEndpoint }
-        } else {
-            innerCandidates.flatMap { innerEndpoint ->
-                outerCandidates.map { outerEndpoint -> innerEndpoint to outerEndpoint }
-            }.distinct().take(64)
-        }.distinct().let { ordered ->
-            if (mode == WarpPlusConfig.ENDPOINT_MODE_FAST) ordered.take(256)
-            else ordered.shuffled().take(256)
-        }
-        if (pairs.isEmpty()) {
-            toast("هیچ endpoint معتبری برای تست وارد نشده است")
-            onFinished()
-            return
-        }
-
-        endpointSearchJob = (application as AngApplication).applicationScope.launch(Dispatchers.IO) {
-            val originalOuter = MmkvManager.decodeServerConfig(outerGuid)
-            val originalInner = MmkvManager.decodeServerConfig(innerGuid)
-            if (originalOuter == null || originalInner == null) {
-                withContext(Dispatchers.Main) {
-                    toast("پروفایل‌های WARP Plus پیدا نشدند")
-                    onFinished()
-                }
-                return@launch
-            }
-
-            val currentOuter = originalOuter.copy(
-                server = outer.server.trim(),
-                serverPort = outer.port.toIntOrNull()?.takeIf { it in 1..65535 }?.toString() ?: "2408",
-                // Every endpoint check starts with the complete default-mask
-                // WARP Plus configuration.
-                finalMask = WarpPlusConfig.DEFAULT_FINAL_MASK,
-                warpKeepAlive = outer.keepAlive.toIntOrNull()?.coerceIn(0, 120) ?: WarpPlusConfig.DEFAULT_KEEP_ALIVE,
-                warpEndpointCandidates = outer.endpointCandidates.trim(),
-            )
-            val currentInner = originalInner.copy(
-                server = inner.server.trim(),
-                serverPort = inner.port.toIntOrNull()?.takeIf { it in 1..65535 }?.toString() ?: "2408",
-                finalMask = null,
-                warpKeepAlive = inner.keepAlive.toIntOrNull()?.coerceIn(0, 120) ?: WarpPlusConfig.DEFAULT_KEEP_ALIVE,
-                warpEndpointCandidates = inner.endpointCandidates.trim(),
-            )
-            var best: Pair<WarpEndpoint, WarpEndpoint>? = null
-            var bestDelay = Long.MAX_VALUE
-            var wasCancelled = false
-            try {
-                withContext(Dispatchers.Main) { LauncherManager.stopService(this@WarpInWarpActivity) }
-                kotlinx.coroutines.delay(700L)
-                for (index in pairs.indices) {
-                    val pair = pairs[index]
-                    val (innerEndpoint, outerEndpoint) = pair
-                    try {
-                        MmkvManager.encodeServerConfig(
-                            outerGuid,
-                            currentOuter.copy(server = outerEndpoint.host, serverPort = outerEndpoint.port.toString()),
-                        )
-                        MmkvManager.encodeServerConfig(
-                            innerGuid,
-                            currentInner.copy(server = innerEndpoint.host, serverPort = innerEndpoint.port.toString()),
-                        )
-                        withContext(Dispatchers.Main) {
-                            if (index > 0) {
-                                LauncherManager.stopService(this@WarpInWarpActivity)
-                                kotlinx.coroutines.delay(350L)
-                            }
-                            LauncherManager.startProxyOnlyService(this@WarpInWarpActivity, parentGuid)
-                        }
-                        kotlinx.coroutines.delay(if (index == 0) 1300L else 900L)
-                        val delay = SpeedtestManager.liveTunnelDelay(
-                            SettingsManager.getDelayTestUrl(),
-                    // Give the explicitly requested endpoint pair a full
-                    // four seconds before falling through to Fast search.
-                            timeoutMs = if (mode == WarpPlusConfig.ENDPOINT_MODE_FAST && index == 0) 4000 else 2500,
-                        )
-                        if (delay >= 0L && delay < bestDelay) {
-                            best = pair
-                            bestDelay = delay
-                            withContext(Dispatchers.Main) { onFound(pair, delay) }
-                            // Fast and Medium are first-success modes. Slow
-                            // continues through its distinct-pair queue so it
-                            // can retain the lowest delay.
-                            if (mode == WarpPlusConfig.ENDPOINT_MODE_FAST ||
-                                mode == WarpPlusConfig.ENDPOINT_MODE_MEDIUM
-                            ) break
-                        }
-                    } finally {
-                        withContext(Dispatchers.Main) { onProgress(index + 1, pairs.size) }
-                    }
-                }
-            } catch (_: CancellationException) {
-                // Keep the best successful endpoint found before cancellation.
-                wasCancelled = true
-            } finally {
-                if (best == null) {
-                    MmkvManager.encodeServerConfig(outerGuid, originalOuter)
-                    MmkvManager.encodeServerConfig(innerGuid, originalInner)
-                } else {
-                    val bestPair = best!!
-                    val (bestInner, bestOuter) = bestPair
-                    MmkvManager.encodeServerConfig(
-                        outerGuid,
-                        currentOuter.copy(server = bestOuter.host, serverPort = bestOuter.port.toString()),
-                    )
-                    MmkvManager.encodeServerConfig(
-                        innerGuid,
-                        currentInner.copy(server = bestInner.host, serverPort = bestInner.port.toString()),
-                    )
-                    MmkvManager.decodeServerConfig(parentGuid)?.let { parent ->
-                        MmkvManager.encodeServerConfig(
-                            parentGuid,
-                            parent.copy(
-                                warpSelectedEndpoint = "inner ${bestInner.host}:${bestInner.port} • outer ${bestOuter.host}:${bestOuter.port}",
-                                warpSkipEndpointTestOnce = false,
-                            ),
-                        )
-                    }
-                    withContext(NonCancellable + Dispatchers.Main) { onFound(bestPair, bestDelay) }
-                }
-                withContext(NonCancellable + Dispatchers.Main) {
-                    LauncherManager.stopService(this@WarpInWarpActivity)
-                    // Built-in modes are actions, not dry-runs: after a
-                    // healthy pair is saved, immediately start the profile.
-                    if (!wasCancelled && best != null && (isRunning || mode != WarpPlusConfig.ENDPOINT_MODE_CUSTOM)
-                    ) {
-                        kotlinx.coroutines.delay(350L)
-                        LauncherManager.startService(this@WarpInWarpActivity, parentGuid)
-                    }
-                    onFinished()
-                }
-            }
-        }.also { job -> job.invokeOnCompletion { if (endpointSearchJob === job) endpointSearchJob = null } }
-    }
-
     private fun saveServer(
         remarks: String,
         outer: WarpLayerState,
@@ -850,18 +694,23 @@ class WarpInWarpActivity : BaseComponentActivity() {
         finalMask: String?,
         finalMaskEnabled: Boolean,
         psiphon: Boolean,
+        tor: Boolean,
         region: String,
         psiphonMode: String,
         psiphonCdnIps: String,
         psiphonCdnSni: String,
         psiphonCdnSets: String,
-        endpointTestMode: String,
-        preserveEndpointSelection: Boolean,
         fastFinalMask: String?,
         allFinalMask: String?,
         registrationProxyGuid: String,
+        scannedOuterCandidates: String,
+        autoScanEndpoint: Boolean,
     ) {
-        val normalizedEndpointTestMode = WarpPlusConfig.normalizeEndpointTestMode(endpointTestMode)
+        val normalizedEndpointTestMode = if (autoScanEndpoint) {
+            WarpPlusConfig.ENDPOINT_MODE_AUTO
+        } else {
+            WarpPlusConfig.ENDPOINT_MODE_CUSTOM
+        }
         if (remarks.isBlank()) {
             toast(R.string.server_lab_remarks)
             return
@@ -879,22 +728,12 @@ class WarpInWarpActivity : BaseComponentActivity() {
         }
         val persistedFastFinalMask = when {
             !finalMaskEnabled -> null
-            normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_FAST ->
+            normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_AUTO ->
                 activeFinalMask ?: WarpPlusConfig.DEFAULT_FINAL_MASK
             else -> fastFinalMask?.takeIf { it.isNotBlank() }
         }
-        val persistedAllFinalMask = when {
-            !finalMaskEnabled -> null
-            normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_MEDIUM ||
-                normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_SLOW ->
-                activeFinalMask ?: WarpPlusConfig.DEFAULT_FINAL_MASK
-            else -> allFinalMask?.takeIf { it.isNotBlank() }
-        }
-        fun endpointCandidatesFor(state: WarpLayerState): String =
-            state.endpointCandidates.trim().ifBlank {
-                formatWarpEndpoint(state.server, state.port)
-            }
-        val parentGuid = editGuid.ifBlank { UUID.randomUUID().toString() }
+        val persistedAllFinalMask = if (!finalMaskEnabled) null else allFinalMask?.takeIf { it.isNotBlank() }
+        val parentGuid = editGuid.ifBlank { warpPlusDraftGuid ?: UUID.randomUUID().toString() }
         val componentSuffix = parentGuid.take(8)
         val outerRemark = "$remarks • Outer WARP • $componentSuffix"
         val innerRemark = "$remarks • Inner WARP • $componentSuffix"
@@ -914,11 +753,6 @@ class WarpInWarpActivity : BaseComponentActivity() {
             reserved = state.reserved.trim(),
             mtu = state.mtu.toIntOrNull() ?: 1280,
             warpKeepAlive = state.keepAlive.toIntOrNull()?.coerceIn(0, 120) ?: WarpPlusConfig.DEFAULT_KEEP_ALIVE,
-            warpEndpointCandidates = if (normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_CUSTOM) {
-                endpointCandidatesFor(state)
-            } else {
-                state.endpointCandidates.trim()
-            },
             // Match Xray's WARP chain: FinalMask belongs to the outer
             // transport hop, while the inner hop dials it via dialerProxy.
             finalMask = effectiveFinalMask?.takeIf { isOuter && it.isNotBlank() },
@@ -937,24 +771,14 @@ class WarpInWarpActivity : BaseComponentActivity() {
             warpRegistrationProxyGuid = registrationProxyGuid
             warpEndpointTestEnabled = true
             warpEndpointTestMode = normalizedEndpointTestMode
+            this.autoScanEndpoint = autoScanEndpoint
+            awgEndpointCandidates = scannedOuterCandidates.ifBlank { null }
             warpFastFinalMask = persistedFastFinalMask
             warpAllFinalMask = persistedAllFinalMask
-            // Finding a mask in Fast/Medium/Slow must not bypass the next endpoint
-            // search. Only an explicitly pinned Custom pair may skip it.
-            warpSkipEndpointTestOnce = preserveEndpointSelection &&
-                normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_CUSTOM
+            warpSkipEndpointTestOnce = false
             warpFinalMaskEnabled = finalMaskEnabled
-            warpInnerEndpointCandidates = if (normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_CUSTOM) {
-                endpointCandidatesFor(inner)
-            } else {
-                inner.endpointCandidates.trim()
-            }
-            warpOuterEndpointCandidates = if (normalizedEndpointTestMode == WarpPlusConfig.ENDPOINT_MODE_CUSTOM) {
-                endpointCandidatesFor(outer)
-            } else {
-                outer.endpointCandidates.trim()
-            }
             psiphonEnabled = psiphon
+            torEnabled = tor
             psiphonRegion = region.ifBlank { "ANY" }.uppercase()
             this.psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase()
             this.psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null }
@@ -996,11 +820,6 @@ private fun WarpLayerFields(
         }
         FormTextField("Server / Endpoint", state.server, { onStateChange(state.copy(server = it)) })
         FormTextField("Port", state.port, { onStateChange(state.copy(port = it)) }, keyboardType = KeyboardType.Number)
-        FormTextField(
-            "Test endpoints (host:port, comma separated)",
-            state.endpointCandidates,
-            { onStateChange(state.copy(endpointCandidates = it)) },
-        )
         FormTextField("Peer public key", state.peerPublicKey, { onStateChange(state.copy(peerPublicKey = it)) })
         FormTextField("Private key", state.privateKey, { onStateChange(state.copy(privateKey = it)) })
         FormTextField("Local address", state.localAddress, { onStateChange(state.copy(localAddress = it)) })
@@ -1084,64 +903,6 @@ internal fun WarpFinalMaskFields(
         }
         return -1L
     }
-
-    /**
- * Produces a bounded random queue without first building all inner×outer
- * combinations. Each selected endpoint gets a chance on both WARP hops.
- */
-private fun buildRandomEndpointPairs(
-    innerCandidates: List<WarpEndpoint>,
-    outerCandidates: List<WarpEndpoint>,
-    limit: Int,
-): List<Pair<WarpEndpoint, WarpEndpoint>> {
-    if (innerCandidates.isEmpty() || outerCandidates.isEmpty()) return emptyList()
-    val innerOrder = innerCandidates.indices.shuffled(Random)
-    val outerOrder = outerCandidates.indices.shuffled(Random)
-    val anchorInner = innerCandidates[innerOrder.first()]
-    val anchorOuter = outerCandidates[outerOrder.first()]
-    val result = LinkedHashSet<Pair<WarpEndpoint, WarpEndpoint>>(limit)
-    var index = 0
-    while (result.size < limit && index < maxOf(innerOrder.size, outerOrder.size)) {
-        val inner = innerCandidates[innerOrder[index % innerOrder.size]]
-        val outer = outerCandidates[outerOrder[index % outerOrder.size]]
-        result.add(inner to anchorOuter)
-        if (result.size < limit) result.add(anchorInner to outer)
-        index++
-    }
-    return result.toList().shuffled(Random)
-}
-
-private fun formatWarpEndpoint(hostValue: String, portValue: String): String {
-    val host = hostValue.trim()
-    val port = portValue.trim()
-    if (host.isBlank()) return ""
-    val displayHost = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
-    return "$displayHost:${port.ifBlank { "2408" }}"
-}
-
-private fun parseWarpEndpoints(raw: String, fallbackHost: String, fallbackPort: String): List<WarpEndpoint> {
-    val defaultPort = fallbackPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: 2408
-    return raw.split(',', ';', '\n', '\r')
-        .map(String::trim)
-        .filter(String::isNotBlank)
-        .mapNotNull { value ->
-            if (value.startsWith("[")) {
-                val close = value.indexOf(']')
-                if (close <= 0) return@mapNotNull null
-                val host = value.substring(1, close)
-                val port = value.substring(close + 1).removePrefix(":").toIntOrNull() ?: defaultPort
-                if (host.isNotBlank() && port in 1..65535) WarpEndpoint(host, port) else null
-            } else {
-                val separator = value.lastIndexOf(':')
-                val hasPort = separator > 0 && value.indexOf(':') == separator
-                val host = if (hasPort) value.substring(0, separator) else value
-                val port = if (hasPort) value.substring(separator + 1).toIntOrNull() ?: return@mapNotNull null else defaultPort
-                if (host.isNotBlank() && port in 1..65535) WarpEndpoint(host, port) else null
-            }
-        }
-        .ifEmpty { listOf(WarpEndpoint(fallbackHost.trim(), defaultPort)) }
-        .distinct()
-}
 
 @Composable
 private fun DesyncPickerDialog(onApply: (String) -> Unit, onDismiss: () -> Unit) {

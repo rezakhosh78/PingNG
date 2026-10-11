@@ -16,6 +16,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven { url = uri("https://raw.githubusercontent.com/guardianproject/gpmaven/master") }
         maven { url = uri("https://jitpack.io") }
         // Treat the downloaded Xray AAR as a regular local module. AGP 9 can
         // otherwise expose it as a `local file` artifact with no extracted
@@ -24,5 +25,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PingNG-Pi41-AWGWARP-StartScan"
+rootProject.name = "PingNG-Pi42-AWGWARP-StartScan"
 include(":app")

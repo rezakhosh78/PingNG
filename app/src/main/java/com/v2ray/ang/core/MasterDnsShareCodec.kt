@@ -103,6 +103,7 @@ object MasterDnsShareCodec {
         val cdnSni: String?,
         val cdnSets: String?,
         val sshKeepaliveSeconds: Int? = null,
+        val tor: Boolean = false,
     )
 
     /** The only value rendered from the advanced TOML on the Basic tab. */
@@ -131,6 +132,7 @@ object MasterDnsShareCodec {
             resolvers = profile.masterDnsResolvers,
             reuseValidResolvers = profile.masterDnsReuseValidResolvers,
             psiphon = profile.psiphonEnabled,
+            tor = profile.torEnabled,
             region = profile.psiphonRegion,
             mode = profile.psiphonMode,
             cdnIps = profile.psiphonCdnIps,
@@ -158,6 +160,7 @@ object MasterDnsShareCodec {
             payload.reuseValidResolvers, payload.psiphon,
             payload.region, payload.mode, payload.cdnIps, payload.cdnSni, payload.cdnSets,
             payload.sshKeepaliveSeconds,
+            payload.tor,
         )).toByteArray(Charsets.UTF_8)
         val compressed = deflate(json, shareDictionary)
         val encoded = Base64.encodeToString(compressed, BASE64_FLAGS)
@@ -233,6 +236,7 @@ object MasterDnsShareCodec {
             masterDnsResolvers = payload.resolvers
             masterDnsReuseValidResolvers = payload.reuseValidResolvers == true
             psiphonEnabled = payload.psiphon
+            torEnabled = payload.tor
             psiphonRegion = payload.region
             psiphonMode = payload.mode
             psiphonCdnIps = payload.cdnIps
@@ -243,7 +247,7 @@ object MasterDnsShareCodec {
 
     private fun decodePositional(json: String): Payload? = runCatching {
         val values = JsonParser.parseString(json).asJsonArray
-        if (values.size() != 20 && values.size() != 21) return null
+        if (values.size() !in 20..22) return null
         fun string(index: Int): String? = values[index].takeUnless { it.isJsonNull }?.asString
         fun int(index: Int): Int? = values[index].takeUnless { it.isJsonNull }?.asInt
         fun bool(index: Int): Boolean? = values[index].takeUnless { it.isJsonNull }?.asBoolean
@@ -255,7 +259,8 @@ object MasterDnsShareCodec {
             advanced = string(11), resolvers = string(12), reuseValidResolvers = bool(13),
             psiphon = bool(14) ?: false, region = string(15), mode = string(16),
             cdnIps = string(17), cdnSni = string(18), cdnSets = string(19),
-            sshKeepaliveSeconds = if (values.size() == 21) int(20) else null,
+            sshKeepaliveSeconds = if (values.size() >= 21) int(20) else null,
+            tor = if (values.size() >= 22) bool(21) ?: false else false,
         )
     }.getOrNull()
 

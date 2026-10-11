@@ -21,6 +21,7 @@ import com.v2ray.ang.core.PingNgDesyncTuner
 import com.v2ray.ang.core.PingNgDesyncTuner.SearchFamily
 import com.v2ray.ang.core.WarpEndpointTester
 import com.v2ray.ang.core.WarpMasqueBridge
+import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.core.WarpWireGuardEndpointTester
 import com.v2ray.ang.core.AwgEndpointScanState
@@ -214,6 +215,7 @@ class MainActivity : HelperBaseComponentActivity() {
             val awgScan = AwgEndpointScanState.state.value
             warpEndpointTestJob?.cancel()
             AwgEndpointScanManager.cancel()
+            EndpointScannerCli.cancelActiveScans()
             mainViewModel.setServiceStartPending(false)
             mainViewModel.clearEndpointSearchProgress()
             if (awgScan.running) AwgEndpointScanState.clear(awgScan.guid)
@@ -239,7 +241,8 @@ class MainActivity : HelperBaseComponentActivity() {
         }
         val state = mainViewModel.uiState.value
         if (state.isRunning || state.isStarting ||
-            state.psiphonStates[state.selectedGuid] == com.v2ray.ang.dto.PsiphonStatus.CONNECTING
+            state.psiphonStates[state.selectedGuid] == com.v2ray.ang.dto.PsiphonStatus.CONNECTING ||
+            state.torStates[state.selectedGuid] == com.v2ray.ang.dto.TorStatus.CONNECTING
         ) {
             mainViewModel.setServiceStartPending(false)
             state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
@@ -298,7 +301,7 @@ class MainActivity : HelperBaseComponentActivity() {
         }
         val selected = MmkvManager.decodeServerConfig(guid)
         if (AwgWarpConfig.isProfile(selected)) {
-            if (selected?.awgSkipAutoScanOnce == true) {
+            if (selected?.autoScanEndpoint == false && selected.awgSkipAutoScanOnce == true) {
                 MmkvManager.encodeServerConfig(guid, selected.copy(awgSkipAutoScanOnce = false))
                 AwgEndpointScanState.clear(guid)
                 startV2RayNow()
@@ -334,21 +337,20 @@ class MainActivity : HelperBaseComponentActivity() {
             return
         }
         if (WarpWireGuardConfig.isProfile(selected)) {
-            if (WarpWireGuardConfig.normalizeMode(selected?.warpEndpointTestMode) == WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM) {
+            if (selected?.autoScanEndpoint == false ||
+                (selected?.autoScanEndpoint == null &&
+                    WarpWireGuardConfig.normalizeMode(selected?.warpEndpointTestMode) ==
+                        WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM)
+            ) {
+                AwgEndpointScanState.clear(guid)
                 startV2RayNow()
                 return
             }
             if (warpEndpointTestJob?.isActive == true) return
             warpEndpointTestJob = lifecycleScope.launch {
                 try {
-                    toast("Testing WARP WireGuard endpoint…")
-                    mainViewModel.setEndpointSearchProgress("WARP WireGuard: starting")
                     val found = withContext(Dispatchers.IO) {
-                        WarpWireGuardEndpointTester.testAndSelect(applicationContext, guid) { progress ->
-                            withContext(Dispatchers.Main.immediate) {
-                                mainViewModel.setEndpointSearchProgress(progress)
-                            }
-                        }
+                        WarpWireGuardEndpointTester.testAndSelect(applicationContext, guid)
                     }
                     if (!found) {
                         mainViewModel.setServiceStartPending(false)
@@ -356,7 +358,6 @@ class MainActivity : HelperBaseComponentActivity() {
                         toast("No working WARP WireGuard endpoint was found")
                     } else {
                         mainViewModel.reloadServerList()
-                        toast("WARP WireGuard endpoint selected")
                         startV2RayNow()
                     }
                 } catch (error: CancellationException) {
@@ -367,6 +368,7 @@ class MainActivity : HelperBaseComponentActivity() {
                     mainViewModel.setServiceStartPending(false)
                     mainViewModel.clearEndpointSearchProgress()
                     LogUtil.e(AppConfig.TAG, "WARP WireGuard endpoint test failed", error)
+                    AwgEndpointScanState.fail(guid, "WARP WireGuard endpoint scan failed")
                     toast("WARP WireGuard endpoint test failed")
                 } finally {
                     warpEndpointTestJob = null
@@ -375,26 +377,20 @@ class MainActivity : HelperBaseComponentActivity() {
             return
         }
         if (selected != null && WarpPlusConfig.isDescription(selected.description)) {
-            if (selected.warpSkipEndpointTestOnce == true) {
-                // Keep the pair that was selected while finding FinalMask.
-                MmkvManager.encodeServerConfig(
-                    guid,
-                    selected.copy(warpSkipEndpointTestOnce = false),
-                )
+            if (selected.autoScanEndpoint == false ||
+                (selected.autoScanEndpoint == null &&
+                    WarpPlusConfig.normalizeEndpointTestMode(selected.warpEndpointTestMode) ==
+                        WarpPlusConfig.ENDPOINT_MODE_CUSTOM)
+            ) {
+                AwgEndpointScanState.clear(guid)
                 startV2RayNow()
                 return
             }
             if (warpEndpointTestJob?.isActive == true) return
             warpEndpointTestJob = lifecycleScope.launch {
                 try {
-                    toast("Testing WARP Plus endpoints…")
-                    mainViewModel.setEndpointSearchProgress("WARP Plus: starting")
                     val selectedEndpoint = withContext(Dispatchers.IO) {
-                        WarpEndpointTester.testAndSelect(applicationContext, guid) { progress ->
-                            withContext(Dispatchers.Main.immediate) {
-                                mainViewModel.setEndpointSearchProgress(progress)
-                            }
-                        }
+                        WarpEndpointTester.testAndSelect(applicationContext, guid)
                     }
                     if (!selectedEndpoint) {
                         mainViewModel.setServiceStartPending(false)
@@ -405,7 +401,6 @@ class MainActivity : HelperBaseComponentActivity() {
                         // Refresh the visible row before the service starts so the
                         // chosen endpoint is immediately visible on the main page.
                         mainViewModel.reloadServerList()
-                        toast("WARP Plus endpoint selected")
                         startV2RayNow()
                     }
                 } catch (error: CancellationException) {
@@ -416,7 +411,55 @@ class MainActivity : HelperBaseComponentActivity() {
                     mainViewModel.setServiceStartPending(false)
                     mainViewModel.clearEndpointSearchProgress()
                     LogUtil.e(AppConfig.TAG, "WARP Plus endpoint test failed", error)
+                    AwgEndpointScanState.fail(guid, "WARP Plus endpoint scan failed")
                     toast("WARP Plus endpoint test failed")
+                } finally {
+                    warpEndpointTestJob = null
+                }
+            }
+            return
+        }
+        if (selected != null && selected.configType == EConfigType.WARP &&
+            WarpMasqueConfig.isDescription(selected.description)
+        ) {
+            if (!WarpMasqueConfig.shouldAutoScan(selected)) {
+                AwgEndpointScanState.clear(guid)
+                startV2RayNow()
+                return
+            }
+            if (warpEndpointTestJob?.isActive == true) return
+            MmkvManager.encodeServerConfig(guid, selected.copy(warpMasqueScanPreparedOnce = false))
+            warpEndpointTestJob = lifecycleScope.launch {
+                try {
+                    val candidates = withContext(Dispatchers.IO) {
+                        EndpointScannerCli.scanMasqueH2Endpoints(
+                            applicationContext,
+                            guid,
+                            WarpMasqueConfig.normalizeSni(selected.warpMasqueSni),
+                        )
+                    }
+                    val endpoint = candidates.first().endpoint
+                    val (host, port) = AmneziaWgFmt.splitEndpoint(endpoint)
+                    require(!host.isNullOrBlank() && port?.toIntOrNull()?.let { it in 1..65535 } == true)
+                    val current = MmkvManager.decodeServerConfig(guid) ?: selected
+                    MmkvManager.encodeServerConfig(guid, current.copy(
+                        warpMasqueSelectedEndpoint = endpoint,
+                        warpMasqueScanPreparedOnce = true,
+                        awgEndpointCandidates = EndpointScannerCli.encodeCandidates(candidates),
+                        server = host,
+                        serverPort = port,
+                    ))
+                    mainViewModel.reloadServerList()
+                    startV2RayNow()
+                } catch (cancelled: CancellationException) {
+                    AwgEndpointScanState.clear(guid)
+                    mainViewModel.setServiceStartPending(false)
+                    throw cancelled
+                } catch (error: Throwable) {
+                    AwgEndpointScanState.fail(guid, "MASQUE/H2 endpoint scan failed")
+                    PingNgDiagnostics.record("MASQUE/H2 endpoint scan failed", error)
+                    mainViewModel.setServiceStartPending(false)
+                    toast("MASQUE/H2 endpoint scan failed")
                 } finally {
                     warpEndpointTestJob = null
                 }

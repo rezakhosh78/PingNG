@@ -9,6 +9,7 @@ import com.v2ray.ang.AppConfig.REALITY
 import com.v2ray.ang.AppConfig.WIREGUARD_LOCAL_ADDRESS_V4
 import com.v2ray.ang.AppConfig.WIREGUARD_LOCAL_MTU
 import com.v2ray.ang.core.AwgWarpConfig
+import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.enums.NetworkType
@@ -24,6 +25,7 @@ class ServerUiState(
     pingNgProfile: String = "Off",
     pingNgDesyncArgs: String = "",
     psiphonEnabled: Boolean = false,
+    torEnabled: Boolean = false,
     psiphonRegion: String = "ANY",
     psiphonMode: String = "auto",
     psiphonCdnIps: String = "",
@@ -85,6 +87,7 @@ class ServerUiState(
     var pingNgProfile by mutableStateOf(pingNgProfile)
     var pingNgDesyncArgs by mutableStateOf(pingNgDesyncArgs)
     var psiphonEnabled by mutableStateOf(psiphonEnabled)
+    var torEnabled by mutableStateOf(torEnabled)
     var psiphonRegion by mutableStateOf(psiphonRegion)
     var psiphonMode by mutableStateOf(psiphonMode)
     var psiphonCdnIps by mutableStateOf(psiphonCdnIps)
@@ -162,6 +165,7 @@ class ServerUiState(
             pingNgProfile = if (supportsDesync) pingNgProfile.nullIfBlank() else null,
             pingNgDesyncArgs = if (supportsDesync) pingNgDesyncArgs.nullIfBlank() else null,
             psiphonEnabled = psiphonEnabled,
+            torEnabled = torEnabled,
             psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase(),
             psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase(),
             psiphonCdnIps = psiphonCdnIps.nullIfBlank(),
@@ -177,12 +181,14 @@ class ServerUiState(
             username = if (isSocksOrHttp) username else null,
             secretKey = if (isWireguard || isAmneziaWg) secretKey else null,
             amneziawgConfig = if (isAmneziaWg) amneziawgConfig else null,
-            autoScanEndpoint = if (isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) {
+            autoScanEndpoint = if ((isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) ||
+                WarpWireGuardConfig.isProfile(initialConfig)) {
                 autoScanEndpoint
             } else {
                 null
             },
-            awgEndpointCandidates = if (isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) {
+            awgEndpointCandidates = if ((isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) ||
+                WarpWireGuardConfig.isProfile(initialConfig)) {
                 awgEndpointCandidates.ifBlank { null }
             } else null,
             awgSkipAutoScanOnce = if (isAmneziaWg && initialConfig.description == AwgWarpConfig.DESCRIPTION) {
@@ -261,6 +267,7 @@ class ServerUiState(
                 pingNgProfile = initialConfig.pingNgProfile ?: "Off",
                 pingNgDesyncArgs = initialConfig.pingNgDesyncArgs ?: "",
                 psiphonEnabled = initialConfig.psiphonEnabled,
+                torEnabled = initialConfig.torEnabled,
                 psiphonRegion = initialConfig.psiphonRegion.orEmpty().ifBlank { "ANY" },
                 psiphonMode = initialConfig.psiphonMode.orEmpty().ifBlank { "auto" },
                 psiphonCdnIps = initialConfig.psiphonCdnIps.orEmpty(),

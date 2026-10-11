@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.dto.TorStatus
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.core.AwgEndpointScanState
 import com.v2ray.ang.ui.compose.QRCodeDialog
@@ -47,7 +48,8 @@ fun MainScreen(
     val groups = uiState.groups
     val isLoading by mainViewModel.isLoading.collectAsStateWithLifecycle()
     val isRunning = uiState.isRunning || uiState.isStarting ||
-        uiState.psiphonStates[uiState.selectedGuid] == PsiphonStatus.CONNECTING
+        uiState.psiphonStates[uiState.selectedGuid] == PsiphonStatus.CONNECTING ||
+        uiState.torStates[uiState.selectedGuid] == TorStatus.CONNECTING
     val displayText = mainViewModel.formatStatus(uiState.status)
     val countryCode = (uiState.status as? MainStatus.ConnectionTest)?.result?.countryCode
     val ipAddress = (uiState.status as? MainStatus.ConnectionTest)?.result?.ipAddress
@@ -240,6 +242,8 @@ fun MainScreen(
                     isRunning = isRunning,
                     scanSteps = awgScan.takeIf { it.running }?.steps.orEmpty(),
                     scanEndpoints = awgScan.takeIf { it.running }?.endpoints.orEmpty(),
+                    scanScannedCount = awgScan.takeIf { it.running }?.scannedCount ?: 0,
+                    scanTotalCount = awgScan.takeIf { it.running }?.totalCount ?: 0,
                     onAction = onAction
                 )
             },
@@ -308,6 +312,7 @@ fun MainScreen(
                             countryCode = countryCode,
                             ipAddress = ipAddress,
                             psiphonStates = uiState.psiphonStates,
+                            torStates = uiState.torStates,
                             doubleColumnDisplay = doubleColumnDisplay,
                             confirmRemove = confirmRemove,
                             searchQuery = searchQuery,

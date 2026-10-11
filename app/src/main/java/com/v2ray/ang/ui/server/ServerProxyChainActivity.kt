@@ -71,6 +71,7 @@ class ServerProxyChainActivity : BaseComponentActivity() {
     private lateinit var initialRemarks: String
     private lateinit var initialMembers: List<String>
     private var initialPsiphonEnabled: Boolean = false
+    private var initialTorEnabled: Boolean = false
     private var initialPsiphonRegion: String = "ANY"
     private var initialPsiphonMode: String = "auto"
     private var initialPsiphonCdnIps: String = ""
@@ -87,6 +88,7 @@ class ServerProxyChainActivity : BaseComponentActivity() {
         initialRemarks = config?.remarks ?: ""
         initialMembers = config?.proxyChainProfiles?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: listOf("", "")
         initialPsiphonEnabled = config?.psiphonEnabled == true
+        initialTorEnabled = config?.torEnabled == true
         initialPsiphonRegion = config?.psiphonRegion.orEmpty().ifBlank { "ANY" }
         initialPsiphonMode = config?.psiphonMode.orEmpty().ifBlank { "auto" }
         initialPsiphonCdnIps = config?.psiphonCdnIps.orEmpty()
@@ -102,6 +104,7 @@ class ServerProxyChainActivity : BaseComponentActivity() {
             initialRemarks = initialRemarks,
             initialMembers = initialMembers,
             initialPsiphonEnabled = initialPsiphonEnabled,
+            initialTorEnabled = initialTorEnabled,
             initialPsiphonRegion = initialPsiphonRegion,
             initialPsiphonMode = initialPsiphonMode,
             initialPsiphonCdnIps = initialPsiphonCdnIps,
@@ -109,8 +112,8 @@ class ServerProxyChainActivity : BaseComponentActivity() {
             initialPsiphonCdnSets = initialPsiphonCdnSets,
             allRemarks = allRemarks,
             onBackClick = { finish() },
-            onSave = { remarks, members, psiphonEnabled, psiphonRegion, mode, ips, sni, sets ->
-                saveServer(remarks, members, psiphonEnabled, psiphonRegion, mode, ips, sni, sets)
+            onSave = { remarks, members, psiphonEnabled, torEnabled, psiphonRegion, mode, ips, sni, sets ->
+                saveServer(remarks, members, psiphonEnabled, torEnabled, psiphonRegion, mode, ips, sni, sets)
             },
             onDelete = { deleteServer() }
         )
@@ -120,6 +123,7 @@ class ServerProxyChainActivity : BaseComponentActivity() {
         remarks: String,
         members: List<String>,
         psiphonEnabled: Boolean,
+        torEnabled: Boolean,
         psiphonRegion: String,
         psiphonMode: String,
         psiphonCdnIps: String,
@@ -169,6 +173,7 @@ class ServerProxyChainActivity : BaseComponentActivity() {
         config.proxyChainProfiles =
             chainMembers.joinToString(",")
         config.psiphonEnabled = psiphonEnabled
+        config.torEnabled = torEnabled
         config.psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase()
         config.psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase()
         config.psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null }
@@ -233,6 +238,7 @@ fun ProxyChainScreen(
     initialRemarks: String,
     initialMembers: List<String>,
     initialPsiphonEnabled: Boolean,
+    initialTorEnabled: Boolean,
     initialPsiphonRegion: String,
     initialPsiphonMode: String,
     initialPsiphonCdnIps: String,
@@ -240,12 +246,13 @@ fun ProxyChainScreen(
     initialPsiphonCdnSets: String,
     allRemarks: List<String>,
     onBackClick: () -> Unit,
-    onSave: (String, List<String>, Boolean, String, String, String, String, String) -> Boolean,
+    onSave: (String, List<String>, Boolean, Boolean, String, String, String, String, String) -> Boolean,
     onDelete: () -> Unit
 ) {
     var remarks by rememberSaveable { mutableStateOf(initialRemarks) }
     var members by rememberSaveable { mutableStateOf(initialMembers) }
     var psiphonEnabled by rememberSaveable { mutableStateOf(initialPsiphonEnabled) }
+    var torEnabled by rememberSaveable { mutableStateOf(initialTorEnabled) }
     var psiphonRegion by rememberSaveable { mutableStateOf(initialPsiphonRegion) }
     var psiphonMode by rememberSaveable { mutableStateOf(initialPsiphonMode) }
     var psiphonCdnIps by rememberSaveable { mutableStateOf(initialPsiphonCdnIps) }
@@ -283,7 +290,7 @@ fun ProxyChainScreen(
                             Icon(painterResource(R.drawable.ic_delete_24dp), contentDescription = stringResource(R.string.acc_delete))
                         }
                     }
-                    IconButton(onClick = { onSave(remarks, members, psiphonEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets) }) {
+                    IconButton(onClick = { onSave(remarks, members, psiphonEnabled, torEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets) }) {
                         Icon(painterResource(R.drawable.ic_fab_check), contentDescription = stringResource(R.string.acc_save))
                     }
                 }
@@ -383,8 +390,10 @@ fun ProxyChainScreen(
             item(key = "psiphon_fields") {
                 PsiphonEditorFields(
                     enabled = psiphonEnabled,
+                    torEnabled = torEnabled,
                     region = psiphonRegion,
-                    onEnabledChange = { psiphonEnabled = it },
+                    onEnabledChange = { psiphonEnabled = it; if (it) torEnabled = false },
+                    onTorEnabledChange = { torEnabled = it; if (it) psiphonEnabled = false },
                     onRegionChange = { psiphonRegion = it },
                     mode = psiphonMode,
                     onModeChange = { psiphonMode = it },

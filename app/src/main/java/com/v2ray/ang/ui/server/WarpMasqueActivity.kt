@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Button
@@ -18,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -27,6 +29,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.v2ray.ang.R
 import com.v2ray.ang.core.PingNgCompat
+import com.v2ray.ang.core.AwgEndpointScanState
+import com.v2ray.ang.core.EndpointScannerCli
 import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.dto.entities.ProfileItem
@@ -43,6 +47,11 @@ import com.v2ray.ang.ui.compose.SmartDesyncArgumentsEditor
 import com.v2ray.ang.ui.compose.verticalScrollbar
 import com.v2ray.ang.ui.main.DesyncSearchDialog
 import java.util.UUID
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import com.v2ray.ang.fmt.AmneziaWgFmt
 
 /** Editor for a real WARP MASQUE/H2 profile backed by the standalone core. */
 class WarpMasqueActivity : BaseServerActivity() {
@@ -51,6 +60,20 @@ class WarpMasqueActivity : BaseServerActivity() {
 
     @Composable
     override fun ScreenContent() {
+        val scope = rememberCoroutineScope()
+        val scanGuid = rememberSaveable(editGuid) {
+            editGuid.ifBlank {
+                warpSearchDraftGuid ?: UUID.randomUUID().toString().also { warpSearchDraftGuid = it }
+            }
+        }
+        warpSearchDraftGuid = scanGuid
+        val scanState by AwgEndpointScanState.state.collectAsStateWithLifecycle()
+        var scanJob by remember { mutableStateOf<Job?>(null) }
+        var scannedCandidates by rememberSaveable { mutableStateOf(initialConfig.awgEndpointCandidates.orEmpty()) }
+        val candidateList = remember(scannedCandidates) { EndpointScannerCli.decodeCandidates(scannedCandidates) }
+        var autoScanEndpoint by rememberSaveable {
+            mutableStateOf(WarpMasqueConfig.shouldAutoScan(initialConfig))
+        }
         var remarks by rememberSaveable { mutableStateOf(initialConfig.remarks.ifBlank { "WARP MASQUE/H2" }) }
         var registrationProxyGuid by rememberSaveable {
             mutableStateOf(initialConfig.warpRegistrationProxyGuid ?: WarpRegistrationProxy.AUTO)
@@ -78,15 +101,11 @@ class WarpMasqueActivity : BaseServerActivity() {
         var endpointPort by rememberSaveable {
             mutableStateOf((initialConfig.warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT).toString())
         }
-        var endpointMode by rememberSaveable {
-            mutableStateOf(initialConfig.warpMasqueEndpointMode ?: WarpMasqueConfig.ENDPOINT_MODE_AUTO)
-        }
         var deviceName by rememberSaveable {
             mutableStateOf(initialConfig.warpMasqueDeviceName ?: WarpMasqueConfig.randomDeviceName())
         }
         var sni by rememberSaveable {
-            mutableStateOf(initialConfig.warpMasqueSni
-                ?.takeUnless { it == WarpMasqueConfig.LEGACY_DEFAULT_SNI } ?: WarpMasqueConfig.DEFAULT_SNI)
+            mutableStateOf(WarpMasqueConfig.normalizeSni(initialConfig.warpMasqueSni))
         }
         var dns by rememberSaveable {
             mutableStateOf(initialConfig.warpMasqueDns ?: WarpMasqueConfig.DEFAULT_DNS)
@@ -95,6 +114,7 @@ class WarpMasqueActivity : BaseServerActivity() {
             mutableStateOf(initialConfig.warpMasqueHttp2Enabled ?: true)
         }
         var psiphon by rememberSaveable { mutableStateOf(initialConfig.psiphonEnabled) }
+        var tor by rememberSaveable { mutableStateOf(initialConfig.torEnabled) }
         var psiphonRegion by rememberSaveable { mutableStateOf(initialConfig.psiphonRegion ?: "ANY") }
         var psiphonMode by rememberSaveable { mutableStateOf(initialConfig.psiphonMode ?: "auto") }
         var psiphonCdnIps by rememberSaveable { mutableStateOf(initialConfig.psiphonCdnIps.orEmpty()) }
@@ -129,6 +149,7 @@ class WarpMasqueActivity : BaseServerActivity() {
                                 dns = dns,
                                 http2Enabled = http2Enabled,
                                 psiphon = psiphon,
+                                tor = tor,
                                 psiphonRegion = psiphonRegion,
                                 psiphonMode = psiphonMode,
                                 psiphonCdnIps = psiphonCdnIps,
@@ -136,7 +157,8 @@ class WarpMasqueActivity : BaseServerActivity() {
                                 psiphonCdnSets = psiphonCdnSets,
                                 desyncProfile = desyncProfile,
                                 desyncArgs = desyncArgs,
-                                endpointMode = endpointMode,
+                                scannedCandidates = scannedCandidates,
+                                autoScanEndpoint = autoScanEndpoint,
                             )
                         }) {
                             Text(stringResource(R.string.action_save))
@@ -150,6 +172,55 @@ class WarpMasqueActivity : BaseServerActivity() {
                 modifier = Modifier.fillMaxSize().padding(padding).verticalScrollbar(listState),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                item {
+                    AutoScanEndpointSwitch(
+                        checked = autoScanEndpoint,
+                        onCheckedChange = { autoScanEndpoint = it },
+                    )
+                }
+                item {
+                    EndpointScanPanel(
+                        guid = scanGuid,
+                        state = scanState,
+                        scanInProgress = scanJob?.isActive == true,
+                        candidateGroups = listOf("MASQUE/H2" to candidateList),
+                        selectedEndpoints = mapOf("MASQUE/H2" to "$primaryEndpoint:$endpointPort"),
+                        onScan = {
+                            scanJob = scope.launch {
+                                try {
+                                    val found = EndpointScannerCli.scanMasqueH2Endpoints(
+                                        this@WarpMasqueActivity,
+                                        scanGuid,
+                                        WarpMasqueConfig.normalizeSni(sni),
+                                    )
+                                    scannedCandidates = EndpointScannerCli.encodeCandidates(found)
+                                    AwgEndpointScanState.complete(
+                                        scanGuid,
+                                        "Endpoint selected: ${found.first().endpoint}",
+                                        found.first().endpoint,
+                                    )
+                                } catch (cancelled: CancellationException) {
+                                    AwgEndpointScanState.clear(scanGuid)
+                                    throw cancelled
+                                } catch (_: Throwable) {
+                                    AwgEndpointScanState.fail(scanGuid, "Endpoint scan failed")
+                                }
+                            }
+                        },
+                        onCancel = {
+                            scanJob?.cancel()
+                            EndpointScannerCli.cancelActiveScans()
+                        },
+                        onSelect = { _, candidate ->
+                            val (host, port) = AmneziaWgFmt.splitEndpoint(candidate.endpoint)
+                            if (!host.isNullOrBlank() && !port.isNullOrBlank()) {
+                                primaryEndpoint = host
+                                endpointPort = port
+                                autoScanEndpoint = false
+                            }
+                        },
+                    )
+                }
                 item { FormTextField(stringResource(R.string.server_lab_remarks), remarks, { remarks = it }) }
                 item {
                     FormDropdownField(
@@ -178,7 +249,7 @@ class WarpMasqueActivity : BaseServerActivity() {
                     FormTextField(
                         label = "Primary endpoint",
                         value = primaryEndpoint,
-                        onValueChange = { primaryEndpoint = it; endpointMode = WarpMasqueConfig.ENDPOINT_MODE_CUSTOM },
+                        onValueChange = { primaryEndpoint = it; autoScanEndpoint = false },
                         placeholder = WarpMasqueConfig.DEFAULT_ENDPOINT,
                         maxLines = 1,
                         keyboardType = KeyboardType.Uri,
@@ -188,18 +259,10 @@ class WarpMasqueActivity : BaseServerActivity() {
                     FormTextField(
                         label = "Endpoint port",
                         value = endpointPort,
-                        onValueChange = { endpointPort = it; endpointMode = WarpMasqueConfig.ENDPOINT_MODE_CUSTOM },
+                        onValueChange = { endpointPort = it; autoScanEndpoint = false },
                         placeholder = WarpMasqueConfig.DEFAULT_PORT.toString(),
                         maxLines = 1,
                         keyboardType = KeyboardType.Number,
-                    )
-                }
-                item {
-                    FormDropdownField(
-                        label = "WARP endpoint mode",
-                        value = endpointMode,
-                        options = listOf(WarpMasqueConfig.ENDPOINT_MODE_AUTO, WarpMasqueConfig.ENDPOINT_MODE_CUSTOM),
-                        onValueChange = { endpointMode = it },
                     )
                 }
                 item {
@@ -246,8 +309,12 @@ class WarpMasqueActivity : BaseServerActivity() {
                 item {
                     PsiphonEditorFields(
                         enabled = psiphon,
+                        torEnabled = tor,
                         region = psiphonRegion,
-                        onEnabledChange = { psiphon = it },
+                        onEnabledChange = { psiphon = it; if (it) tor = false },
+                        onTorEnabledChange = { tor = it; if (it) psiphon = false },
+                        enabledTitle = "Psiphon Over WARP MASQUE/H2",
+                        torEnabledTitle = "Tor Over WARP MASQUE/H2",
                         onRegionChange = { psiphonRegion = it },
                         mode = psiphonMode,
                         onModeChange = { psiphonMode = it },
@@ -294,7 +361,11 @@ class WarpMasqueActivity : BaseServerActivity() {
                                 serverPort = endpointPort,
                                 warpMasquePrimaryEndpoint = primaryEndpoint.trim(),
                                 warpMasqueEndpointPort = endpointPort.toIntOrNull(),
-                                warpMasqueEndpointMode = endpointMode,
+                                warpMasqueEndpointMode = if (autoScanEndpoint) {
+                                    WarpMasqueConfig.ENDPOINT_MODE_AUTO
+                                } else {
+                                    WarpMasqueConfig.ENDPOINT_MODE_CUSTOM
+                                },
                                 warpMasqueEndpointCandidates = endpoints.trim(),
                                 warpMasqueDeviceName = deviceName.trim(),
                                 warpMasqueSni = sni.trim(),
@@ -374,6 +445,7 @@ class WarpMasqueActivity : BaseServerActivity() {
         dns: String,
         http2Enabled: Boolean,
         psiphon: Boolean,
+        tor: Boolean,
         psiphonRegion: String,
         psiphonMode: String,
         psiphonCdnIps: String,
@@ -381,7 +453,8 @@ class WarpMasqueActivity : BaseServerActivity() {
         psiphonCdnSets: String,
         desyncProfile: String,
         desyncArgs: String,
-        endpointMode: String,
+        scannedCandidates: String,
+        autoScanEndpoint: Boolean,
     ) {
         if (remarks.isBlank()) {
             toast(R.string.server_lab_remarks)
@@ -408,11 +481,22 @@ class WarpMasqueActivity : BaseServerActivity() {
             this.warpMasqueEndpointCandidates = endpoints.trim()
             this.warpMasquePrimaryEndpoint = primaryEndpoint.trim()
             this.warpMasqueEndpointPort = parsedEndpointPort
-            this.warpMasqueEndpointMode = endpointMode
+            this.warpMasqueEndpointMode = if (autoScanEndpoint) {
+                WarpMasqueConfig.ENDPOINT_MODE_AUTO
+            } else {
+                WarpMasqueConfig.ENDPOINT_MODE_CUSTOM
+            }
+            this.autoScanEndpoint = autoScanEndpoint
+            this.warpMasqueScanPreparedOnce = false
+            if (!autoScanEndpoint) {
+                this.warpMasqueSelectedEndpoint = "${primaryEndpoint.trim()}:$parsedEndpointPort"
+            }
+            this.awgEndpointCandidates = scannedCandidates.ifBlank { null }
             this.warpMasqueDeviceName = deviceName.trim().ifBlank { WarpMasqueConfig.randomDeviceName() }
-            this.warpMasqueSni = sni.trim().ifBlank { WarpMasqueConfig.DEFAULT_SNI }
+            this.warpMasqueSni = WarpMasqueConfig.normalizeSni(sni)
             this.warpMasqueDns = dns.trim()
             this.warpMasqueHttp2Enabled = http2Enabled
+            this.finalMask = null
             this.warpMasqueSocksBind = this.warpMasqueSocksBind
                 ?.trim()?.takeIf { it.isNotBlank() } ?: WarpMasqueConfig.DEFAULT_SOCKS_BIND
             this.warpMasqueSocksPort = this.warpMasqueSocksPort
@@ -420,6 +504,7 @@ class WarpMasqueActivity : BaseServerActivity() {
             this.warpMasqueConfigJson = this.warpMasqueConfigJson
                 ?.trim()?.takeIf { it.isNotBlank() }
             this.psiphonEnabled = psiphon
+            this.torEnabled = tor
             this.psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase()
             this.psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase()
             this.psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null }

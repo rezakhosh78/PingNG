@@ -105,6 +105,11 @@ class ServerWireguardActivity : BaseServerActivity() {
                 ?.peers?.firstOrNull()?.get("endpoint")?.let { AmneziaWgFmt.splitEndpoint(it).first }
             initialConfig.remarks = AmneziaWgFmt.cleanRemark(initialConfig.remarks, fallbackRemark)
         }
+        if (isWarpWireGuard && initialConfig.autoScanEndpoint == null) {
+            initialConfig.autoScanEndpoint =
+                WarpWireGuardConfig.normalizeMode(initialConfig.warpEndpointTestMode) !=
+                    WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM
+        }
     }
 
     @Composable
@@ -147,9 +152,6 @@ class ServerWireguardActivity : BaseServerActivity() {
             }
         }
 
-        var endpointMode by rememberSaveable {
-            mutableStateOf(WarpWireGuardConfig.normalizeMode(initialConfig.warpEndpointTestMode))
-        }
         var registrationProxyGuid by rememberSaveable {
             mutableStateOf(initialConfig.warpRegistrationProxyGuid ?: WarpRegistrationProxy.AUTO)
         }
@@ -167,6 +169,8 @@ class ServerWireguardActivity : BaseServerActivity() {
         val awgCandidates = remember(uiState.awgEndpointCandidates) {
             EndpointScannerCli.decodeCandidates(uiState.awgEndpointCandidates)
         }
+        var wgScanGuid by rememberSaveable(editGuid) { mutableStateOf(editGuid) }
+        var wgScanJob by remember { mutableStateOf<Job?>(null) }
 
         fun recordAwgWarpProgress(line: String) {
             val raw = line.trim()
@@ -295,7 +299,8 @@ class ServerWireguardActivity : BaseServerActivity() {
         }
 
         LaunchedEffect(awgScanState.running, awgScanState.selectedEndpoint, awgScanGuid) {
-            if (awgScanState.guid == awgScanGuid && !awgScanState.running && awgScanState.selectedEndpoint.isNotBlank()) {
+            if (isAwgWarp && awgScanState.guid == awgScanGuid &&
+                !awgScanState.running && awgScanState.selectedEndpoint.isNotBlank()) {
                 MmkvManager.decodeServerConfig(awgScanGuid)?.let { saved ->
                     uiState.amneziawgConfig = saved.amneziawgConfig.orEmpty()
                     uiState.address = saved.server.orEmpty()
@@ -360,9 +365,13 @@ class ServerWireguardActivity : BaseServerActivity() {
                     if (isAwgWarp) initialConfig.warpRegistrationProxyGuid = registrationProxyGuid
                     if (isWarpWireGuard) {
                         initialConfig.description = WarpWireGuardConfig.DESCRIPTION
-                        initialConfig.warpEndpointTestMode = endpointMode
+                        initialConfig.warpEndpointTestMode = if (uiState.autoScanEndpoint) {
+                            WarpWireGuardConfig.ENDPOINT_MODE_AUTO
+                        } else {
+                            WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM
+                        }
                         initialConfig.warpRegistrationProxyGuid = registrationProxyGuid
-                        if (endpointMode == WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM) {
+                        if (!uiState.autoScanEndpoint) {
                             initialConfig.warpWireGuardSelectedEndpoint = "${uiState.address.trim()}:${uiState.port.trim()}"
                         }
                         uiState.finalMask = finalMaskFields.toJsonOrNull().orEmpty()
@@ -371,6 +380,75 @@ class ServerWireguardActivity : BaseServerActivity() {
                 }
             }
         ) {
+            if (isWarpWireGuard) {
+                AutoScanEndpointSwitch(
+                    checked = uiState.autoScanEndpoint,
+                    onCheckedChange = { uiState.autoScanEndpoint = it },
+                )
+                EndpointScanPanel(
+                    guid = wgScanGuid,
+                    state = awgScanState,
+                    scanInProgress = generating || wgScanJob?.isActive == true,
+                    candidateGroups = listOf("WARP WireGuard" to awgCandidates),
+                    selectedEndpoints = mapOf("WARP WireGuard" to "${uiState.address}:${uiState.port}"),
+                    onScan = {
+                        val account = EndpointScannerCli.accountFromProfile(initialConfig.copy(
+                            secretKey = uiState.secretKey,
+                            publicKey = uiState.publicKey,
+                            localAddress = uiState.localAddress,
+                            reserved = uiState.reserved,
+                            mtu = uiState.mtu.toIntOrNull() ?: 1280,
+                            server = uiState.address,
+                            serverPort = uiState.port,
+                        ))
+                        if (account == null) {
+                            toast("Generate a WARP WireGuard key before scanning")
+                        } else {
+                            // Give a new editor draft a durable GUID before starting
+                            // the shared scan. Saving or connecting while it is in
+                            // flight then reaches the same profile and scan state.
+                            val scanGuid = if (editGuid.isNotBlank()) {
+                                editGuid
+                            } else {
+                                saveDraftForDesyncSearch(uiState)
+                            }
+                            if (scanGuid.isNullOrBlank()) {
+                                toast("Could not prepare WARP WireGuard endpoint scan")
+                            } else {
+                                wgScanGuid = scanGuid
+                                wgScanJob = scope.launch {
+                                    try {
+                                        val candidates = EndpointScannerCli.scanWireGuardEndpoints(
+                                            this@ServerWireguardActivity,
+                                            account,
+                                            scanGuid = scanGuid,
+                                            progressLabel = "WARP WireGuard",
+                                        )
+                                        uiState.awgEndpointCandidates = EndpointScannerCli.encodeCandidates(candidates)
+                                    } catch (cancelled: CancellationException) {
+                                        AwgEndpointScanState.clear(scanGuid)
+                                        throw cancelled
+                                    } catch (_: Throwable) {
+                                        AwgEndpointScanState.fail(scanGuid, "Endpoint scan failed")
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    onCancel = {
+                        wgScanJob?.cancel()
+                        EndpointScannerCli.cancelActiveScans()
+                    },
+                    onSelect = { _, candidate ->
+                        val (host, port) = AmneziaWgFmt.splitEndpoint(candidate.endpoint)
+                        if (!host.isNullOrBlank() && !port.isNullOrBlank()) {
+                            uiState.address = host
+                            uiState.port = port
+                            uiState.autoScanEndpoint = false
+                        }
+                    },
+                )
+            }
             if (isAmneziaWg) {
                 if (isAwgWarp) {
                     Column(
@@ -398,7 +476,14 @@ class ServerWireguardActivity : BaseServerActivity() {
                             Text("Scan Endpoint")
                         }
                         if (awgScanState.guid == awgScanGuid && awgScanState.running) {
-                            Text(awgScanState.message, fontSize = 12.sp, maxLines = 2)
+                            Text(
+                                if (awgScanState.totalCount > 0) "Scanning endpoints…" else awgScanState.message,
+                                fontSize = 12.sp,
+                                maxLines = 2,
+                            )
+                            if (awgScanState.totalCount > 0) {
+                                Text("Scanned: ${awgScanState.scannedCount}/${awgScanState.totalCount}", fontSize = 12.sp)
+                            }
                             Text("Found: ${awgScanState.endpoints.size}", fontSize = 12.sp)
                             Column(Modifier.fillMaxWidth().height(72.dp).verticalScroll(rememberScrollState())) {
                                 awgScanState.endpoints.forEach { Text(it, fontSize = 12.sp) }
@@ -483,7 +568,7 @@ class ServerWireguardActivity : BaseServerActivity() {
                 CommonBasicFields(
                     state = uiState,
                     onEndpointChanged = {
-                        if (isWarpWireGuard) endpointMode = WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM
+                        if (isWarpWireGuard) uiState.autoScanEndpoint = false
                     },
                     afterRemarks = if (isWarpWireGuard) {
                         {
@@ -519,17 +604,6 @@ class ServerWireguardActivity : BaseServerActivity() {
                         startWarpGeneration(registrationProxyGuid)
                     },
                 ) { Text(if (generating) "Generating…" else "Generate New WARP") }
-                FormDropdownField(
-                    label = "WARP endpoint scan mode",
-                    value = endpointMode,
-                    options = listOf(
-                        WarpWireGuardConfig.ENDPOINT_MODE_FAST,
-                        WarpWireGuardConfig.ENDPOINT_MODE_MEDIUM,
-                        WarpWireGuardConfig.ENDPOINT_MODE_ALL,
-                        WarpWireGuardConfig.ENDPOINT_MODE_CUSTOM,
-                    ),
-                    onValueChange = { endpointMode = it },
-                )
                 WarpFinalMaskFields(
                     state = finalMaskFields,
                     onStateChange = { state ->

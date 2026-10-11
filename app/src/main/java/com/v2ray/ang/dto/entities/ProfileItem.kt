@@ -36,6 +36,8 @@ data class ProfileItem(
     var pingNgProfile: String? = "Off",
     var pingNgDesyncArgs: String? = null,
     var psiphonEnabled: Boolean = false,
+    /** Route this profile through the embedded Tor SOCKS hop. */
+    var torEnabled: Boolean = false,
     var psiphonRegion: String? = "ANY",
     /** Psiphon transport selection: auto, cdn (CDN fronting), or direct. */
     var psiphonMode: String? = "auto",
@@ -92,7 +94,7 @@ data class ProfileItem(
     var secretKey: String? = null,
     /** Original AmneziaWG .conf, retained losslessly for AWG 1.x/2.x/3.x fields. */
     var amneziawgConfig: String? = null,
-    /** AWG WARP editor option; null keeps the default (enabled) for old profiles. */
+    /** WARP endpoint editor option; null keeps the default (enabled) for old profiles. */
     var autoScanEndpoint: Boolean? = null,
     /** Verified AWG WARP endpoints from the most recent scan, ordered by latency. */
     var awgEndpointCandidates: String? = null,
@@ -106,9 +108,9 @@ data class ProfileItem(
     var warpEndpointCandidates: String? = null,
     var warpEndpointTestEnabled: Boolean? = null,
     var warpEndpointTestMode: String? = null,
-    /** FinalMask selected for Fast mode; null keeps the default fallback. */
+    /** FinalMask for automatic WARP Plus selection, stored under its legacy profile key. */
     var warpFastFinalMask: String? = null,
-    /** FinalMask selected for Medium/Slow mode; null keeps the default fallback. */
+    /** Legacy secondary FinalMask field retained when reading older saved profiles. */
     var warpAllFinalMask: String? = null,
     var warpFinalMaskEnabled: Boolean? = null,
     var warpInnerEndpointCandidates: String? = null,
@@ -125,8 +127,10 @@ data class ProfileItem(
     var warpSkipEndpointTestOnce: Boolean? = null,
     /** Candidate IPv4 endpoints for the WARP MASQUE/HTTP2 core. */
     var warpMasqueEndpointCandidates: String? = null,
-    /** Last MASQUE endpoint selected by the fast endpoint probe. */
+    /** Last MASQUE endpoint selected by the automatic endpoint scan. */
     var warpMasqueSelectedEndpoint: String? = null,
+    /** One-shot result scanned in the UI process so the service reuses it on start. */
+    var warpMasqueScanPreparedOnce: Boolean? = null,
     /** User-editable MASQUE registration and transport settings. */
     var warpMasqueDeviceName: String? = null,
     var warpMasquePrimaryEndpoint: String? = null,

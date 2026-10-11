@@ -45,16 +45,17 @@ fun MainBottomBar(
     isRunning: Boolean,
     scanSteps: List<String>,
     scanEndpoints: List<String>,
+    scanScannedCount: Long,
+    scanTotalCount: Long,
     onAction: (MainAction) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     val rotationAnim = remember { Animatable(0f) }
     val liveScanText = if (scanSteps.isNotEmpty()) {
-        val latest = scanSteps.last().trim().replace(Regex("\\s+"), " ")
-        if (scanEndpoints.isNotEmpty()) {
-            "$latest\nFound: ${scanEndpoints.size}"
+        if (scanTotalCount > 0) {
+            "Scanning endpoints…\nScanned: $scanScannedCount/$scanTotalCount · Found: ${scanEndpoints.size}"
         } else {
-            latest
+            "Scanning endpoints…\nFound: ${scanEndpoints.size}"
         }
     } else {
         displayText

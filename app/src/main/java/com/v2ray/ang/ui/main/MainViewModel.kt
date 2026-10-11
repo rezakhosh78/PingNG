@@ -10,6 +10,7 @@ import com.v2ray.ang.dto.ConnectionTestResult
 import com.v2ray.ang.dto.GroupMapItem
 import com.v2ray.ang.dto.LocateTarget
 import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.dto.TorStatus
 import com.v2ray.ang.dto.TestServiceMessage
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.entities.ServersCache
@@ -122,6 +123,10 @@ class MainViewModel(
                 updatePsiphonStatus(event.status)
             }
 
+            is MainServiceEvent.TorStatusChanged -> {
+                updateTorStatus(event.status)
+            }
+
             is MainServiceEvent.SubscriptionUpdated -> {
                 // The subscription service writes MMKV from a worker process. Reload
                 // this group so its notice and server list become visible immediately.
@@ -191,6 +196,17 @@ class MainViewModel(
                 else -> states[guid] = status.state
             }
             current.copy(psiphonStates = states)
+        }
+    }
+
+    private fun updateTorStatus(status: TorStatus) {
+        _uiState.update { current ->
+            val states = current.torStates.toMutableMap()
+            when (status.state) {
+                TorStatus.STOPPED -> states.remove(status.guid)
+                else -> states[status.guid] = status.state
+            }
+            current.copy(torStates = states)
         }
     }
 

@@ -22,16 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.max
 
-/**
- * ENDPOINT_SCANNER-compatible WARP Plus discovery pass.
- *
- * The upstream ENDPOINT_SCANNER scanner treats a completed WireGuard handshake as
- * the only reliable reachability signal, then brings up a real tunnel for the
- * second phase. This Android adapter keeps that two-phase design while using
- * the app's existing native WARP Plus chain for the real tunnel phase.
- *
- * Upstream binary provenance and license are recorded in the bundled asset.
- */
+/** In-app AmneziaWG handshake fallback used only when the native scanner is unavailable. */
 object AwgEndpointScanner {
     data class Hit(
         val endpoint: WarpEndpointTester.Endpoint,
@@ -75,10 +66,8 @@ object AwgEndpointScanner {
         val hitCount = AtomicInteger(0)
         val testedCount = AtomicInteger(0)
         val lastProgressNanos = AtomicLong(0L)
-        // maxHits bounds the candidates retained for phase two. The optional
-        // stopAfterHits is used only by All's first-usable discovery pass;
-        // Fast still scans its randomized pool so it can build both same and
-        // different endpoint pairs for the real-tunnel verifier.
+        // maxHits bounds the candidates retained for the real-tunnel verifier.
+        // stopAfterHits limits the work after enough usable candidates appear.
         val hitLimit = maxHits.coerceIn(1, 512)
         val stopAt = stopAfterHits?.coerceIn(1, hitLimit)
         val stopRequested = AtomicBoolean(false)
@@ -115,7 +104,7 @@ object AwgEndpointScanner {
                     val now = System.nanoTime()
                     // Progress is user-visible, but dispatching a Compose/Main
                     // update for every UDP packet would throttle the scanner
-                    // itself on large Medium/Slow endpoint pools.
+                    // itself when the endpoint pool is large.
                     if (tested == endpoints.size || now - lastProgressNanos.get() >= 100_000_000L) {
                         if (lastProgressNanos.compareAndSet(lastProgressNanos.get(), now)) {
                             onProgress(tested, endpoints.size)
@@ -124,10 +113,8 @@ object AwgEndpointScanner {
                     if (hit != null) {
                         val hitsSeen = hitCount.incrementAndGet()
                         synchronized(hits) {
-                            // ENDPOINT_SCANNER's first usable answers are fed into the
-                            // real-tunnel phase. Preserve discovery order;
-                            // sorting by raw UDP latency made All pair the
-                            // wrong endpoints and inflated Verify work.
+                            // Preserve discovery order before real-tunnel
+                            // verification; raw UDP latency is only a rough hint.
                             if (hits.size < hitLimit) {
                                 hits.add(hit.copy(discoveryOrder = tested.toLong()))
                             }

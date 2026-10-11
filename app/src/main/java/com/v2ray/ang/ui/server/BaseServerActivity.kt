@@ -288,8 +288,10 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         onResult: (FinalMaskCandidate, Long) -> Unit,
         onProgress: (Int) -> Unit,
         onFinished: () -> Unit,
+        targetGuid: String = editGuid,
+        disableSecondLayers: Boolean = false,
     ) {
-        val guid = editGuid.takeIf { it.isNotBlank() } ?: return onFinished()
+        val guid = targetGuid.takeIf { it.isNotBlank() } ?: return onFinished()
         finalMaskSearchJob = (application as com.v2ray.ang.AngApplication).applicationScope.launch(Dispatchers.IO) {
             val original = MmkvManager.decodeServerConfig(guid) ?: config
             try {
@@ -297,7 +299,10 @@ abstract class BaseServerActivity : BaseComponentActivity() {
                 kotlinx.coroutines.delay(700L)
                 candidates.forEachIndexed { index, candidate ->
                     try {
-                        MmkvManager.encodeServerConfig(guid, original.copy(finalMask = candidate.json))
+                        val candidateProfile = original.copy(finalMask = candidate.json).let { profile ->
+                            if (disableSecondLayers) profile.copy(psiphonEnabled = false, torEnabled = false) else profile
+                        }
+                        MmkvManager.encodeServerConfig(guid, candidateProfile)
                         withContext(Dispatchers.Main) {
                             if (index > 0) {
                                 LauncherManager.stopService(this@BaseServerActivity)
@@ -461,8 +466,10 @@ abstract class BaseServerActivity : BaseComponentActivity() {
     ) {
         PsiphonEditorFields(
             enabled = state.psiphonEnabled,
+            torEnabled = state.torEnabled,
             region = state.psiphonRegion,
-            onEnabledChange = { state.psiphonEnabled = it },
+            onEnabledChange = { state.psiphonEnabled = it; if (it) state.torEnabled = false },
+            onTorEnabledChange = { state.torEnabled = it; if (it) state.psiphonEnabled = false },
             onRegionChange = { state.psiphonRegion = it },
             mode = state.psiphonMode,
             onModeChange = { state.psiphonMode = it },

@@ -41,6 +41,7 @@ object WarpShareCodec {
             "cfg" to profile.warpMasqueConfigJson,
             "sel" to profile.warpMasqueSelectedEndpoint,
             "ps" to profile.psiphonEnabled,
+            "tor" to profile.torEnabled,
             "pr" to profile.psiphonRegion,
             "pm" to profile.psiphonMode,
             "ci" to profile.psiphonCdnIps,
@@ -68,6 +69,7 @@ object WarpShareCodec {
             "fm" to profile.finalMask,
             "sel" to profile.warpWireGuardSelectedEndpoint,
             "ps" to profile.psiphonEnabled,
+            "tor" to profile.torEnabled,
             "pr" to profile.psiphonRegion,
             "pm" to profile.psiphonMode,
             "ci" to profile.psiphonCdnIps,
@@ -89,6 +91,7 @@ object WarpShareCodec {
             "oc" to parent.warpOuterEndpointCandidates,
             "sel" to parent.warpSelectedEndpoint,
             "ps" to parent.psiphonEnabled,
+            "tor" to parent.torEnabled,
             "pr" to parent.psiphonRegion,
             "pm" to parent.psiphonMode,
             "ci" to parent.psiphonCdnIps,
@@ -140,6 +143,7 @@ object WarpShareCodec {
             warpMasqueConfigJson = values["cfg"]
             warpMasqueSelectedEndpoint = values["sel"]
             psiphonEnabled = values["ps"].toBoolean()
+            torEnabled = values["tor"].toBoolean()
             psiphonRegion = values["pr"]
             psiphonMode = values["pm"].orEmpty().ifBlank { "auto" }
             psiphonCdnIps = values["ci"]
@@ -167,6 +171,7 @@ object WarpShareCodec {
             warpEndpointTestEnabled = true
             warpSkipEndpointTestOnce = false
             psiphonEnabled = values["ps"].toBoolean()
+            torEnabled = values["tor"].toBoolean()
             psiphonRegion = values["pr"]
             psiphonMode = values["pm"].orEmpty().ifBlank { "auto" }
             psiphonCdnIps = values["ci"]
@@ -199,6 +204,7 @@ object WarpShareCodec {
             finalMask = values["fm"]
             warpWireGuardSelectedEndpoint = values["sel"]
             psiphonEnabled = values["ps"].toBoolean()
+            torEnabled = values["tor"].toBoolean()
             psiphonRegion = values["pr"]
             psiphonMode = values["pm"].orEmpty().ifBlank { "auto" }
             psiphonCdnIps = values["ci"]

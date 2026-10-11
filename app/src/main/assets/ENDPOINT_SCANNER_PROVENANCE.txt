@@ -1,5 +1,12 @@
-ENDPOINT_SCANNER CLI v0.16.0
-Upstream: https://github.com/vernette/warpscout
-Android executable: warpscout_0.16.0_android_arm64.tar.gz
-Invocation: scan -p awg -P -n 3 -jt 24 -a <account.json> -conf <config.conf> -o <report.txt>
+Endpoint scanning CLI v0.16.0
+Source: MIT-licensed upstream endpoint scanner v0.16.0; copyright notice retained in ENDPOINT_SCANNER_LICENSE.txt
+Source-built Android binaries for arm64-v8a, armeabi-v7a, x86_64, and x86.
+All packaged binaries use Go 1.27.2 and Android NDK r30 (API 24).
+Packaged under the PingNG internal name app/libs/<ABI>/libendpointscanner.so:
+  arm64-v8a:  af169689ea775ff226eb0b9448945843aa984423fbed12ce5c0cd5f72e464488
+  armeabi-v7a:  6c269154ee9e5c593dfb490f932ae1a7941a63eafcb4190ea4035a4921121638
+  x86_64:  5c138fd501b41988a72eaccf61b9b2f53c41fb379b4cb002bfd02d3b94b664a4
+  x86:  68d2a667ca447701636c2b2aed6d5cd8860dc135662a809a15c6de3771235819
+Invocation: scan -p wg or scan -p masque-h2 -n 3 -jt 24 -plain -no-report -a <account.json>
+The plain scan stream emits private endpoint and exact checked/total progress events for PingNG; the app filters scanner arguments and internal output before showing progress.
 License: MIT; see ENDPOINT_SCANNER_LICENSE.txt

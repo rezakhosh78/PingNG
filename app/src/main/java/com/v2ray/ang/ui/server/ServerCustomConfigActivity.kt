@@ -86,6 +86,7 @@ class ServerCustomConfigActivity : BaseComponentActivity() {
     private var initialRemarks: String = ""
     private var initialContent: String = ""
     private var initialPsiphonEnabled: Boolean = false
+    private var initialTorEnabled: Boolean = false
     private var initialPsiphonRegion: String = "ANY"
     private var initialPsiphonMode: String = "auto"
     private var initialPsiphonCdnIps: String = ""
@@ -98,6 +99,7 @@ class ServerCustomConfigActivity : BaseComponentActivity() {
         initialRemarks = config?.remarks ?: ""
         initialContent = MmkvManager.decodeServerRaw(editGuid).orEmpty()
         initialPsiphonEnabled = config?.psiphonEnabled == true
+        initialTorEnabled = config?.torEnabled == true
         initialPsiphonRegion = config?.psiphonRegion.orEmpty().ifBlank { "ANY" }
         initialPsiphonMode = config?.psiphonMode.orEmpty().ifBlank { "auto" }
         initialPsiphonCdnIps = config?.psiphonCdnIps.orEmpty()
@@ -113,14 +115,15 @@ class ServerCustomConfigActivity : BaseComponentActivity() {
             initialRemarks = initialRemarks,
             initialContent = initialContent,
             initialPsiphonEnabled = initialPsiphonEnabled,
+            initialTorEnabled = initialTorEnabled,
             initialPsiphonRegion = initialPsiphonRegion,
             initialPsiphonMode = initialPsiphonMode,
             initialPsiphonCdnIps = initialPsiphonCdnIps,
             initialPsiphonCdnSni = initialPsiphonCdnSni,
             initialPsiphonCdnSets = initialPsiphonCdnSets,
             onBackClick = { finish() },
-            onSave = { remarks, content, psiphonEnabled, psiphonRegion, mode, ips, sni, sets ->
-                saveServer(remarks, content, psiphonEnabled, psiphonRegion, mode, ips, sni, sets)
+            onSave = { remarks, content, psiphonEnabled, torEnabled, psiphonRegion, mode, ips, sni, sets ->
+                saveServer(remarks, content, psiphonEnabled, torEnabled, psiphonRegion, mode, ips, sni, sets)
             },
             onDelete = { deleteServer() }
         )
@@ -130,6 +133,7 @@ class ServerCustomConfigActivity : BaseComponentActivity() {
         remarks: String,
         content: String,
         psiphonEnabled: Boolean,
+        torEnabled: Boolean,
         psiphonRegion: String,
         psiphonMode: String,
         psiphonCdnIps: String,
@@ -172,6 +176,7 @@ class ServerCustomConfigActivity : BaseComponentActivity() {
         config.server = parsedProfile?.server
         config.serverPort = parsedProfile?.serverPort
         config.psiphonEnabled = psiphonEnabled
+        config.torEnabled = torEnabled
         config.psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase()
         config.psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase()
         config.psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null }
@@ -242,17 +247,19 @@ fun ServerCustomConfigScreen(
     initialRemarks: String,
     initialContent: String,
     initialPsiphonEnabled: Boolean,
+    initialTorEnabled: Boolean,
     initialPsiphonRegion: String,
     initialPsiphonMode: String,
     initialPsiphonCdnIps: String,
     initialPsiphonCdnSni: String,
     initialPsiphonCdnSets: String,
     onBackClick: () -> Unit,
-    onSave: (String, String, Boolean, String, String, String, String, String) -> Boolean,
+    onSave: (String, String, Boolean, Boolean, String, String, String, String, String) -> Boolean,
     onDelete: () -> Unit
 ) {
     var remarks by rememberSaveable { mutableStateOf(initialRemarks) }
     var psiphonEnabled by rememberSaveable { mutableStateOf(initialPsiphonEnabled) }
+    var torEnabled by rememberSaveable { mutableStateOf(initialTorEnabled) }
     var psiphonRegion by rememberSaveable { mutableStateOf(initialPsiphonRegion) }
     var psiphonMode by rememberSaveable { mutableStateOf(initialPsiphonMode) }
     var psiphonCdnIps by rememberSaveable { mutableStateOf(initialPsiphonCdnIps) }
@@ -377,7 +384,7 @@ fun ServerCustomConfigScreen(
                         }
                     }
                     IconButton(onClick = {
-                        onSave(remarks, textFieldState.text.toString(), psiphonEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets)
+                        onSave(remarks, textFieldState.text.toString(), psiphonEnabled, torEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets)
                     }) {
                         Icon(
                             painterResource(R.drawable.ic_fab_check),
@@ -534,8 +541,10 @@ fun ServerCustomConfigScreen(
             }
             PsiphonEditorFields(
                 enabled = psiphonEnabled,
+                torEnabled = torEnabled,
                 region = psiphonRegion,
-                onEnabledChange = { psiphonEnabled = it },
+                onEnabledChange = { psiphonEnabled = it; if (it) torEnabled = false },
+                onTorEnabledChange = { torEnabled = it; if (it) psiphonEnabled = false },
                 onRegionChange = { psiphonRegion = it },
                 mode = psiphonMode,
                 onModeChange = { psiphonMode = it },

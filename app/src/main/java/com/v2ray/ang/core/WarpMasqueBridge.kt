@@ -10,14 +10,7 @@ import com.v2ray.ang.util.LogUtil
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.util.Collections
-import java.util.concurrent.Callable
-import java.util.concurrent.CompletionService
-import java.util.concurrent.ExecutorCompletionService
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.CancellationException
 
@@ -32,9 +25,6 @@ object WarpMasqueBridge {
     private const val TAG = "WarpMasqueCore"
     private const val REGISTER_TIMEOUT_SECONDS = 45L
     private const val START_TIMEOUT_MILLIS = 6_000
-    private const val MAX_PARALLEL_MASQUE_ATTEMPTS = 6
-    private const val MAX_PARALLEL_ENDPOINT_PROBES = 64
-    private const val MAX_DESYNC_FALLBACK_PROBES = 3
 
     @Volatile
     private var activeProcess: Process? = null
@@ -53,6 +43,7 @@ object WarpMasqueBridge {
         startupCancelled.set(true)
         registrationProcess?.let(::destroyProcess)
         startupProcess?.let(::destroyProcess)
+        EndpointScannerCli.cancelActiveScans()
     }
 
     private fun checkStartupActive() {
@@ -107,149 +98,77 @@ object WarpMasqueBridge {
         ensureRegistered(binary, runtimeDir, configFile, profile)
         persistProfile(guid, profile)
 
-        val configuredCandidates = profile.warpMasqueEndpointCandidates?.trim()
-        val candidateSource = if (
-            configuredCandidates.isNullOrBlank() ||
-            configuredCandidates == WarpMasqueConfig.LEGACY_DEFAULT_ENDPOINTS
-        ) {
-            WarpMasqueConfig.DEFAULT_ENDPOINTS
-        } else {
-            configuredCandidates
-        }
-        val candidates = parseCandidates(candidateSource)
-
         val configuredPrimary = profile.warpMasquePrimaryEndpoint?.trim().orEmpty()
-        val manualPrimary = configuredPrimary.isNotBlank() &&
-            configuredPrimary != WarpMasqueConfig.DEFAULT_ENDPOINT &&
-            configuredPrimary != WarpMasqueConfig.PRIMARY_ENDPOINT
-        val manualList = candidateSource != WarpMasqueConfig.DEFAULT_ENDPOINTS &&
-            candidates.size == 1
-        val customMode = profile.warpMasqueEndpointMode == WarpMasqueConfig.ENDPOINT_MODE_CUSTOM
-        val legacyManualMode = profile.warpMasqueEndpointMode == null
-        val ordered = if (customMode) {
-            val customHost = profile.warpMasquePrimaryEndpoint?.trim().orEmpty()
-            val customPort = profile.warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT
-            parseCandidates("$customHost:$customPort").take(1)
-        } else if (legacyManualMode && (manualPrimary || manualList)) {
-            check(candidates.isNotEmpty()) { "WARP MASQUE endpoint list is empty" }
-            listOf(if (manualPrimary) orderCandidates(candidates, profile).first() else candidates.first())
+        val primary = if (profile.warpMasqueScanPreparedOnce == true) {
+            // The UI process already scanned this connection and displayed its
+            // progress. Consume its persisted result without a second scan in
+            // the service process.
+            profile.warpMasqueScanPreparedOnce = false
+            persistProfile(guid, profile)
+            parseCandidates(profile.warpMasqueSelectedEndpoint.orEmpty()).firstOrNull()
+                ?: throw IllegalStateException("Prepared WARP MASQUE endpoint is invalid")
+        } else if (!WarpMasqueConfig.shouldAutoScan(profile)) {
+            val saved = profile.warpMasqueSelectedEndpoint?.trim().takeUnless { it.isNullOrBlank() }
+            val configured = configuredPrimary.takeIf {
+                it.isNotBlank() && (it != WarpMasqueConfig.DEFAULT_ENDPOINT || saved.isNullOrBlank())
+            }?.let { value ->
+                if (value.contains(':')) value else "$value:${profile.warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT}"
+            }
+            parseCandidates(configured ?: saved ?: WarpMasqueConfig.PRIMARY_ENDPOINT).firstOrNull()
+                ?: throw IllegalStateException("Invalid manual WARP MASQUE endpoint")
         } else {
-            check(candidates.isNotEmpty()) { "WARP MASQUE endpoint list is empty" }
-            orderCandidates(candidates, profile)
+            val sni = WarpMasqueConfig.normalizeSni(profile.warpMasqueSni)
+            checkStartupActive()
+            LogUtil.i(AppConfig.TAG, "$TAG searching for an H2 endpoint")
+            val scannedEndpoint = try {
+                val candidates = kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+                    EndpointScannerCli.scanMasqueH2Endpoints(context, guid, sni)
+                }
+                profile.awgEndpointCandidates = EndpointScannerCli.encodeCandidates(candidates)
+                candidates.first().endpoint.also {
+                    AwgEndpointScanState.complete(guid, "Endpoint selected: $it", it)
+                }
+            } catch (error: Throwable) {
+                checkStartupActive()
+                AwgEndpointScanState.fail(guid, "MASQUE/H2 endpoint scan failed")
+                PingNgDiagnostics.record("MASQUE/H2 endpoint scan failed", error)
+                throw error
+            }
+            checkStartupActive()
+            profile.warpMasqueSelectedEndpoint = scannedEndpoint
+            persistProfile(guid, profile)
+            parseCandidates(scannedEndpoint).firstOrNull()
+                ?: throw IllegalStateException("Endpoint scan returned an invalid address")
         }
-        check(ordered.isNotEmpty()) { "Invalid custom WARP MASQUE endpoint" }
 
-        // The requested primary endpoint gets a real MASQUE/data-plane attempt
-        // first. A plain TCP connect is not enough to call an endpoint healthy.
-        val primary = ordered.firstOrNull()
         var lastFailure: Throwable? = null
-        if (primary != null) {
-            try {
-                checkStartupActive()
-                LogUtil.i(
-                    AppConfig.TAG,
-                    "$TAG data-plane test 1/${ordered.size}: ${primary.rendered} (primary)",
-                )
-                val started = startEndpoint(binary, configFile, runtimeDir, primary, profile)
-                LogUtil.i(
-                    AppConfig.TAG,
-                    "$TAG data-plane result 1/${ordered.size}: ${primary.rendered} " +
-                        if (started != null) "healthy" else "failed",
-                )
-                if (started?.let {
-                        activate(it.process, guid, profile, primary)
-                    } == true) return
-            } catch (error: Throwable) {
-                lastFailure = error
-                LogUtil.w(AppConfig.TAG, "$TAG primary endpoint ${primary.rendered} failed: ${error.message}")
-            }
+        try {
+            checkStartupActive()
+            LogUtil.i(AppConfig.TAG, "$TAG starting selected H2 endpoint " + primary.rendered)
+            val started = startEndpoint(binary, configFile, runtimeDir, primary, profile)
+            if (started != null && activate(started.process, guid, profile, primary)) return
+            lastFailure = IllegalStateException("selected endpoint failed the H2 data-plane check")
+        } catch (error: Throwable) {
+            lastFailure = error
+            LogUtil.w(AppConfig.TAG, "$TAG selected endpoint " + primary.rendered + " failed: " + error.message)
         }
 
-        // Only after the primary fails do we scan the remaining range. The
-        // TCP preflight is merely an ordering optimization; every candidate
-        // still needs a real SOCKS -> HTTP/2 -> MASQUE handshake below.
-        val fallbackCandidates = if (customMode) emptyList() else ordered.drop(1)
-        checkStartupActive()
-        // The TCP preflight only establishes reachability, never MASQUE health.
-        // Keep the data-plane scan bounded so a completely blocked /24 cannot
-        // leave the connection in discovery for hundreds of serial batches.
-        val reachable = reachableCandidates(fallbackCandidates.take(96))
-        val attempts = (reachable + fallbackCandidates.filterNot { it in reachable }).take(48)
+        // Retry the same scanned endpoint directly if the Desync layer interferes with H2.
         val desyncEnabled = PingNgCompat.isNativeDesyncEnabled(profile)
-        val masqueAttempts = if (desyncEnabled) attempts.take(MAX_DESYNC_FALLBACK_PROBES) else attempts
-        val healthy = findHealthyFallback(
-            binary = binary,
-            configFile = configFile,
-            runtimeDir = runtimeDir,
-            candidates = masqueAttempts,
-            profile = profile,
-            totalCandidates = ordered.size,
-            completedBeforeStart = 1,
-        )
-        if (healthy != null) {
-            try {
-                checkStartupActive()
-                // The parallel probes use temporary SOCKS ports. Restart the
-                // winner on the profile's stable port before handing it to Xray.
-                destroyStarted(healthy)
-                val process = startEndpoint(binary, configFile, runtimeDir, healthy.endpoint, profile)
-                if (process != null && activate(process.process, guid, profile, healthy.endpoint)) return
-                lastFailure = IllegalStateException("winner did not start on the configured SOCKS port")
-            } catch (error: Throwable) {
-                lastFailure = error
-                LogUtil.w(AppConfig.TAG, "$TAG endpoint ${healthy.endpoint.rendered} failed on final start: ${error.message}")
-            }
-        }
-
-        // Some native Desync profiles intentionally split/fake the first TLS
-        // flight. Cloudflare's MASQUE HTTP/2 control channel can reject those
-        // profiles with EOF even though the CONNECT/SOCKS bridge is healthy.
-        // Keep trying Desync first; if every Desync-routed endpoint fails,
-        // make a small direct retry so enabling Desync cannot strand the VPN.
         if (desyncEnabled && context !is com.v2ray.ang.service.CoreProxyOnlyService) {
             PingNgDiagnostics.record(
-                "WARP MASQUE endpoints rejected the selected Desync profile; retrying without outer Desync",
+                "WARP MASQUE selected endpoint rejected the Desync profile; retrying without outer Desync",
             )
             try {
                 checkStartupActive()
-                val directPrimary = startEndpoint(
-                    binary, configFile, runtimeDir, primary ?: ordered.first(), profile,
+                val direct = startEndpoint(
+                    binary, configFile, runtimeDir, primary, profile,
                     routeThroughDesync = false,
                 )
-                if (directPrimary != null && activate(directPrimary.process, guid, profile, directPrimary.endpoint)) return
+                if (direct != null && activate(direct.process, guid, profile, primary)) return
             } catch (error: Throwable) {
                 lastFailure = error
-                LogUtil.w(AppConfig.TAG, "$TAG direct retry for ${primary?.rendered} failed: ${error.message}")
-            }
-
-            checkStartupActive()
-            val directCandidates = (listOfNotNull(primary) + attempts)
-                .distinct()
-                .take(MAX_PARALLEL_MASQUE_ATTEMPTS * 4)
-            val directHealthy = findHealthyFallback(
-                binary = binary,
-                configFile = configFile,
-                runtimeDir = runtimeDir,
-                candidates = directCandidates,
-                profile = profile,
-                totalCandidates = directCandidates.size,
-                completedBeforeStart = 0,
-                routeThroughDesync = false,
-            )
-            if (directHealthy != null) {
-                try {
-                    checkStartupActive()
-                    destroyStarted(directHealthy)
-                    val process = startEndpoint(
-                        binary, configFile, runtimeDir, directHealthy.endpoint, profile,
-                        routeThroughDesync = false,
-                    )
-                    if (process != null && activate(process.process, guid, profile, directHealthy.endpoint)) return
-                    lastFailure = IllegalStateException("direct MASQUE winner did not start on the configured SOCKS port")
-                } catch (error: Throwable) {
-                    lastFailure = error
-                    LogUtil.w(AppConfig.TAG, "$TAG direct endpoint ${directHealthy.endpoint.rendered} failed: ${error.message}")
-                }
+                LogUtil.w(AppConfig.TAG, "$TAG direct retry for " + primary.rendered + " failed: " + error.message)
             }
         }
 
@@ -397,37 +316,27 @@ object WarpMasqueBridge {
         runtimeDir: File,
         endpoint: Endpoint,
         profile: ProfileItem,
-        portOverride: Int = socksPort(profile),
         routeThroughDesync: Boolean = true,
     ): StartedEndpoint? {
         val http2Enabled = profile.warpMasqueHttp2Enabled ?: true
-        val finalPort = socksPort(profile)
-        val attemptConfig = if (portOverride == finalPort) {
-            configFile
-        } else {
-            File(
-                runtimeDir,
-                "attempt-${endpoint.host.replace(Regex("[^A-Za-z0-9_.-]"), "_")}-$portOverride.json",
-            ).also { configFile.copyTo(it, overwrite = true) }
-        }
+        val listenPort = socksPort(profile)
         val desyncProxy = if (routeThroughDesync && PingNgCompat.isNativeDesyncEnabled(profile)) {
             WarpMasqueDesyncProxy.proxyUrlForEndpoint(endpoint.host, endpoint.port)
         } else null
-        patchEndpoint(attemptConfig, endpoint, http2Enabled, desyncProxy)
+        val upstreamProxy = desyncProxy
+        patchEndpoint(configFile, endpoint, http2Enabled, upstreamProxy)
         val args = mutableListOf(
             binary.absolutePath,
-            "-c", attemptConfig.absolutePath,
+            "-c", configFile.absolutePath,
             "socks",
             "-b", socksBind(profile),
-            "-p", portOverride.toString(),
+            "-p", listenPort.toString(),
             // The SOCKS listen port (-p) is different from the remote MASQUE
             // endpoint port. Without -P the usque core defaults to 443, so a
             // manually entered endpoint port was silently ignored.
             "-P", endpoint.port.toString(),
         )
-        val configuredSni = profile.warpMasqueSni?.trim()
-            ?.takeIf { it.isNotBlank() && it != WarpMasqueConfig.LEGACY_DEFAULT_SNI }
-            ?: WarpMasqueConfig.DEFAULT_SNI
+        val configuredSni = WarpMasqueConfig.normalizeSni(profile.warpMasqueSni)
         profile.warpMasqueSni = configuredSni
         configuredSni.let {
             args += listOf("-s", it)
@@ -437,12 +346,12 @@ object WarpMasqueBridge {
         var process: Process? = null
         try {
             val builder = ProcessBuilder(args).directory(runtimeDir).redirectErrorStream(true)
-            if (desyncProxy != null) {
+            if (upstreamProxy != null) {
                 builder.environment().apply {
-                    put("HTTP_PROXY", desyncProxy)
-                    put("HTTPS_PROXY", desyncProxy)
-                    put("http_proxy", desyncProxy)
-                    put("https_proxy", desyncProxy)
+                    put("HTTP_PROXY", upstreamProxy)
+                    put("HTTPS_PROXY", upstreamProxy)
+                    put("http_proxy", upstreamProxy)
+                    put("https_proxy", upstreamProxy)
                 }
             }
             val startedProcess = builder.start()
@@ -458,121 +367,24 @@ object WarpMasqueBridge {
             )
             if (!waitForSocksListener(startedProcess, socksListening)) {
                 destroyProcess(startedProcess)
-                if (attemptConfig != configFile) runCatching { attemptConfig.delete() }
                 return null
             }
             checkStartupActive()
-            val warmupSocket = openWarmupSocks(profile, portOverride)
+            val warmupSocket = openWarmupSocks(profile, listenPort)
             val ready = warmupSocket != null && waitForMasque(startedProcess, masqueConnected)
             runCatching { warmupSocket?.close() }
             if (!ready) {
                 destroyProcess(startedProcess)
-                if (attemptConfig != configFile) runCatching { attemptConfig.delete() }
                 return null
             }
             checkStartupActive()
-            return StartedEndpoint(startedProcess, endpoint, portOverride, attemptConfig)
+            return StartedEndpoint(startedProcess, endpoint)
         } catch (error: Throwable) {
             process?.let(::destroyProcess)
-            if (attemptConfig != configFile) runCatching { attemptConfig.delete() }
             throw error
         } finally {
             startupProcess = null
         }
-    }
-
-    private fun findHealthyFallback(
-        binary: File,
-        configFile: File,
-        runtimeDir: File,
-        candidates: List<Endpoint>,
-        profile: ProfileItem,
-        totalCandidates: Int,
-        completedBeforeStart: Int,
-        routeThroughDesync: Boolean = true,
-    ): StartedEndpoint? {
-        if (candidates.isEmpty()) return null
-        // The native Desync engine has process-global state. Parallel MASQUE
-        // handshakes all traverse its single SOCKS listener and can corrupt or
-        // reset each other's outer TLS probes, so serialize fallback attempts
-        // whenever this profile routes through Desync.
-        val parallelism = if (routeThroughDesync && PingNgCompat.isNativeDesyncEnabled(profile)) 1
-            else MAX_PARALLEL_MASQUE_ATTEMPTS
-        val executor = Executors.newFixedThreadPool(parallelism)
-        val completedTests = AtomicInteger(completedBeforeStart)
-        try {
-            for ((batchIndex, batch) in candidates.chunked(parallelism).withIndex()) {
-                checkStartupActive()
-                val winner = AtomicReference<StartedEndpoint?>(null)
-                val running = Collections.synchronizedSet(mutableSetOf<StartedEndpoint>())
-                val completion: CompletionService<StartedEndpoint?> = ExecutorCompletionService(executor)
-                repeat(batch.size) { index ->
-                    val endpoint = batch[index]
-                    completion.submit(Callable {
-                        val testPort = temporarySocksPort(profile, batchIndex * parallelism + index)
-                        var started: StartedEndpoint? = null
-                        try {
-                            LogUtil.i(AppConfig.TAG, "$TAG data-plane test ${endpoint.rendered} on port $testPort")
-                            started = startEndpoint(
-                                binary, configFile, runtimeDir, endpoint, profile, testPort,
-                                routeThroughDesync = routeThroughDesync,
-                            )
-                        } catch (error: Throwable) {
-                            LogUtil.d(AppConfig.TAG, "$TAG data-plane exception ${endpoint.rendered}: ${error.message}")
-                        } finally {
-                            val finished = completedTests.incrementAndGet()
-                            LogUtil.i(
-                                AppConfig.TAG,
-                                "$TAG data-plane result $finished/$totalCandidates: ${endpoint.rendered} " +
-                                    if (started != null) "healthy" else "failed",
-                            )
-                        }
-                        val ready = started ?: return@Callable null
-                        running += ready
-                        if (winner.compareAndSet(null, ready)) {
-                            ready
-                        } else {
-                            destroyStarted(ready)
-                            running -= ready
-                            null
-                        }
-                    })
-                }
-
-                var completed = 0
-                while (completed < batch.size && winner.get() == null) {
-                    checkStartupActive()
-                    val result = completion.take().get()
-                    completed++
-                    if (result != null) winner.compareAndSet(null, result)
-                }
-                val selected = winner.get()
-                if (selected != null) {
-                    synchronized(running) {
-                        running.filter { it !== selected }.forEach(::destroyStarted)
-                        running.removeIf { it !== selected }
-                    }
-                    LogUtil.i(AppConfig.TAG, "$TAG first healthy endpoint ${selected.endpoint.rendered}")
-                    return selected
-                }
-            }
-        } finally {
-            executor.shutdownNow()
-        }
-        return null
-    }
-
-    private fun temporarySocksPort(profile: ProfileItem, index: Int): Int {
-        val preferred = socksPort(profile) + 100 + index
-        if (preferred in 1024..65535) return preferred
-        return runCatching {
-            java.net.ServerSocket(0).use { it.localPort }
-        }.getOrDefault(socksPort(profile))
-    }
-
-    private fun destroyStarted(started: StartedEndpoint) {
-        destroyProcess(started.process)
-        if (started.configFile != null) runCatching { started.configFile.delete() }
     }
 
     private fun destroyProcess(process: Process) {
@@ -736,23 +548,7 @@ object WarpMasqueBridge {
     private data class StartedEndpoint(
         val process: Process,
         val endpoint: Endpoint,
-        val port: Int,
-        val configFile: File?,
     )
-
-    private fun orderCandidates(candidates: List<Endpoint>, profile: ProfileItem): List<Endpoint> {
-        val configuredPrimary = profile.warpMasquePrimaryEndpoint?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: WarpMasqueConfig.DEFAULT_ENDPOINT
-        val primaryToken = if (configuredPrimary.contains(':')) {
-            configuredPrimary
-        } else {
-            "$configuredPrimary:${profile.warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT}"
-        }
-        val primary = parseCandidates(primaryToken).firstOrNull()
-            ?: parseCandidates(WarpMasqueConfig.PRIMARY_ENDPOINT).first()
-        return listOf(primary) + candidates.filter { it != primary }
-    }
 
     private fun socksBind(profile: ProfileItem): String =
         profile.warpMasqueSocksBind?.trim()?.takeIf { it.isNotBlank() }
@@ -773,43 +569,6 @@ object WarpMasqueBridge {
             .split(',', ';', '\n', '\r', ' ', '\t')
             .map(String::trim)
             .filter(String::isNotBlank)
-
-    /**
-     * Order the full fallback range by a short TCP/443 check. Results are
-     * consumed as they complete, so one dead address cannot delay progress
-     * reporting or hold up all later addresses in the list.
-     */
-    private fun reachableCandidates(candidates: List<Endpoint>): List<Endpoint> {
-        if (candidates.isEmpty()) return emptyList()
-        LogUtil.i(AppConfig.TAG, "$TAG endpoint probe 0/${candidates.size}")
-        val executor = Executors.newFixedThreadPool(minOf(MAX_PARALLEL_ENDPOINT_PROBES, candidates.size))
-        val completion: CompletionService<Endpoint?> = ExecutorCompletionService(executor)
-        candidates.forEach { endpoint ->
-            completion.submit(Callable {
-                runCatching {
-                    Socket().use { socket ->
-                        socket.connect(InetSocketAddress(endpoint.host, endpoint.port), 350)
-                    }
-                    endpoint
-                }.getOrNull()
-            })
-        }
-        val reachable = ArrayList<Endpoint>()
-        try {
-            repeat(candidates.size) { index ->
-                val endpoint = runCatching { completion.take().get() }.getOrNull()
-                if (endpoint != null) reachable += endpoint
-                LogUtil.i(
-                    AppConfig.TAG,
-                    "$TAG endpoint probe ${index + 1}/${candidates.size}" +
-                        (endpoint?.let { ": ${it.rendered} reachable" } ?: ": unreachable"),
-                )
-            }
-            return reachable
-        } finally {
-            executor.shutdownNow()
-        }
-    }
 
     private fun parseCandidates(raw: String?): List<Endpoint> {
         val value = raw.orEmpty().ifBlank { WarpMasqueConfig.DEFAULT_ENDPOINTS }

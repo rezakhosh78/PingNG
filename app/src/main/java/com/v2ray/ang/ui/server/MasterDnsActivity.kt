@@ -127,6 +127,7 @@ class MasterDnsActivity : BaseServerActivity() {
             }
         }
         var psiphon by rememberSaveable { mutableStateOf(initialConfig.psiphonEnabled) }
+        var tor by rememberSaveable { mutableStateOf(initialConfig.torEnabled) }
         var psiphonRegion by rememberSaveable { mutableStateOf(initialConfig.psiphonRegion ?: "ANY") }
         var psiphonMode by rememberSaveable { mutableStateOf(initialConfig.psiphonMode ?: "auto") }
         var psiphonCdnIps by rememberSaveable { mutableStateOf(initialConfig.psiphonCdnIps.orEmpty()) }
@@ -231,6 +232,7 @@ class MasterDnsActivity : BaseServerActivity() {
                         masterDnsResolvers = resolvers,
                         masterDnsReuseValidResolvers = reuseValidResolvers,
                         psiphonEnabled = psiphon,
+                        torEnabled = tor,
                         psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase(),
                         psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase(),
                         psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null },
@@ -336,10 +338,13 @@ class MasterDnsActivity : BaseServerActivity() {
                         item {
                             PsiphonEditorFields(
                                 enabled = psiphon,
+                                torEnabled = tor,
                                 region = psiphonRegion,
-                                onEnabledChange = { psiphon = it },
+                                onEnabledChange = { psiphon = it; if (it) tor = false },
+                                onTorEnabledChange = { tor = it; if (it) psiphon = false },
                                 onRegionChange = { psiphonRegion = it },
                                 enabledTitle = "Psiphon Over ${if (engine == MasterDnsBridge.LABEL) MasterDnsBridge.UI_LABEL else engine}",
+                                torEnabledTitle = "Tor Over ${if (engine == MasterDnsBridge.LABEL) MasterDnsBridge.UI_LABEL else engine}",
                                 hintResId = R.string.pingng_psiphon_masterdns_hint,
                                 mode = psiphonMode,
                                 onModeChange = { psiphonMode = it },

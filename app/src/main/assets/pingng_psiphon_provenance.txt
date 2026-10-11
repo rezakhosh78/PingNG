@@ -3,6 +3,11 @@ PingNG Psiphon runtime
 Source project: https://github.com/shirokhorshid/shirokhorshid-android
 Tunnel core: https://github.com/shirokhorshid/psiphon-tunnel-core
 Runtime release: v2026.05.24-a3b91cf
+The armeabi-v7a native runtime was restored from that release's official APK
+after its local copy was found truncated. Reference APK SHA-256:
+9d8c11c6450df689a7632fb02b73fd1a7c524ed26870e21a6c617f1981be4d79
+Restored library SHA-256:
+51abe4b1b04bda1828ef0596ac10c441bce5b6fd06819717b23cc70676f3f97e
 
 The embedded Psiphon client/core is used as a separate optional layer.
 The selected PingNG profile is started first; Psiphon is then started in

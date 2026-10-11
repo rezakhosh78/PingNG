@@ -4,6 +4,8 @@
     <string name="app_widget_name">Switch</string>
     <string name="app_tile_name">PingNG</string>
     <string name="pingng_psiphon_enabled">Psiphon Over Xray</string>
+    <string name="pingng_tor_enabled">Tor Over Xray</string>
+    <string name="pingng_tor_hint">TCP uses Tor; UDP uses the selected base tunnel.</string>
     <string name="pingng_psiphon_status">Psiphon</string>
     <string name="pingng_psiphon_region">Country</string>
     <string name="pingng_psiphon_region_summary">Select</string>

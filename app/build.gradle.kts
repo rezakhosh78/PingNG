@@ -1,8 +1,8 @@
 import java.net.URI
 import java.net.HttpURLConnection
-import java.io.EOFException
-import java.io.InputStream
-import java.util.zip.GZIPInputStream
+import java.io.RandomAccessFile as ElfRandomAccessFile
+import java.nio.ByteBuffer as ElfByteBuffer
+import java.nio.ByteOrder as ElfByteOrder
 import java.util.zip.ZipFile
 
 plugins {
@@ -44,6 +44,18 @@ val amneziaWgApkUrl = providers.gradleProperty("AMNEZIAWG_ANDROID_APK_URL")
     .get()
 val amneziaWgApk = layout.projectDirectory.file("libs/amneziawg-android-$amneziaWgAndroidVersion.apk").asFile
 val amneziaWgAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+
+// IPtProxy and libv2ray both embed gomobile's `go.Seq` runtime and both ship
+// `libgojni.so`. Keep IPtProxy out of the app compile/runtime classpaths; its
+// classes and native library are loaded by TorSnowflakeTransportService from
+// a private DEX/native directory in the isolated :TorSnowflake process.
+val iptProxyRuntimeConfiguration = configurations.create("iptProxyRuntime") {
+    isCanBeConsumed = false
+    isCanBeResolved = true
+    isTransitive = false
+}
+val snowflakeRuntimeAssetsDir = layout.buildDirectory.dir("generated/snowflakeRuntime/assets")
+val snowflakeRuntimeJniLibsDir = layout.buildDirectory.dir("generated/snowflakeRuntime/jniLibs")
 
 fun isValidAar(file: java.io.File): Boolean = try {
     if (!file.isFile || file.length() <= 1024) {
@@ -166,18 +178,16 @@ warpMasqueBinaries.forEach { (abi, binary) ->
     }
 }
 
-// ENDPOINT_SCANNER v0.16.0 ships an Android/arm64 CLI. Package it as an executable
-// native library so the app can run `scan -p awg -P` in an isolated process.
-// Other ABIs use PingNG's in-app AWG handshake fallback.
-val endpointscannerVersion = "0.16.0"
-val upstreamEndpointTool = "warp" + "scout"
-val endpointscannerGeneratedJniLibs = layout.buildDirectory.dir("generated/endpointscanner/jniLibs")
-val endpointscannerExecutable = endpointscannerGeneratedJniLibs.map {
-    it.file("arm64-v8a/libendpointscanner.so")
-}
-val endpointscannerArchive = layout.buildDirectory.file("endpointscanner/endpointscanner-$endpointscannerVersion-android-arm64.tar.gz")
-
-fun isValidEndpointScannerExecutable(file: java.io.File): Boolean = try {
+// Bundle the endpoint scanner for each Android ABI supported by this project.
+// Keeping the executables in source prevents builds from silently omitting
+// endpoint scanning when release downloads are unavailable.
+val endpointScannerAbis = mapOf(
+    "arm64-v8a" to (2 to 183),
+    "armeabi-v7a" to (1 to 40),
+    "x86_64" to (2 to 62),
+    "x86" to (1 to 3),
+)
+fun isValidEndpointScannerExecutable(file: java.io.File, elfClass: Int, machine: Int): Boolean = try {
     if (!file.isFile || file.length() < 1024) {
         false
     } else {
@@ -185,114 +195,17 @@ fun isValidEndpointScannerExecutable(file: java.io.File): Boolean = try {
         header.size == 20 &&
             header[0] == 0x7f.toByte() && header[1] == 'E'.code.toByte() &&
             header[2] == 'L'.code.toByte() && header[3] == 'F'.code.toByte() &&
-            header[4] == 2.toByte() && header[5] == 1.toByte() &&
-            (header[18].toInt() and 0xff) == 183
+            (header[4].toInt() and 0xff) == elfClass && header[5] == 1.toByte() &&
+            header[16] == 3.toByte() && header[17] == 0.toByte() &&
+            (header[18].toInt() and 0xff) == machine && (header[19].toInt() and 0xff) == 0
     }
 } catch (_: Exception) {
     false
 }
-
-fun readTarBlock(input: InputStream): ByteArray? {
-    val block = ByteArray(512)
-    var offset = 0
-    while (offset < block.size) {
-        val count = input.read(block, offset, block.size - offset)
-        if (count < 0) {
-            if (offset == 0) return null
-            throw EOFException("Truncated ENDPOINT_SCANNER archive")
-        }
-        offset += count
-    }
-    return block
-}
-
-fun skipTarBytes(input: InputStream, byteCount: Long) {
-    var remaining = byteCount
-    val buffer = ByteArray(8192)
-    while (remaining > 0) {
-        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-        if (count < 0) throw EOFException("Truncated ENDPOINT_SCANNER archive entry")
-        remaining -= count
-    }
-}
-
-fun extractEndpointScannerExecutable(archive: java.io.File, output: java.io.File): Boolean = try {
-    GZIPInputStream(archive.inputStream().buffered()).use { input ->
-        while (true) {
-            val header = readTarBlock(input) ?: return@use false
-            if (header.all { it == 0.toByte() }) return@use false
-            val name = String(header, 0, 100, Charsets.UTF_8).substringBefore('\u0000')
-            val sizeText = String(header, 124, 12, Charsets.UTF_8).trim('\u0000', ' ').ifBlank { "0" }
-            val size = sizeText.toLongOrNull(8) ?: return@use false
-            val entryType = header[156].toInt().toChar()
-            if (name.substringAfterLast('/') == upstreamEndpointTool && (entryType == '\u0000' || entryType == '0')) {
-                output.parentFile.mkdirs()
-                output.outputStream().buffered().use { out ->
-                    var remaining = size
-                    val buffer = ByteArray(8192)
-                    while (remaining > 0) {
-                        val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                        if (count < 0) throw EOFException("Truncated ENDPOINT_SCANNER executable")
-                        out.write(buffer, 0, count)
-                        remaining -= count
-                    }
-                }
-                val padding = (512 - (size % 512)) % 512
-                if (padding > 0) skipTarBytes(input, padding)
-                output.setExecutable(true, false)
-                val valid = isValidEndpointScannerExecutable(output)
-                if (!valid) output.delete()
-                return@use valid
-            }
-            val padding = (512 - (size % 512)) % 512
-            skipTarBytes(input, size + padding)
-        }
-        false
-    }
-} catch (_: Exception) {
-    output.delete()
-    false
-}
-
-fun downloadEndpointScannerExecutable(target: java.io.File, output: java.io.File): Boolean {
-    val urls = listOf(
-        "https://github.com/vernette/$upstreamEndpointTool/releases/download/v$endpointscannerVersion/${upstreamEndpointTool}_${endpointscannerVersion}_android_arm64.tar.gz",
-        "https://github.com/vernette/$upstreamEndpointTool/releases/download/v$endpointscannerVersion/${upstreamEndpointTool}_v${endpointscannerVersion}_android_arm64.tar.gz",
-    )
-    target.parentFile.mkdirs()
-    val temporary = target.resolveSibling("${target.name}.download")
-    for (url in urls) {
-        try {
-            temporary.delete()
-            val connection = URI(url).toURL().openConnection() as HttpURLConnection
-            connection.connectTimeout = 30_000
-            connection.readTimeout = 90_000
-            connection.instanceFollowRedirects = true
-            connection.setRequestProperty("User-Agent", "PingNG")
-            connection.inputStream.use { input ->
-                temporary.outputStream().use { out -> input.copyTo(out) }
-            }
-            if (extractEndpointScannerExecutable(temporary, output)) return true
-        } catch (_: Exception) {
-            // Try the alternate release asset spelling after a 404 or interrupted download.
-        } finally {
-            temporary.delete()
-        }
-    }
-    return false
-}
-
-val downloadEndpointScannerAndroid by tasks.registering {
-    outputs.file(endpointscannerExecutable)
-    doLast {
-        val executable = endpointscannerExecutable.get().asFile
-        if (isValidEndpointScannerExecutable(executable)) return@doLast
-        executable.delete()
-        if (downloadEndpointScannerExecutable(endpointscannerArchive.get().asFile, executable)) {
-            logger.lifecycle("Bundled ENDPOINT_SCANNER v$endpointscannerVersion for Android arm64")
-        } else {
-            logger.warn("ENDPOINT_SCANNER v$endpointscannerVersion could not be downloaded; non-arm64/in-app fallback remains available")
-        }
+endpointScannerAbis.forEach { (abi, elf) ->
+    val executable = layout.projectDirectory.file("libs/$abi/libendpointscanner.so").asFile
+    check(isValidEndpointScannerExecutable(executable, elf.first, elf.second)) {
+        "Android $abi endpoint scanner is missing or invalid: app/libs/$abi/libendpointscanner.so"
     }
 }
 
@@ -305,6 +218,91 @@ if (!isValidAar(libV2rayFile)) {
 
 ensureAmneziaWgNativeLibraries()
 
+val prepareSnowflakeRuntime = tasks.register("prepareSnowflakeRuntime") {
+    inputs.files(iptProxyRuntimeConfiguration)
+    outputs.dir(snowflakeRuntimeAssetsDir)
+    outputs.dir(snowflakeRuntimeJniLibsDir)
+
+    doLast {
+        val iptProxyAar = iptProxyRuntimeConfiguration.resolve().singleOrNull()
+            ?: error("Expected exactly one IPtProxy AAR in iptProxyRuntime")
+        val generatedAssets = snowflakeRuntimeAssetsDir.get().asFile
+        val generatedJniLibs = snowflakeRuntimeJniLibsDir.get().asFile
+        project.delete(generatedAssets, generatedJniLibs)
+
+        val workDirectory = layout.buildDirectory.dir("tmp/snowflakeRuntime").get().asFile
+        project.delete(workDirectory)
+        workDirectory.mkdirs()
+        val classesJar = File(workDirectory, "IPtProxy-classes.jar")
+        val snowflakeAssetDirectory = File(generatedAssets, "tor-snowflake-runtime")
+        snowflakeAssetDirectory.mkdirs()
+
+        ZipFile(iptProxyAar).use { aar ->
+            val classesEntry = aar.getEntry("classes.jar")
+                ?: error("IPtProxy AAR does not contain classes.jar")
+            aar.getInputStream(classesEntry).use { input ->
+                classesJar.outputStream().use { output -> input.copyTo(output) }
+            }
+
+            var copiedNativeLibraries = 0
+            val entries = aar.entries()
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                val parts = entry.name.split('/')
+                if (entry.isDirectory || parts.size != 3 || parts[0] != "jni" || parts[2] != "libgojni.so") {
+                    continue
+                }
+                val destination = File(generatedJniLibs, "${parts[1]}/libpingng_snowflake.so")
+                destination.parentFile.mkdirs()
+                aar.getInputStream(entry).use { input ->
+                    destination.outputStream().use { output -> input.copyTo(output) }
+                }
+                copiedNativeLibraries++
+            }
+            check(copiedNativeLibraries > 0) { "IPtProxy AAR does not contain libgojni.so for any ABI" }
+        }
+
+        val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+        val d8Name = if (isWindows) "d8.bat" else "d8"
+        val buildTools = android.sdkDirectory.resolve("build-tools")
+            .listFiles()
+            ?.filter { File(it, d8Name).isFile }
+            .orEmpty()
+        val selectedBuildTools = buildTools.maxWithOrNull(Comparator { left, right ->
+            val leftParts = left.name.split('.').map { it.toIntOrNull() ?: 0 }
+            val rightParts = right.name.split('.').map { it.toIntOrNull() ?: 0 }
+            var comparison = 0
+            for (index in 0 until maxOf(leftParts.size, rightParts.size)) {
+                comparison = leftParts.getOrElse(index) { 0 }.compareTo(rightParts.getOrElse(index) { 0 })
+                if (comparison != 0) break
+            }
+            comparison
+        }) ?: error("Android SDK build-tools with $d8Name are required to build the Snowflake runtime")
+        val d8 = File(selectedBuildTools, d8Name)
+        val dexOutputDirectory = File(workDirectory, "dex").apply { mkdirs() }
+        val d8Arguments = listOf(
+            "--min-api", "24",
+            "--output", dexOutputDirectory.absolutePath,
+            classesJar.absolutePath,
+        )
+        val command = if (isWindows) {
+            listOf("cmd.exe", "/d", "/c", d8.absolutePath) + d8Arguments
+        } else {
+            listOf(d8.absolutePath) + d8Arguments
+        }
+        val d8Process = ProcessBuilder(command).redirectErrorStream(true).start()
+        val d8Output = d8Process.inputStream.bufferedReader().use { it.readText() }
+        check(d8Process.waitFor() == 0) { "D8 failed to prepare IPtProxy runtime DEX:\n$d8Output" }
+
+        val dexFiles = dexOutputDirectory.listFiles()
+            ?.filter { it.isFile && it.extension.equals("dex", ignoreCase = true) }
+            ?.sortedBy { it.name }
+            .orEmpty()
+        check(dexFiles.isNotEmpty()) { "D8 did not produce any Snowflake runtime DEX files" }
+        dexFiles.forEach { dex -> dex.copyTo(File(snowflakeAssetDirectory, dex.name), overwrite = true) }
+    }
+}
+
 android {
     namespace = "com.v2ray.ang"
     compileSdk = 37
@@ -314,11 +312,10 @@ android {
         applicationId = "com.pingng.android"
         minSdk = 24
         targetSdk = 37
-        // Increment the code so Android cannot retain the previously extracted
-        // v3.1.20260814 native library during an in-place update.
-        versionCode = 759
-        // PingNG Pi41 version metadata. Upstream tag 2.3.10 source changes integrated.
-        versionName = "v2.3.10-Pi41"
+        // Increment for the isolated Snowflake runtime DEX and native library packaging.
+        versionCode = 763
+        // PingNG Pi42 version metadata. Upstream tag 2.3.10 source changes integrated.
+        versionName = "v2.3.10-Pi42"
         // Keep the bundled native engine version observable without calling a
         // native diagnostic entry point during tunnel startup. Some older
         // extracted libwg-go.so builds can panic from awgVersion() itself.
@@ -373,10 +370,8 @@ android {
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("libs")
-            // AGP 9 rejects Provider values in the legacy SourceSet API.
-            // Resolve this build-directory path here; the mergeNativeLibs
-            // tasks still depend on downloadEndpointScannerAndroid below.
-            jniLibs.srcDir(endpointscannerGeneratedJniLibs.get().asFile)
+            jniLibs.srcDir(snowflakeRuntimeJniLibsDir.get().asFile)
+            assets.srcDir(snowflakeRuntimeAssetsDir.get().asFile)
         }
     }
 
@@ -486,21 +481,26 @@ android {
             keepDebugSymbols.add("**/libdnstt.so")
             keepDebugSymbols.add("**/libmasterdns.so")
             keepDebugSymbols.add("**/libendpointscanner.so")
+            // Preserve the Go JNI symbol table used by the isolated Psiphon class loader.
+            keepDebugSymbols.add("**/libpingng_psiphon.so")
+            // IPtProxy embeds a separate gomobile Go runtime for Snowflake.
+            keepDebugSymbols.add("**/libgojni.so")
+            keepDebugSymbols.add("**/libpingng_snowflake.so")
         }
     }
 
 }
 
 tasks.configureEach {
-    // AGP 9.8 validates the generated jniLibs directory at the
-    // MergeSourceSetFolders stage, before mergeNativeLibs runs.
-    if (name.startsWith("merge") &&
-        (name.endsWith("JniLibFolders") || name.endsWith("NativeLibs"))) {
-        dependsOn(downloadEndpointScannerAndroid)
+    if (name.startsWith("merge") && (name.endsWith("Assets") || name.endsWith("JniLibFolders"))) {
+        dependsOn(prepareSnowflakeRuntime)
     }
 }
 
 dependencies {
+    implementation("info.guardianproject:tor-android:0.4.9.11")
+    implementation("info.guardianproject:jtorctl:0.4.5.7")
+    add(iptProxyRuntimeConfiguration.name, "com.netzarchitekten:IPtProxy:5.5.1")
     // Core Libraries
     implementation(mapOf("name" to "libv2ray", "ext" to "aar"))
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
@@ -625,4 +625,47 @@ val validateArmV7CoreSet by tasks.registering {
 }
 tasks.configureEach {
     if (name.startsWith("pre") && name.endsWith("ReleaseBuild")) dependsOn(validateArmV7CoreSet)
+}
+
+fun hasCompleteElfSectionTable(file: File): Boolean = try {
+    ElfRandomAccessFile(file, "r").use { input ->
+        if (input.length() < 64) return@use false
+        val header = ByteArray(64)
+        input.readFully(header)
+        if (header[0] != 0x7f.toByte() || header[1] != 'E'.code.toByte() ||
+            header[2] != 'L'.code.toByte() || header[3] != 'F'.code.toByte() || header[5] != 1.toByte()
+        ) return@use false
+        val buffer = ElfByteBuffer.wrap(header).order(ElfByteOrder.LITTLE_ENDIAN)
+        when (header[4].toInt() and 0xff) {
+            1 -> {
+                val offset = buffer.getInt(32).toLong() and 0xffffffffL
+                val entrySize = buffer.getShort(46).toLong() and 0xffffL
+                val count = buffer.getShort(48).toLong() and 0xffffL
+                offset <= input.length() && entrySize * count <= input.length() - offset
+            }
+            2 -> {
+                val offset = buffer.getLong(40)
+                val entrySize = buffer.getShort(58).toLong() and 0xffffL
+                val count = buffer.getShort(60).toLong() and 0xffffL
+                offset >= 0 && offset <= input.length() && entrySize * count <= input.length() - offset
+            }
+            else -> false
+        }
+    }
+} catch (_: Exception) {
+    false
+}
+
+val validatePsiphonNativeLibraries by tasks.registering {
+    doLast {
+        listOf("arm64-v8a", "armeabi-v7a").forEach { abi ->
+            val binary = layout.projectDirectory.file("libs/$abi/libpingng_psiphon.so").asFile
+            check(hasCompleteElfSectionTable(binary)) {
+                "Invalid or truncated Psiphon native library for $abi: $binary"
+            }
+        }
+    }
+}
+tasks.configureEach {
+    if (name.startsWith("pre") && name.endsWith("Build")) dependsOn(validatePsiphonNativeLibraries)
 }

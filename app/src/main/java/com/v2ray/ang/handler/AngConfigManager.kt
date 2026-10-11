@@ -28,6 +28,7 @@ import com.v2ray.ang.fmt.VlessFmt
 import com.v2ray.ang.fmt.VmessFmt
 import com.v2ray.ang.fmt.WireguardFmt
 import com.v2ray.ang.fmt.AmneziaWgFmt
+import com.v2ray.ang.fmt.VpnAwgUriFmt
 import com.v2ray.ang.util.HttpUtil
 import com.v2ray.ang.util.JsonUtil
 import com.v2ray.ang.util.LogUtil
@@ -46,6 +47,7 @@ object AngConfigManager {
     // Parser mapping for different config types (lazy initialized)
     private val configFmtParsers: Map<String, (String) -> ProfileItem?> by lazy {
         mapOf(
+            "vpn://" to VpnAwgUriFmt::parse,
             MasterDnsShareCodec.DNSTT_PREFIX to MasterDnsShareCodec::decode,
             MasterDnsShareCodec.MASTER_DNS_PREFIX to MasterDnsShareCodec::decode,
             MasterDnsShareCodec.COMPACT_PREFIX_V2 to MasterDnsShareCodec::decode,
@@ -314,7 +316,7 @@ object AngConfigManager {
                         warpMasqueEndpointPort = warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT
                         warpMasqueEndpointMode = warpMasqueEndpointMode
                             ?: WarpMasqueConfig.ENDPOINT_MODE_AUTO
-                        warpMasqueSni = warpMasqueSni.takeUnless { it.isNullOrBlank() } ?: WarpMasqueConfig.DEFAULT_SNI
+                        warpMasqueSni = WarpMasqueConfig.normalizeSni(warpMasqueSni)
                         warpMasqueDns = warpMasqueDns.takeUnless { it.isNullOrBlank() } ?: WarpMasqueConfig.DEFAULT_DNS
                     }
                     profiles[guid] = profile

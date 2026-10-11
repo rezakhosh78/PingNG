@@ -64,6 +64,7 @@ class ServerGroupActivity : BaseComponentActivity() {
     private var initialTestOutbounds: Boolean = false
     private lateinit var initialFallbackTag: String
     private var initialPsiphonEnabled: Boolean = false
+    private var initialTorEnabled: Boolean = false
     private var initialPsiphonRegion: String = "ANY"
     private var initialPsiphonMode: String = "auto"
     private var initialPsiphonCdnIps: String = ""
@@ -88,6 +89,7 @@ class ServerGroupActivity : BaseComponentActivity() {
                 !BalancerStrategyType.from(config.policyGroupType).supportsObservatory
         initialFallbackTag = config?.policyGroupFallbackTag.orEmpty()
         initialPsiphonEnabled = config?.psiphonEnabled == true
+        initialTorEnabled = config?.torEnabled == true
         initialPsiphonRegion = config?.psiphonRegion.orEmpty().ifBlank { "ANY" }
         initialPsiphonMode = config?.psiphonMode.orEmpty().ifBlank { "auto" }
         initialPsiphonCdnIps = config?.psiphonCdnIps.orEmpty()
@@ -113,6 +115,7 @@ class ServerGroupActivity : BaseComponentActivity() {
             initialTestOutbounds = initialTestOutbounds,
             initialFallbackTag = initialFallbackTag,
             initialPsiphonEnabled = initialPsiphonEnabled,
+            initialTorEnabled = initialTorEnabled,
             initialPsiphonRegion = initialPsiphonRegion,
             initialPsiphonMode = initialPsiphonMode,
             initialPsiphonCdnIps = initialPsiphonCdnIps,
@@ -120,8 +123,8 @@ class ServerGroupActivity : BaseComponentActivity() {
             initialPsiphonCdnSets = initialPsiphonCdnSets,
             fallbackSuggestions = fallbackSuggestions,
             onBackClick = { finish() },
-            onSave = { remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion, mode, ips, sni, sets ->
-                saveServer(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion, mode, ips, sni, sets)
+            onSave = { remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, torEnabled, psiphonRegion, mode, ips, sni, sets ->
+                saveServer(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, torEnabled, psiphonRegion, mode, ips, sni, sets)
             },
             onDelete = { deleteServer() }
         )
@@ -135,6 +138,7 @@ class ServerGroupActivity : BaseComponentActivity() {
         testOutbounds: Boolean,
         fallbackTag: String,
         psiphonEnabled: Boolean,
+        torEnabled: Boolean,
         psiphonRegion: String,
         psiphonMode: String,
         psiphonCdnIps: String,
@@ -159,6 +163,7 @@ class ServerGroupActivity : BaseComponentActivity() {
         config.policyGroupTestOutbounds = testOutbounds
         config.policyGroupFallbackTag = fallbackTag.trim().takeIf { it.isNotEmpty() }
         config.psiphonEnabled = psiphonEnabled
+        config.torEnabled = torEnabled
         config.psiphonRegion = psiphonRegion.ifBlank { "ANY" }.uppercase()
         config.psiphonMode = psiphonMode.ifBlank { "auto" }.lowercase()
         config.psiphonCdnIps = psiphonCdnIps.trim().ifBlank { null }
@@ -257,6 +262,7 @@ fun ServerGroupScreen(
     initialTestOutbounds: Boolean,
     initialFallbackTag: String,
     initialPsiphonEnabled: Boolean,
+    initialTorEnabled: Boolean,
     initialPsiphonRegion: String,
     initialPsiphonMode: String,
     initialPsiphonCdnIps: String,
@@ -264,7 +270,7 @@ fun ServerGroupScreen(
     initialPsiphonCdnSets: String,
     fallbackSuggestions: List<String>,
     onBackClick: () -> Unit,
-    onSave: (String, String, Int, Int, Boolean, String, Boolean, String, String, String, String, String) -> Boolean,
+    onSave: (String, String, Int, Int, Boolean, String, Boolean, Boolean, String, String, String, String, String) -> Boolean,
     onDelete: () -> Unit
 ) {
     val typeEntries = stringArrayResource(R.array.policy_group_type).toList()
@@ -276,6 +282,7 @@ fun ServerGroupScreen(
     var testOutbounds by rememberSaveable { mutableStateOf(initialTestOutbounds) }
     var fallbackTag by rememberSaveable { mutableStateOf(initialFallbackTag) }
     var psiphonEnabled by rememberSaveable { mutableStateOf(initialPsiphonEnabled) }
+    var torEnabled by rememberSaveable { mutableStateOf(initialTorEnabled) }
     var psiphonRegion by rememberSaveable { mutableStateOf(initialPsiphonRegion) }
     var psiphonMode by rememberSaveable { mutableStateOf(initialPsiphonMode) }
     var psiphonCdnIps by rememberSaveable { mutableStateOf(initialPsiphonCdnIps) }
@@ -301,7 +308,7 @@ fun ServerGroupScreen(
                     IconButton(onClick = {
                         val typeIdx = typeEntries.indexOf(typeValue).coerceAtLeast(0)
                         val subIdx = subDisplay.indexOf(subValue).coerceAtLeast(0)
-                        onSave(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets)
+                        onSave(remarks, filter, typeIdx, subIdx, testOutbounds, fallbackTag, psiphonEnabled, torEnabled, psiphonRegion, psiphonMode, psiphonCdnIps, psiphonCdnSni, psiphonCdnSets)
                     }) {
                         Icon(painterResource(R.drawable.ic_fab_check), contentDescription = stringResource(R.string.acc_save))
                     }
@@ -350,8 +357,10 @@ fun ServerGroupScreen(
             }
             PsiphonEditorFields(
                 enabled = psiphonEnabled,
+                torEnabled = torEnabled,
                 region = psiphonRegion,
-                onEnabledChange = { psiphonEnabled = it },
+                onEnabledChange = { psiphonEnabled = it; if (it) torEnabled = false },
+                onTorEnabledChange = { torEnabled = it; if (it) psiphonEnabled = false },
                 onRegionChange = { psiphonRegion = it },
                 mode = psiphonMode,
                 onModeChange = { psiphonMode = it },

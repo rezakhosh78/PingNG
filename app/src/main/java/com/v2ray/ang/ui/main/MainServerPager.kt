@@ -39,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +75,7 @@ import com.v2ray.ang.core.WarpWireGuardConfig
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.dto.entities.ServersCache
 import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.dto.TorStatus
 import com.v2ray.ang.extension.isComplexType
 import com.v2ray.ang.extension.nullIfBlank
 import com.v2ray.ang.handler.AngConfigManager
@@ -113,6 +115,7 @@ fun GroupPagerPage(
     countryCode: String?,
     ipAddress: String?,
     psiphonStates: Map<String, String>,
+    torStates: Map<String, String>,
     doubleColumnDisplay: Boolean,
     confirmRemove: Boolean,
     searchQuery: String,
@@ -157,6 +160,7 @@ fun GroupPagerPage(
                 countryCode = countryCode,
                 ipAddress = ipAddress,
                 psiphonStates = psiphonStates,
+                torStates = torStates,
                 canReorder = canReorder,
                 doubleColumnDisplay = doubleColumnDisplay,
                 subscriptionId = groupId,
@@ -483,6 +487,7 @@ private fun ServerListPage(
     countryCode: String?,
     ipAddress: String?,
     psiphonStates: Map<String, String>,
+    torStates: Map<String, String>,
     canReorder: Boolean,
     doubleColumnDisplay: Boolean,
     subscriptionId: String,
@@ -524,6 +529,7 @@ private fun ServerListPage(
                         countryCode = countryCode,
                         ipAddress = ipAddress,
                         psiphonState = psiphonStates[serverCache.guid],
+                        torState = torStates[serverCache.guid],
                         subscriptionId = subscriptionId,
                         doubleColumnDisplay = true,
                         onSelectServer = onSelectServer,
@@ -581,6 +587,7 @@ private fun ServerListPage(
                                 countryCode = countryCode,
                                 ipAddress = ipAddress,
                                 psiphonState = psiphonStates[serverCache.guid],
+                                torState = torStates[serverCache.guid],
                                 subscriptionId = subscriptionId,
                                 onSelectServer = onSelectServer,
                                 onEditServer = onEditServer,
@@ -598,6 +605,7 @@ private fun ServerListPage(
                         countryCode = countryCode,
                         ipAddress = ipAddress,
                         psiphonState = psiphonStates[serverCache.guid],
+                        torState = torStates[serverCache.guid],
                         subscriptionId = subscriptionId,
                         onSelectServer = onSelectServer,
                         onEditServer = onEditServer,
@@ -619,6 +627,7 @@ private fun ServerItemRow(
     countryCode: String?,
     ipAddress: String?,
     psiphonState: String?,
+    torState: String?,
     subscriptionId: String,
     onSelectServer: (String) -> Unit,
     onEditServer: (String, ProfileItem) -> Unit,
@@ -659,7 +668,9 @@ private fun ServerItemRow(
         isDesyncCustom = profile.pingNgProfile == PingNgCompat.PROFILE_CUSTOM,
         isFinalMaskEnabled = !profile.finalMask.isNullOrBlank(),
         isPsiphonEnabled = profile.psiphonEnabled,
+        isTorEnabled = profile.torEnabled,
         psiphonState = psiphonState,
+        torState = torState,
         onClick = {
             onSelectServer(serverCache.guid)
         },
@@ -677,6 +688,7 @@ private fun ServerItemColumn(
     countryCode: String?,
     ipAddress: String?,
     psiphonState: String?,
+    torState: String?,
     subscriptionId: String,
     doubleColumnDisplay: Boolean,
     onSelectServer: (String) -> Unit,
@@ -714,7 +726,9 @@ private fun ServerItemColumn(
             isDesyncCustom = profile.pingNgProfile == PingNgCompat.PROFILE_CUSTOM,
             isFinalMaskEnabled = !profile.finalMask.isNullOrBlank(),
             isPsiphonEnabled = profile.psiphonEnabled,
+            isTorEnabled = profile.torEnabled,
             psiphonState = psiphonState,
+            torState = torState,
             onClick = {
                 onSelectServer(serverCache.guid)
             },
@@ -742,7 +756,9 @@ fun ServerListItem(
     isDesyncCustom: Boolean,
     isFinalMaskEnabled: Boolean,
     isPsiphonEnabled: Boolean,
+    isTorEnabled: Boolean,
     psiphonState: String?,
+    torState: String?,
     onClick: () -> Unit,
     onEdit: () -> Unit,
     onShare: () -> Unit,
@@ -897,38 +913,23 @@ fun ServerListItem(
                 }
                 Spacer(Modifier.width(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Enabling Psiphon is itself a visible per-config state.
-                    // Before the runtime emits its first event, show the
-                    // pending/connecting state in red; the real CONNECTED
-                    // event changes it to green.
-                    val visiblePsiphonState = psiphonState
-                        ?: PsiphonStatus.CONNECTING.takeIf { isPsiphonEnabled }
-                    if (isPsiphonEnabled && visiblePsiphonState != null) {
-                        val isConnected = visiblePsiphonState == PsiphonStatus.CONNECTED
-                        val isConnecting = psiphonState == PsiphonStatus.CONNECTING
-                        var dotCount by remember(isConnecting) { mutableIntStateOf(0) }
-                        LaunchedEffect(isConnecting) {
-                            if (!isConnecting) {
-                                dotCount = 0
-                                return@LaunchedEffect
-                            }
-                            while (true) {
-                                dotCount = (dotCount + 1) % 4
-                                delay(450L)
-                            }
-                        }
-                        val statusColor = if (isConnected) Color(0xFF2E7D32) else Color(0xFFC62828)
-                        Text(
-                            text = stringResource(R.string.pingng_psiphon_status) +
-                                if (isConnecting) ".".repeat(dotCount) else "",
-                            modifier = Modifier
-                                .clip(MaterialTheme.shapes.small)
-                                .background(statusColor.copy(alpha = 0.15f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = statusColor,
+                    if (isPsiphonEnabled) {
+                        ProxyLayerStatusBadge(
+                            label = stringResource(R.string.pingng_psiphon_status),
+                            isConnected = psiphonState == PsiphonStatus.CONNECTED,
+                            isConnecting = psiphonState == PsiphonStatus.CONNECTING,
                         )
-                        Spacer(Modifier.width(8.dp))
+                    }
+                    if (isTorEnabled) {
+                        val torConnected = isSelected &&
+                            torState == TorStatus.CONNECTED
+                        val torConnecting = isSelected &&
+                            torState == TorStatus.CONNECTING
+                        ProxyLayerStatusBadge(
+                            label = "Tor",
+                            isConnected = torConnected,
+                            isConnecting = torConnecting,
+                        )
                     }
                     if (isDesyncEnabled) {
                         Text(
@@ -1075,4 +1076,36 @@ internal suspend fun PagerState.navigateToPageOptimized(
     } else {
         scrollToPage(target)
     }
+}
+
+@Composable
+private fun ProxyLayerStatusBadge(
+    label: String,
+    isConnected: Boolean,
+    isConnecting: Boolean,
+) {
+    val showConnecting = isConnecting && !isConnected
+    var dotCount by remember(showConnecting) { mutableIntStateOf(0) }
+    LaunchedEffect(showConnecting) {
+        if (!showConnecting) {
+            dotCount = 0
+            return@LaunchedEffect
+        }
+        while (true) {
+            dotCount = (dotCount + 1) % 4
+            delay(450L)
+        }
+    }
+
+    val statusColor = if (isConnected) Color(0xFF2E7D32) else Color(0xFFC62828)
+    Text(
+        text = label + if (showConnecting) ".".repeat(dotCount) else "",
+        modifier = Modifier
+            .clip(MaterialTheme.shapes.small)
+            .background(statusColor.copy(alpha = 0.15f))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        style = MaterialTheme.typography.labelSmall,
+        color = statusColor,
+    )
+    Spacer(Modifier.width(8.dp))
 }

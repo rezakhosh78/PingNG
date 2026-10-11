@@ -210,6 +210,7 @@ object AppConfig {
     const val MSG_MEASURE_CONFIG_FINISH = 74
     const val MSG_PSIPHON_STATUS = 75
     const val MSG_MASTERDNS_PROGRESS = 76
+    const val MSG_TOR_STATUS = 77
 
     const val MSG_SUB_UPDATE_START = 8
     const val MSG_SUB_UPDATE_CANCEL = 81

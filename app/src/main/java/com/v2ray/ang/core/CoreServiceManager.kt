@@ -181,6 +181,7 @@ object CoreServiceManager {
             return true
         } catch (e: Throwable) {
             PsiphonBridge.stop()
+            TorBridge.stop()
             stopAmneziaWgEngine()
             val message = e.message?.takeUnless { it.isBlank() } ?: e.javaClass.simpleName
             PingNgDesyncManager.stop()
@@ -232,6 +233,7 @@ object CoreServiceManager {
                 }
             }
         }
+        val masqueFinalMaskNeedsXray = WarpMasqueFinalMaskConfig.isEnabled(config)
         if (config.configType == com.v2ray.ang.enums.EConfigType.WARP) {
             if (PingNgCompat.isNativeDesyncEnabled(config)) {
                 // The local HTTP CONNECT adapter bridges MASQUE's outer H2
@@ -241,8 +243,9 @@ object CoreServiceManager {
             } else {
                 WarpMasqueDesyncProxy.stop()
             }
-            // Start MASQUE after Desync so the outer TLS socket can use it.
-            WarpMasqueBridge.startIfNeeded(service, guid, config)
+            // FinalMask needs Xray's loopback HTTP bridge for MASQUE's outer
+            // TLS socket, so that profile starts after Xray opens the bridge.
+            if (!masqueFinalMaskNeedsXray) WarpMasqueBridge.startIfNeeded(service, guid, config)
         }
         if (MasterDnsBridge.isProfile(config)) {
             MasterDnsBridge.start(service, guid, config)
@@ -260,11 +263,16 @@ object CoreServiceManager {
 
         currentConfig = config
         currentConfigGuid = guid
-        val waitingForPsiphonVpn = !isReload &&
+        val waitingForSecondLayerVpn = !isReload &&
             service is CoreVpnService &&
             vpnInterface == null &&
-            config.psiphonEnabled
-        val preparedConfig = PsiphonBridge.prepareCoreConfig(service, config, result.content)
+            (config.psiphonEnabled || config.torEnabled)
+        var preparedConfig = WarpMasqueFinalMaskConfig.prepare(config, result.content)
+        preparedConfig = if (config.torEnabled) {
+            TorBridge.prepareCoreConfig(config, preparedConfig)
+        } else {
+            PsiphonBridge.prepareCoreConfig(service, config, preparedConfig)
+        }
         var tunFd = vpnInterface?.fd ?: 0
         val dialerMode = BrowserDialerMode.from(config.browserDialerMode)
         val dialerAddr = if (dialerMode != null) {
@@ -287,6 +295,14 @@ object CoreServiceManager {
         }
         coreController.startLoop(preparedConfig, tunFd)
         check(isRunning()) { "Core failed to enter the running state" }
+        if (masqueFinalMaskNeedsXray) {
+            try {
+                WarpMasqueBridge.startIfNeeded(service, guid, config)
+            } catch (error: Throwable) {
+                runCatching { coreController.stopLoop() }
+                throw error
+            }
+        }
         MmkvManager.setCoreServiceStatus(true)
         PingNgDiagnostics.record("Xray core is running")
         resetProbeScope()
@@ -310,25 +326,27 @@ object CoreServiceManager {
         }
 
         if (!isReload) {
-            if (waitingForPsiphonVpn) {
-                PingNgDiagnostics.record("Xray bootstrap running; VPN held until Psiphon connects")
+            if (waitingForSecondLayerVpn) {
+                PingNgDiagnostics.record("Xray bootstrap running; VPN held until the selected second layer connects")
             } else {
                 MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
             }
             PsiphonBridge.startAfterCoreConnected(service, guid, config)
+            TorBridge.startAfterCoreConnected(service, guid, config)
         }
         // The exit IP/country is resolved by the service after the core is really running.
         // Psiphon is probed only after its SOCKS listener is ready, so the result is never the
         // upstream Xray server's address.
-        val psiphonReady = PsiphonBridge.activeSocksPort() in 1..65535
-        if (!config.psiphonEnabled || psiphonReady) {
+        val secondLayerReady = if (config.torEnabled) TorBridge.activeSocksPort() in 1..65535
+            else PsiphonBridge.activeSocksPort() in 1..65535
+        if ((!config.psiphonEnabled && !config.torEnabled) || secondLayerReady) {
             scheduleAutomaticExitProbe(guid)
         }
-        if (isReload && config.psiphonEnabled && psiphonReady) {
-            // Refresh the visible exit address after Xray switches to Psiphon's SOCKS route.
+        if (isReload && (config.psiphonEnabled || config.torEnabled) && secondLayerReady) {
+            // Refresh the visible exit address after Xray switches to the second layer.
             scheduleAutomaticExitProbe(guid)
         }
-        if (!waitingForPsiphonVpn) NotificationManager.startSpeedNotification()
+        if (!waitingForSecondLayerVpn) NotificationManager.startSpeedNotification()
         LogUtil.i(AppConfig.TAG, "StartCore-Manager: Core started successfully")
     }
 
@@ -342,9 +360,9 @@ object CoreServiceManager {
     ) {
         val vpnService = service as? CoreVpnService
             ?: error("AmneziaWG برای اجرا به سرویس VPN نیاز دارد")
-        val chained = config.psiphonEnabled
+        val chained = config.psiphonEnabled || config.torEnabled
         if (chained) check(com.v2ray.ang.service.TProxyService.isNativeAvailable()) {
-            "Psiphon Over AmneziaWG requires the HEV native tunnel"
+            "The selected second layer over AmneziaWG requires the HEV native tunnel"
         }
         val tun = vpnInterface
         if (!chained) check(tun != null && tun.fileDescriptor.valid()) { "Android VPN TUN is not available" }
@@ -413,9 +431,10 @@ object CoreServiceManager {
                 val awg = AmneziaWgFmt.readConfig(sourceConfig)
                 val dns = awg.dnsServers.filter(com.v2ray.ang.util.Utils::isPureIpAddress)
                     .ifEmpty { SettingsManager.getVpnDnsServers().filter(com.v2ray.ang.util.Utils::isPureIpAddress) }
-                require(dns.isNotEmpty()) { "AmneziaWG needs an IP DNS server for Psiphon" }
+                require(dns.isNotEmpty()) { "AmneziaWG needs an IP DNS server for the selected second layer" }
                 GoBackend.awgStartProxy(uapi, awg.addresses.joinToString(","), dns.joinToString(","),
-                    awg.mtu ?: 1280, PsiphonBridge.prepareAmneziaEgress())
+                    awg.mtu ?: 1280,
+                    if (config.torEnabled) TorBridge.prepareAmneziaEgress() else PsiphonBridge.prepareAmneziaEgress())
             } else {
                 GoBackend.awgTurnOn("awg0", tun!!.detachFd(), uapi)
             }
@@ -453,9 +472,16 @@ object CoreServiceManager {
         PingNgDiagnostics.record("AmneziaWG native engine is running")
         resetProbeScope()
         if (chained) {
-            PsiphonBridge.setAmneziaUpstream(GoBackend.awgProxyPort(handle, 0))
-            PingNgDiagnostics.record("Psiphon Over AmneziaWG: bootstrap HTTP -> AWG netstack; final TCP -> Psiphon; UDP -> AWG")
-            PsiphonBridge.startAfterCoreConnected(service, guid, config)
+            val upstreamHttpPort = GoBackend.awgProxyPort(handle, 0)
+            if (config.torEnabled) {
+                TorBridge.setAmneziaUpstream(upstreamHttpPort)
+                PingNgDiagnostics.record("Tor Over AmneziaWG: bootstrap HTTP -> AWG netstack; final TCP -> Tor")
+                TorBridge.startAfterCoreConnected(service, guid, config)
+            } else {
+                PsiphonBridge.setAmneziaUpstream(upstreamHttpPort)
+                PingNgDiagnostics.record("Psiphon Over AmneziaWG: bootstrap HTTP -> AWG netstack; final TCP -> Psiphon; UDP -> AWG")
+                PsiphonBridge.startAfterCoreConnected(service, guid, config)
+            }
         } else {
             if (!isReload) MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
             if (isPingNgIncludedInAmneziaWgVpn() && isAmneziaWgFullTunnel()) scheduleAutomaticExitProbe(guid)
@@ -496,8 +522,14 @@ object CoreServiceManager {
     }
 
     fun amneziaFinalSocksPort(): Int = if (amneziaWgHandle >= 0 &&
-        currentConfig?.configType == EConfigType.AMNEZIAWG && currentConfig?.psiphonEnabled == true
-    ) GoBackend.awgProxyPort(amneziaWgHandle, 1) else 0
+        currentConfig?.configType == EConfigType.AMNEZIAWG &&
+        (currentConfig?.psiphonEnabled == true || currentConfig?.torEnabled == true)
+    ) {
+        // The AWG gateway sends TCP to the selected second layer (Tor or
+        // Psiphon) and relays UDP over AWG. HEV must use that gateway rather
+        // than Tor's TCP-only SOCKS listener.
+        GoBackend.awgProxyPort(amneziaWgHandle, 1)
+    } else 0
 
     private fun stopAmneziaWgEngine() {
         val handle = amneziaWgHandle
@@ -523,6 +555,7 @@ object CoreServiceManager {
         val service = getService() ?: run {
             MasterDnsBridge.cancelStartup()
             MasterDnsBridge.stop()
+            TorBridge.stop()
             return false
         }
         // Android may deliver onDestroy for the temporary proxy service after
@@ -536,6 +569,7 @@ object CoreServiceManager {
         stopping = true
         lifecycleGeneration += 1
         PsiphonBridge.stop()
+        TorBridge.stop()
         WarpMasqueBridge.stop()
         MasterDnsBridge.stop()
         WarpMasqueDesyncProxy.stop()
@@ -663,6 +697,13 @@ object CoreServiceManager {
     fun promoteBootstrappedCoreToVpn(vpnInterface: ParcelFileDescriptor): Boolean {
         val service = getService() ?: return false
         currentVpnInterface = vpnInterface
+        if (currentConfig?.configType == EConfigType.AMNEZIAWG && currentConfig?.torEnabled == true) {
+            MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
+            currentConfigGuid?.let(::scheduleAutomaticExitProbe)
+            NotificationManager.startSpeedNotification()
+            PingNgDiagnostics.record("Tor Over AmneziaWG VPN attached; AWG bootstrap preserved")
+            return true
+        }
         if (currentConfig?.configType == EConfigType.AMNEZIAWG && currentConfig?.psiphonEnabled == true) {
             MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
             currentConfigGuid?.let(::scheduleAutomaticExitProbe)
@@ -684,6 +725,60 @@ object CoreServiceManager {
             MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_SUCCESS, "")
         }
         return promoted
+    }
+
+    /** Attaches the Android VPN after Tor has established its first circuit. */
+    fun onTorConnected() {
+        if (stopping || !TorBridge.isConnected()) return
+        val service = getService() ?: return
+        CoroutineScope(Dispatchers.Default).launch {
+            if (service is CoreVpnService && currentVpnInterface == null) {
+                try {
+                    service.startVpnAfterTor()
+                } catch (error: Throwable) {
+                    val reason = error.message ?: error.javaClass.simpleName
+                    PingNgDiagnostics.record("Tor VPN attachment failed: $reason", error)
+                    MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, reason)
+                    service.stopService()
+                }
+            } else if (TorBridge.usesStableEgress(currentConfig)) {
+                PingNgDiagnostics.record("Tor connected; preserving its upstream and prepared SOCKS route")
+                currentConfigGuid?.let(::scheduleAutomaticExitProbe)
+            } else {
+                // The core was prepared with Tor's reserved local SOCKS listener
+                // before Tor started. Once the circuit is ready, only the exit
+                // check needs to run; rebuilding Xray would tear down Tor's
+                // configured upstream proxy.
+                currentConfigGuid?.let(::scheduleAutomaticExitProbe)
+            }
+        }
+    }
+
+    fun onTorDisconnected() {
+        if (stopping) return
+        autoExitProbeJob?.cancel()
+        autoExitProbeJob = null
+        val service = getService() ?: return
+        if (service is CoreVpnService && currentVpnInterface == null) {
+            service.stopService()
+            return
+        }
+        // Every Tor route points at its reserved loopback SOCKS port. If Tor
+        // reconnects, connections fail closed during the gap and recover on
+        // that same listener without changing the selected upstream.
+        PingNgDiagnostics.record("Tor circuit changed; waiting for the local SOCKS listener to recover")
+    }
+
+    fun onTorFailed(message: String) {
+        val service = getService() ?: return
+        if (service is CoreVpnService && isRunning() &&
+            (currentVpnInterface == null || currentConfig?.configType == EConfigType.AMNEZIAWG)
+        ) {
+            val reason = message.ifBlank { "Tor connection failed" }
+            PingNgDiagnostics.record("VPN startup canceled: $reason")
+            MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, reason)
+            service.stopService()
+        }
     }
 
     /**
@@ -719,7 +814,7 @@ object CoreServiceManager {
         if (!isRunning()) return false
 
         if (currentConfig?.configType == EConfigType.AMNEZIAWG) {
-            if (currentConfig?.psiphonEnabled == true) {
+            if (currentConfig?.psiphonEnabled == true || currentConfig?.torEnabled == true) {
                 // Keep both loopback listeners and HEV stable during a physical-network
                 // handover. Rebind only AWG's protected UDP transport.
                 return try {
@@ -727,11 +822,18 @@ object CoreServiceManager {
                         .filter { it >= 0 }.distinct().forEach {
                             check((service as CoreVpnService).protect(it)) { "Could not protect AWG socket" }
                         }
-                    onPsiphonConnecting()
-                    PingNgDiagnostics.record("Psiphon Over AmneziaWG transport handover; local gateways preserved")
+                    if (currentConfig?.torEnabled == true) {
+                        autoExitProbeJob?.cancel()
+                        autoExitProbeJob = null
+                        PingNgDiagnostics.record("Tor Over AmneziaWG transport handover; local gateways preserved")
+                    } else {
+                        onPsiphonConnecting()
+                        PingNgDiagnostics.record("Psiphon Over AmneziaWG transport handover; local gateways preserved")
+                    }
                     true
                 } catch (error: Exception) {
-                    onPsiphonFailed(error.message.orEmpty())
+                    if (currentConfig?.torEnabled == true) onTorFailed(error.message.orEmpty())
+                    else onPsiphonFailed(error.message.orEmpty())
                     false
                 }
             }
@@ -835,8 +937,10 @@ object CoreServiceManager {
             val service = getService() ?: return@launch
             if (!isProbeCurrent(generation)) return@launch
             val psiphonProfile = currentConfig?.psiphonEnabled == true
+            val torProfile = currentConfig?.torEnabled == true
+            val secondLayerProfile = psiphonProfile || torProfile
             if (currentConfig?.configType == EConfigType.AMNEZIAWG &&
-                currentConfig?.psiphonEnabled != true &&
+                !secondLayerProfile &&
                 (!isPingNgIncludedInAmneziaWgVpn() || !isAmneziaWgFullTunnel())
             ) {
                 val message = if (!isPingNgIncludedInAmneziaWgVpn()) {
@@ -853,21 +957,23 @@ object CoreServiceManager {
             }
             var time = -1L
             var errorStr = ""
-            val psiphonSocksPort = PsiphonBridge.activeSocksPort()
-                .takeIf { it in 1..65535 }
-            // Psiphon may keep its local SOCKS listener open while replacing
-            // its tunnel. Never fall back to CoreController.measureDelay in
-            // that interval: it tests a different (and often closed) Xray
-            // pipe, producing the misleading initial "Connection test failed: io".
-            if (psiphonProfile && (psiphonSocksPort == null || !PsiphonBridge.isConnected())) {
-                PingNgDiagnostics.record("Connection test postponed while Psiphon is reconnecting")
+            val secondLayerSocksPort = when {
+                torProfile -> TorBridge.activeSocksPort().takeIf { it in 1..65535 }
+                psiphonProfile -> PsiphonBridge.activeSocksPort().takeIf { it in 1..65535 }
+                else -> null
+            }
+            val secondLayerConnected = when {
+                torProfile -> TorBridge.isConnected()
+                psiphonProfile -> PsiphonBridge.isConnected()
+                else -> true
+            }
+            if (secondLayerProfile && (secondLayerSocksPort == null || !secondLayerConnected)) {
+                PingNgDiagnostics.record("Connection test postponed while the second layer is reconnecting")
                 return@launch
             }
-            // CoreController.measureDelay uses Xray's internal pipe. Once Psiphon is
-            // connected, probe the actual Psiphon SOCKS listener instead; routing the
-            // core's own delay request through the transitioning Xray chain can produce
-            // a stale "read/write on closed pipe" even while Psiphon traffic works.
-            val forceLiveProxyProbe = service is CoreProxyOnlyService || psiphonSocksPort != null ||
+            // Use the ready second-layer SOCKS listener for probes so the result
+            // reports the actual egress and never falls back to the upstream proxy.
+            val forceLiveProxyProbe = service is CoreProxyOnlyService || secondLayerSocksPort != null ||
                 currentConfig?.configType == EConfigType.AMNEZIAWG
             val isAmneziaWgProfile = currentConfig?.configType == EConfigType.AMNEZIAWG
 
@@ -876,19 +982,19 @@ object CoreServiceManager {
             // Xray traffic rather than a direct outbound measurement.
             val liveProbeTimeoutMs = if (service is CoreProxyOnlyService) 1_500 else 5_000
             if (forceLiveProxyProbe) {
-                time = if (isAmneziaWgProfile && !psiphonProfile) {
+                time = if (isAmneziaWgProfile && !secondLayerProfile) {
                     measureDirectAmneziaWgDelay(liveProbeTimeoutMs)
                 } else {
                     // Probe both endpoints concurrently so a blocked primary URL
                     // does not add a second sequential timeout per candidate.
-                    measureLiveProxyDelay(liveProbeTimeoutMs, psiphonSocksPort)
+                    measureLiveProxyDelay(liveProbeTimeoutMs, secondLayerSocksPort)
                 }
                 if (time >= 0L) {
                     PingNgDiagnostics.record(
                         if (isAmneziaWgProfile) {
                             "Connection delay measured through the AmneziaWG VPN route"
-                        } else if (psiphonSocksPort != null) {
-                            "Connection delay measured through live Psiphon SOCKS"
+                        } else if (secondLayerSocksPort != null) {
+                            "Connection delay measured through the live second-layer SOCKS route"
                         } else {
                             "Desync candidate measured through live Xray SOCKS"
                         }
@@ -948,8 +1054,11 @@ object CoreServiceManager {
             }
 
             if (!isProbeCurrent(generation)) return@launch
-            if (psiphonProfile && !PsiphonBridge.isConnected()) {
-                PingNgDiagnostics.record("Discarded connection-test result; Psiphon began reconnecting")
+            if (secondLayerProfile && when {
+                    torProfile -> !TorBridge.isConnected()
+                    else -> !PsiphonBridge.isConnected()
+                }) {
+                PingNgDiagnostics.record("Discarded connection-test result; the second layer began reconnecting")
                 return@launch
             }
             val result = ConnectionTestResult(
@@ -1025,9 +1134,11 @@ object CoreServiceManager {
             val quickSearchProbe = getService() is CoreProxyOnlyService
             val warpPlusProbe = currentConfig?.let { WarpPlusConfig.isDescription(it.description) } == true
             val psiphonProfile = currentConfig?.psiphonEnabled == true
+            val torProfile = currentConfig?.torEnabled == true
+            val secondLayerProfile = psiphonProfile || torProfile
             delay(when {
                 quickSearchProbe -> 200L
-                psiphonProfile -> 3_500L
+                secondLayerProfile -> 3_500L
                 else -> 900L
             })
             if (warpPlusProbe && !quickSearchProbe) {
@@ -1046,30 +1157,29 @@ object CoreServiceManager {
             }
             val service = getService() ?: return@launch
             if (!isProbeCurrent(generation) || currentConfigGuid != guid) return@launch
-            if (psiphonProfile && !PsiphonBridge.isConnected()) {
-                PingNgDiagnostics.record("Automatic connection check postponed; Psiphon is reconnecting")
+            if (secondLayerProfile && (if (torProfile) !TorBridge.isConnected() else !PsiphonBridge.isConnected())) {
+                PingNgDiagnostics.record("Automatic connection check postponed; the second layer is reconnecting")
                 return@launch
             }
             // Publish the exit IP first. A delay endpoint can be blocked or
             // slow even when the actual tunnel is usable; waiting for that
             // request made the UI keep showing only "Connected". This is the
-            // service-side equivalent of tapping "Tap to Check Connection"
-            // and uses the live Psiphon SOCKS port when that second hop is on.
+            // service-side equivalent of tapping "Tap to Check Connection".
             PingNgDiagnostics.record("Automatic connection check: resolving exit IP")
             fetchAndPublishExitIp(
                 service = service,
                 result = ConnectionTestResult(delayMillis = -1L),
                 forceLiveProxyProbe = quickSearchProbe,
             )
-            val psiphonActive = PsiphonBridge.activeSocksPort() in 1..65535
-            repeat(if (quickSearchProbe || psiphonActive) 1 else 3) { attempt ->
+            val secondLayerActive = (if (torProfile) TorBridge.activeSocksPort() else PsiphonBridge.activeSocksPort()) in 1..65535
+            repeat(if (quickSearchProbe || secondLayerActive) 1 else 3) { attempt ->
                 if (!isProbeCurrent(generation) || currentConfigGuid != guid) return@launch
                 PingNgDiagnostics.record("Automatic exit IP probe for ${currentConfig?.remarks.orEmpty()}")
                 measureV2rayDelay()?.join()
-                if (!quickSearchProbe && !psiphonActive && attempt < 2) delay(1200L)
+                if (!quickSearchProbe && !secondLayerActive && attempt < 2) delay(1200L)
             }
             if (currentConfig?.let(AwgWarpConfig::isProfile) == true &&
-                currentConfig?.autoScanEndpoint != false && !psiphonProfile
+                currentConfig?.autoScanEndpoint != false && !secondLayerProfile
             ) monitorAwgEndpoint(guid, generation)
         }
     }
@@ -1153,8 +1263,15 @@ object CoreServiceManager {
         publishResult: Boolean = true,
     ): Boolean {
         val psiphonProfile = currentConfig?.psiphonEnabled == true
-        if (psiphonProfile && !PsiphonBridge.isConnected()) {
-            PingNgDiagnostics.record("Exit IP check postponed while Psiphon is reconnecting")
+        val torProfile = currentConfig?.torEnabled == true
+        val secondLayerProfile = psiphonProfile || torProfile
+        val secondLayerConnected = when {
+            torProfile -> TorBridge.isConnected()
+            psiphonProfile -> PsiphonBridge.isConnected()
+            else -> true
+        }
+        if (secondLayerProfile && !secondLayerConnected) {
+            PingNgDiagnostics.record("Exit IP check postponed while the second layer is reconnecting")
             return false
         }
         // An IP API response alone is not enough evidence that WARP Plus can
@@ -1163,17 +1280,16 @@ object CoreServiceManager {
         if (currentConfig?.let { WarpPlusConfig.isDescription(it.description) } == true &&
             result.delayMillis < 0L
         ) return false
-        val psiphonSocksPort = PsiphonBridge.activeSocksPort()
+        val secondLayerSocksPort = when {
+            torProfile -> TorBridge.activeSocksPort()
+            psiphonProfile -> PsiphonBridge.activeSocksPort()
+            else -> 0
+        }
         val isAmneziaWgProfile = currentConfig?.configType == EConfigType.AMNEZIAWG
         val remoteIpInfo = when {
-            // Prefer the actual Psiphon listener even when the caller also
-            // requested a live SOCKS probe for another reason. The default
-            // SOCKS port belongs to Xray and would report the wrong exit IP.
-            psiphonSocksPort in 1..65535 -> {
-                PingNgDiagnostics.record(
-                    "Exit IP probe through Psiphon SOCKS 127.0.0.1:$psiphonSocksPort",
-                )
-                SpeedtestManager.getRemoteIPInfoThroughSocks(psiphonSocksPort)
+            secondLayerSocksPort in 1..65535 -> {
+                PingNgDiagnostics.record("Exit IP probe through second-layer SOCKS 127.0.0.1:$secondLayerSocksPort")
+                SpeedtestManager.getRemoteIPInfoThroughSocks(secondLayerSocksPort)
             }
             isAmneziaWgProfile -> SpeedtestManager.getRemoteIPInfoDirect()
             forceLiveProxyProbe -> SpeedtestManager.getRemoteIPInfoThroughSocks()
@@ -1183,10 +1299,10 @@ object CoreServiceManager {
             // The next successful probe replaces it; this prevents a slow
             // delay endpoint from erasing the IP that was just displayed by
             // the automatic connection check.
-            if (publishResult && (!psiphonProfile || PsiphonBridge.isConnected())) {
+            if (publishResult && (!secondLayerProfile || (if (torProfile) TorBridge.isConnected() else PsiphonBridge.isConnected()))) {
                 val profile = currentConfig
                 val cachedIp = profile?.lastExitIpAddress?.takeIf { it.isNotBlank() }
-                if (cachedIp != null && psiphonSocksPort !in 1..65535 &&
+                if (cachedIp != null && secondLayerSocksPort !in 1..65535 &&
                     profile?.let { WarpPlusConfig.isDescription(it.description) } != true) {
                     MessageHelper.sendMsg2UI(
                         service,
@@ -1202,8 +1318,8 @@ object CoreServiceManager {
             return false
         }
 
-        if (psiphonProfile && !PsiphonBridge.isConnected()) {
-            PingNgDiagnostics.record("Discarded exit-IP result; Psiphon began reconnecting")
+        if (secondLayerProfile && (if (torProfile) !TorBridge.isConnected() else !PsiphonBridge.isConnected())) {
+            PingNgDiagnostics.record("Discarded exit-IP result; the second layer began reconnecting")
             return false
         }
 

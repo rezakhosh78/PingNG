@@ -63,6 +63,17 @@
                 android:value="true" />
         </service>
 
+        <service
+            android:name="org.torproject.jni.TorService"
+            android:exported="false"
+            android:process=":tor" />
+
+        <!-- Keep Snowflake's gomobile runtime separate from the Psiphon runtime. -->
+        <service
+            android:name=".core.TorSnowflakeTransportService"
+            android:exported="false"
+            android:process=":TorSnowflake" />
+
         <activity
             android:name=".ui.main.MainActivity"
             android:exported="true"

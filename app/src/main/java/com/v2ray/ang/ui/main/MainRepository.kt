@@ -10,6 +10,7 @@ import com.v2ray.ang.AppConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.dto.ConnectionTestResult
 import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.dto.TorStatus
 import com.v2ray.ang.dto.SubscriptionUpdateResult
 import com.v2ray.ang.dto.TestServiceMessage
 import com.v2ray.ang.dto.entities.ProfileItem
@@ -85,6 +86,10 @@ class MainRepository(
                 AppConfig.MSG_PSIPHON_STATUS -> safeIntent
                     .serializable<PsiphonStatus>("content")
                     ?.let { MainServiceEvent.PsiphonStatusChanged(it) }
+
+                AppConfig.MSG_TOR_STATUS -> safeIntent
+                    .serializable<TorStatus>("content")
+                    ?.let { MainServiceEvent.TorStatusChanged(it) }
 
                 AppConfig.MSG_SUB_UPDATE_FINISH -> MainServiceEvent.SubscriptionUpdated(
                     safeIntent.getStringExtra("content").orEmpty()

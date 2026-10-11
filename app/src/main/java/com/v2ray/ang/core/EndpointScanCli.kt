@@ -2,23 +2,47 @@ package com.v2ray.ang.core
 
 import android.content.Context
 import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.v2ray.ang.AngApplication
 import com.v2ray.ang.fmt.AmneziaWgFmt
+import com.v2ray.ang.dto.entities.ProfileItem
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
+import java.io.IOException
+import java.security.MessageDigest
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.TimeUnit
 
 /** Runs the pinned endpoint scanner as a separate process from the app's Go runtimes. */
 object EndpointScannerCli {
     private const val EXECUTABLE_NAME = "libendpointscanner.so"
     private const val SCAN_TIMEOUT_MS = 4 * 60 * 1000L
+    private const val SCAN_IDLE_TIMEOUT_MS = 40_000L
+    private const val REGISTER_TIMEOUT_MS = 60_000L
     private val ansiEscape = Regex("\\u001B\\[[;\\d?]*[ -/]*[@-~]")
+    private val activeProcesses = ConcurrentHashMap.newKeySet<Process>()
+    private data class SharedScan(
+        val task: Deferred<List<EndpointCandidate>>,
+    )
+    private val sharedScans = mutableMapOf<String, SharedScan>()
+    private val sharedScansLock = Any()
+    private val fallbackScanScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     data class ScanResult(
         val config: String,
@@ -71,6 +95,378 @@ object EndpointScannerCli {
         )
     }.getOrNull()
 
+    fun accountFromProfile(profile: ProfileItem): WarpAccount? = runCatching {
+        val privateKey = profile.secretKey?.trim().orEmpty()
+        val peerPublicKey = profile.publicKey?.trim().orEmpty()
+        val localAddress = profile.localAddress?.trim().orEmpty()
+        require(privateKey.isNotBlank() && peerPublicKey.isNotBlank() && localAddress.isNotBlank())
+        val host = profile.server.orEmpty().removePrefix("[").removeSuffix("]").trim()
+        val port = profile.serverPort?.toIntOrNull()?.takeIf { it in 1..65535 } ?: 2408
+        require(host.isNotBlank())
+        WarpAccount(
+            privateKey = privateKey,
+            publicKey = "",
+            localAddress = localAddress,
+            peerPublicKey = peerPublicKey,
+            endpoint = "${if (host.contains(':')) "[$host]" else host}:$port",
+            endpointHost = host,
+            endpointPort = port,
+            reserved = profile.reserved?.ifBlank { "0,0,0" } ?: "0,0,0",
+            mtu = profile.mtu ?: 1280,
+        )
+    }.getOrNull()
+
+    /** Scans plain WireGuard using the bundled protocol engine. */
+    suspend fun scanWireGuardEndpoints(
+        context: Context,
+        account: WarpAccount,
+        onProgress: suspend (String) -> Unit = {},
+    ): List<EndpointCandidate> = scanWireGuardEndpoints(context, account, null, null, onProgress)
+
+    /** Joins an editor scan and a connection-time scan for the same profile/account. */
+    suspend fun scanWireGuardEndpoints(
+        context: Context,
+        account: WarpAccount,
+        scanGuid: String?,
+        progressLabel: String? = null,
+        onProgress: suspend (String) -> Unit = {},
+    ): List<EndpointCandidate> {
+        val appContext = context.applicationContext
+        val identity = listOf(
+            account.privateKey,
+            account.publicKey,
+            account.peerPublicKey,
+            account.localAddress,
+            account.reserved,
+            account.mtu.toString(),
+        ).joinToString("\u0000")
+        val requestKey = sharedScanKey("wg", scanGuid, identity)
+        return runSharedProtocolScan(
+            context = appContext,
+            requestKey = requestKey,
+            stateGuid = scanGuid,
+            progressLabel = progressLabel ?: "WireGuard",
+            onProgress = onProgress,
+        ) { report -> scanProtocolEndpoints(appContext, "wg", account, emptyList(), report) }
+    }
+
+    suspend fun scanBestWireGuardEndpoint(
+        context: Context,
+        account: WarpAccount,
+        onProgress: suspend (String) -> Unit = {},
+    ): EndpointCandidate = scanWireGuardEndpoints(context, account, onProgress).first()
+
+    /** Registers and caches the separate MASQUE identity required for an H2 scan. */
+    suspend fun scanMasqueH2Endpoints(
+        context: Context,
+        profileId: String,
+        sni: String?,
+        onProgress: suspend (String) -> Unit = {},
+    ): List<EndpointCandidate> {
+        val appContext = context.applicationContext
+        val normalizedSni = sni?.trim().orEmpty()
+        val requestKey = sharedScanKey("masque-h2", profileId, normalizedSni)
+        return runSharedProtocolScan(
+            context = appContext,
+            requestKey = requestKey,
+            stateGuid = profileId,
+            progressLabel = "MASQUE/H2",
+            onProgress = onProgress,
+        ) { report ->
+            withContext(Dispatchers.IO) {
+                val binary = requireExecutable(appContext)
+                val workDir = File(appContext.noBackupFilesDir, "endpoint-scan").apply { mkdirs() }
+                val accountFile = File(workDir, "masque-${profileId.fileSafe()}.json")
+                ensureMasqueAccount(binary, workDir, accountFile)
+                val extraArguments = normalizedSni.takeIf { it.isNotBlank() }
+                    ?.let { listOf("-masque-sni", it) }.orEmpty()
+                runProtocolScan(binary, workDir, accountFile, "masque-h2", extraArguments, report)
+            }
+        }
+    }
+
+    suspend fun scanBestMasqueH2Endpoint(
+        context: Context,
+        profileId: String,
+        sni: String?,
+        onProgress: suspend (String) -> Unit = {},
+    ): EndpointCandidate = scanMasqueH2Endpoints(context, profileId, sni, onProgress).first()
+
+    fun scanBestMasqueH2EndpointBlocking(
+        context: Context,
+        profileId: String,
+        sni: String?,
+    ): EndpointCandidate = runBlocking(Dispatchers.IO) {
+        scanBestMasqueH2Endpoint(context, profileId, sni)
+    }
+
+    /** Stops child scans during connection cancellation. */
+    fun cancelActiveScans() {
+        val tasks = synchronized(sharedScansLock) {
+            sharedScans.values.map { it.task }.also { sharedScans.clear() }
+        }
+        tasks.forEach { it.cancel(CancellationException("Endpoint scan canceled")) }
+        activeProcesses.toList().forEach(::terminate)
+    }
+
+    private suspend fun runSharedProtocolScan(
+        context: Context,
+        requestKey: String,
+        stateGuid: String?,
+        progressLabel: String,
+        onProgress: suspend (String) -> Unit,
+        scan: suspend (suspend (String) -> Unit) -> List<EndpointCandidate>,
+    ): List<EndpointCandidate> {
+        val guid = stateGuid.orEmpty().ifBlank { requestKey.take(16) }
+        val scope = (context.applicationContext as? AngApplication)?.applicationScope ?: fallbackScanScope
+        val task = synchronized(sharedScansLock) {
+            val cached = sharedScans[requestKey]
+            if (cached != null && cached.task.isActive) {
+                cached.task
+            } else {
+                val work = scope.async(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                        AwgEndpointScanState.begin(guid, "Scanning endpoints…")
+                        try {
+                            val candidates = scan { message ->
+                                val visibleMessage = message
+                                AwgEndpointScanState.update(guid, visibleMessage)
+                                onProgress(visibleMessage)
+                            }
+                            val selected = candidates.firstOrNull()?.endpoint.orEmpty()
+                            AwgEndpointScanState.complete(
+                                guid,
+                                "Endpoint selected: $selected",
+                                selected,
+                            )
+                            candidates
+                        } catch (cancelled: CancellationException) {
+                            AwgEndpointScanState.clear(guid)
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            AwgEndpointScanState.fail(guid, "Endpoint scan failed")
+                            throw error
+                        }
+                }
+                val entry = SharedScan(work)
+                work.invokeOnCompletion {
+                    synchronized(sharedScansLock) {
+                        if (sharedScans[requestKey] === entry) sharedScans.remove(requestKey)
+                    }
+                }
+                sharedScans[requestKey] = entry
+                work.start()
+                work
+            }
+        }
+        return task.await()
+    }
+
+    private fun sharedScanKey(protocol: String, scanGuid: String?, identity: String): String {
+        val payload = "$protocol\u0000${scanGuid.orEmpty()}\u0000$identity"
+        val digest = MessageDigest.getInstance("SHA-256").digest(payload.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    private suspend fun scanProtocolEndpoints(
+        context: Context,
+        protocol: String,
+        account: WarpAccount,
+        extraArguments: List<String>,
+        onProgress: suspend (String) -> Unit,
+    ): List<EndpointCandidate> = withContext(Dispatchers.IO) {
+        val binary = requireExecutable(context)
+        val workDir = File(context.noBackupFilesDir, "endpoint-scan").apply { mkdirs() }
+        val accountFile = File(workDir, "account-${System.nanoTime()}.json")
+        accountFile.writeText(accountFileJson(account))
+        restrictPrivateFile(accountFile)
+        try {
+            runProtocolScan(binary, workDir, accountFile, protocol, extraArguments, onProgress)
+        } finally {
+            runCatching { accountFile.writeText("") }
+            accountFile.delete()
+        }
+    }
+
+    private suspend fun runProtocolScan(
+        binary: File,
+        workDir: File,
+        accountFile: File,
+        protocol: String,
+        extraArguments: List<String>,
+        onProgress: suspend (String) -> Unit,
+    ): List<EndpointCandidate> {
+        require(protocol == "wg" || protocol == "masque-h2")
+        // Keep the scanner's plain event stream (and omit -best) so the UI can
+        // show each reachable endpoint as it arrives, then let the user choose.
+        val arguments = mutableListOf(
+            binary.absolutePath, "scan", "-p", protocol,
+            "-n", "3", "-jt", "24",
+            "-plain", "-no-report", "-a", accountFile.absolutePath,
+        ).apply { addAll(extraArguments) }
+        val candidates = linkedMapOf<String, EndpointCandidate>()
+        var lastStatusAt = 0L
+        onProgress("Scanning endpoints…")
+        suspend fun runAttempt(): Pair<Int, String> = runChild(workDir, arguments, SCAN_TIMEOUT_MS,
+            idleTimeoutMs = SCAN_IDLE_TIMEOUT_MS) { raw ->
+            val line = ansiEscape.replace(raw, "").trim()
+            val endpointEvent = endpointEventPattern.matchEntire(line)
+            if (endpointEvent != null) {
+                val endpoint = endpointEvent.groupValues[1].trim()
+                val latency = endpointEvent.groupValues[2].toLongOrNull() ?: -1L
+                val (host, port) = AmneziaWgFmt.splitEndpoint(endpoint)
+                if (!host.isNullOrBlank() && port?.toIntOrNull()?.let { it in 1..65535 } == true) {
+                    val previous = candidates.put(endpoint, EndpointCandidate(endpoint, latency))
+                    if (previous == null || previous.latencyMs != latency) {
+                        onProgress("Found $endpoint · ${if (latency >= 0) "$latency ms" else "reachable"}")
+                    }
+                }
+            } else if (progressEventPattern.matches(line)) {
+                val values = progressEventPattern.matchEntire(line)!!.groupValues
+                val checked = values[1].toLongOrNull()
+                val total = values[2].toLongOrNull()
+                if (checked != null && total != null && total > 0 && checked in 0..total) {
+                    if (checked == 0L) PingNgDiagnostics.record("Endpoint scan phase started ($protocol): 0/$total")
+                    onProgress("Scanned $checked/$total endpoints…")
+                }
+            } else {
+                // Keep the live card readable while scanner output is arriving
+                // quickly, without exposing command arguments or file paths.
+                val now = System.nanoTime()
+                val safeStatus = safeScanStatus(line)
+                if (safeStatus != null && now - lastStatusAt >= 120_000_000L) {
+                    lastStatusAt = now
+                    onProgress(safeStatus)
+                }
+            }
+        }
+        val result = try {
+            runAttempt()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (stalled: Throwable) {
+            PingNgDiagnostics.record("Endpoint scan retry after stalled attempt ($protocol)", stalled)
+            candidates.clear()
+            onProgress("Scanning endpoints…")
+            runAttempt()
+        }
+        check(result.first == 0) { "Endpoint scan failed (${result.first})" }
+        check(candidates.isNotEmpty()) { "No reachable $protocol endpoint was found" }
+        val sorted = candidates.values.sortedWith(compareBy<EndpointCandidate> {
+            if (it.latencyMs < 0) Long.MAX_VALUE else it.latencyMs
+        })
+        onProgress("Endpoint selected: ${sorted.first().endpoint}")
+        return sorted
+    }
+
+    private suspend fun ensureMasqueAccount(binary: File, workDir: File, accountFile: File) {
+        if (hasMasqueCredentials(accountFile)) return
+        runCatching { accountFile.delete() }
+        val result = runChild(
+            workDir,
+            listOf(binary.absolutePath, "register", "-a", accountFile.absolutePath),
+            REGISTER_TIMEOUT_MS,
+        )
+        check(result.first == 0 && hasMasqueCredentials(accountFile)) {
+            "WARP H2 account setup failed (${result.first})"
+        }
+        restrictPrivateFile(accountFile)
+    }
+
+    private suspend fun runChild(
+        workDir: File,
+        arguments: List<String>,
+        timeoutMs: Long,
+        idleTimeoutMs: Long = timeoutMs,
+        onOutput: suspend (String) -> Unit = {},
+    ): Pair<Int, String> = coroutineScope {
+        val process = ProcessBuilder(arguments)
+            .directory(workDir)
+            .redirectErrorStream(true)
+            .apply {
+                environment()["HOME"] = workDir.absolutePath
+                environment()["TERM"] = "dumb"
+                environment()["NO_COLOR"] = "1"
+                environment()["GOMAXPROCS"] = Runtime.getRuntime().availableProcessors().coerceIn(2, 8).toString()
+            }
+            .start()
+        activeProcesses += process
+        val lastOutputAt = AtomicLong(System.nanoTime())
+        val output = Collections.synchronizedList(mutableListOf<String>())
+        val outputReader = launch(Dispatchers.IO) {
+            try {
+                process.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    lines.forEach { rawLine ->
+                        val line = ansiEscape.replace(rawLine, "")
+                            .filter { it == '\t' || it >= ' ' }.trim()
+                        if (line.isNotEmpty()) {
+                            if (idleTimeoutMs == timeoutMs ||
+                                line.startsWith("PINGNG_PROGRESS\t") ||
+                                line.startsWith("PINGNG_ENDPOINT\t")
+                            ) lastOutputAt.set(System.nanoTime())
+                            synchronized(output) {
+                                output += line
+                                if (output.size > 120) output.removeAt(0)
+                            }
+                            try {
+                                onOutput(line)
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                }
+            } catch (closedDuringShutdown: IOException) {
+                // Destroying a child closes its pipe on this thread on some
+                // Android versions; that is expected only after shutdown.
+                if (process.isAlive) throw closedDuringShutdown
+            }
+        }
+        try {
+            val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+            while (!process.waitFor(250, TimeUnit.MILLISECONDS)) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (System.nanoTime() >= deadline) throw IllegalStateException("Endpoint scan timed out")
+                if (System.nanoTime() - lastOutputAt.get() >= TimeUnit.MILLISECONDS.toNanos(idleTimeoutMs)) {
+                    throw IllegalStateException("Endpoint scan stopped making progress")
+                }
+            }
+            outputReader.join()
+            process.exitValue() to synchronized(output) { output.joinToString("\n") }
+        } finally {
+            activeProcesses -= process
+            if (process.isAlive) terminate(process)
+            outputReader.cancelAndJoin()
+        }
+    }
+
+    private fun hasMasqueCredentials(accountFile: File): Boolean = runCatching {
+        val root = JsonParser.parseString(accountFile.readText()).asJsonObject
+        val masque = root.getAsJsonObject("masque")
+        listOf("private_key", "peer_public_key", "id", "token")
+            .all { masque?.get(it)?.asString?.isNotBlank() == true }
+    }.getOrDefault(false)
+
+    private fun requireExecutable(context: Context): File = executable(context).also { binary ->
+        check(binary.isFile && binary.length() > 1024 && binary.canExecute()) {
+            "Endpoint scanning is unavailable for this device"
+        }
+    }
+
+    private fun restrictPrivateFile(file: File) {
+        file.setReadable(false, false)
+        file.setWritable(false, false)
+        file.setReadable(true, true)
+        file.setWritable(true, true)
+    }
+
+    private fun terminate(process: Process) {
+        runCatching { process.destroy() }
+        runCatching { if (!process.waitFor(500, TimeUnit.MILLISECONDS)) process.destroyForcibly() }
+    }
+
+    private fun String.fileSafe(): String = replace(Regex("[^A-Za-z0-9_.-]"), "_").take(80)
+
     /** Returns reachable endpoints ordered by the measured handshake latency. */
     suspend fun scanCandidates(
         account: WarpAccount,
@@ -92,6 +488,17 @@ object EndpointScannerCli {
         context: Context,
         account: WarpAccount,
         onProgress: suspend (String) -> Unit = {},
+    ): ScanResult {
+        // Keep AWG's established bundled scan and endpoint pool. Its progress
+        // events are forwarded to the shared UI state; do not replace this
+        // mode with the larger in-app discovery pool.
+        return scanWithBundledCli(context, account, onProgress)
+    }
+
+    private suspend fun scanWithBundledCli(
+        context: Context,
+        account: WarpAccount,
+        onProgress: suspend (String) -> Unit,
     ): ScanResult {
         onProgress("Preparing endpoint scan…")
         val binary = executable(context)
@@ -191,9 +598,16 @@ object EndpointScannerCli {
                                 // hang. Keep the live UI responsive while the
                                 // process continues at full speed.
                                 val now = System.nanoTime()
-                                if (now - lastUiProgressAt >= 120_000_000L) {
+                                val progressEvent = progressEventPattern.matchEntire(line)
+                                val visibleLine = progressEvent?.let {
+                                    "Scanned ${it.groupValues[1]}/${it.groupValues[2]} endpoints…"
+                                } ?: line
+                                if (progressEvent != null || visibleLine.contains(
+                                        Regex("(?i)\\bScanned\\s+\\d+\\s*(?:/|of)\\s*\\d+"),
+                                    ) || now - lastUiProgressAt >= 120_000_000L
+                                ) {
                                     lastUiProgressAt = now
-                                    withContext(Dispatchers.Main.immediate) { onProgress(line.take(180)) }
+                                    withContext(Dispatchers.Main.immediate) { onProgress(visibleLine.take(180)) }
                                 }
                             }
                         }
@@ -248,7 +662,26 @@ object EndpointScannerCli {
     }
 
     private val endpointPattern = Regex("""(?:\[(?:[0-9A-Fa-f:]+)\]|(?:\d{1,3}\.){3}\d{1,3}):\d{1,5}""")
+    private val endpointEventPattern = Regex(
+        """^PINGNG_ENDPOINT\t((?:\[[0-9A-Fa-f:]+\]|(?:\d{1,3}\.){3}\d{1,3}):\d{1,5})\t(-?\d+)$"""
+    )
+    private val progressEventPattern = Regex("""^PINGNG_PROGRESS\t(\d+)\t(\d+)$""")
     private val latencyPattern = Regex("""\b(\d{1,5}(?:\.\d+)?)(?:\s*)(?:ms|milliseconds?)\b""", RegexOption.IGNORE_CASE)
+    private val scanCountPattern = Regex("""\b(\d+)\s*/\s*(\d+)\b""")
+
+    private fun safeScanStatus(raw: String): String? {
+        val line = raw.trim()
+        if (line.isBlank()) return null
+        val lower = line.lowercase()
+        val count = scanCountPattern.find(line)?.groupValues
+        return when {
+            lower.contains("phase 1") || lower.contains("discovery") -> "Finding reachable endpoints…"
+            lower.contains("phase 2") || lower.contains("verifying tunnel") -> "Checking endpoint tunnels…"
+            count != null -> "Scanned ${count[1]} of ${count[2]} endpoints…"
+            lower.contains("sorting") -> "Sorting reachable endpoints…"
+            else -> null
+        }
+    }
 
     /** Only the rows before the torn-down section represent working tunnels. */
     internal fun parseWorkingReport(lines: List<String>): List<EndpointCandidate> {
@@ -295,8 +728,9 @@ object EndpointScannerCli {
         account: WarpAccount,
         onProgress: suspend (String) -> Unit,
     ): List<AwgEndpointScanner.Hit> {
-        val endpoints = parseEndpoints(WarpPlusConfig.ALL_ENDPOINTS)
+        val endpoints = parseEndpoints(WarpEndpointPools.AWG_FALLBACK)
         onProgress("Checking AWG endpoints…")
+        onProgress("Scanned 0/${endpoints.size} endpoints…")
         var lastUiProgressAt = 0L
         return AwgEndpointScanner.scan(
             endpoints = endpoints,
@@ -313,7 +747,7 @@ object EndpointScannerCli {
                 if (tested == total || now - lastUiProgressAt >= 150_000_000L) {
                     lastUiProgressAt = now
                     withContext(Dispatchers.Main.immediate) {
-                        onProgress("AWG endpoint scan: $tested/$total")
+                        onProgress("Scanned $tested/$total endpoints…")
                     }
                 }
             },

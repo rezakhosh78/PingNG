@@ -32,10 +32,13 @@ import com.v2ray.ang.ui.compose.SettingsSwitchItem
 @Composable
 fun PsiphonEditorFields(
     enabled: Boolean,
+    torEnabled: Boolean = false,
     region: String,
     onEnabledChange: (Boolean) -> Unit,
+    onTorEnabledChange: (Boolean) -> Unit = {},
     onRegionChange: (String) -> Unit,
     enabledTitle: String? = null,
+    torEnabledTitle: String? = null,
     @StringRes hintResId: Int = R.string.pingng_psiphon_short_hint,
     mode: String = "auto",
     onModeChange: (String) -> Unit = {},
@@ -53,11 +56,18 @@ fun PsiphonEditorFields(
             checked = enabled,
             onCheckedChange = onEnabledChange
         )
-        if (enabled) {
+        SettingsSwitchItem(
+            title = torEnabledTitle ?: enabledTitle?.replace("Psiphon", "Tor")
+                ?: stringResource(R.string.pingng_tor_enabled),
+            summary = stringResource(R.string.pingng_tor_hint),
+            checked = torEnabled,
+            onCheckedChange = onTorEnabledChange,
+        )
+        if (enabled || torEnabled) {
             val modeAutoLabel = stringResource(R.string.pingng_psiphon_mode_auto)
             val modeCdnLabel = stringResource(R.string.pingng_psiphon_mode_cdn)
             val modeDirectLabel = stringResource(R.string.pingng_psiphon_mode_direct)
-            FormDropdownField(
+            if (enabled) FormDropdownField(
                 label = stringResource(R.string.pingng_psiphon_mode),
                 value = when (mode.lowercase()) {
                     "cdn" -> modeCdnLabel
@@ -76,7 +86,7 @@ fun PsiphonEditorFields(
                 },
                 supportingText = stringResource(R.string.pingng_psiphon_mode_summary),
             )
-            if (mode.lowercase() != "direct") {
+            if (enabled && mode.lowercase() != "direct") {
                 FormTextField(
                     label = stringResource(R.string.pingng_psiphon_cdn_ips),
                     value = cdnIps,
@@ -133,11 +143,12 @@ fun PsiphonEditorFields(
                 }
             }
             FormDropdownField(
-                label = stringResource(R.string.pingng_psiphon_region),
+                label = if (torEnabled) "Tor exit country" else stringResource(R.string.pingng_psiphon_region),
                 value = PsiphonRegions.displayName(region),
                 options = PsiphonRegions.displayOptions(),
                 onValueChange = { onRegionChange(PsiphonRegions.codeOf(it)) },
-                supportingText = stringResource(R.string.pingng_psiphon_region_summary)
+                supportingText = if (torEnabled) "Best Connection lets Tor choose an exit country."
+                    else stringResource(R.string.pingng_psiphon_region_summary)
             )
         }
     }

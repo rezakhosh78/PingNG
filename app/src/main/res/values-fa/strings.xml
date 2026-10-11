@@ -4,6 +4,8 @@
     <string name="app_widget_name">تعویض</string>
     <string name="app_tile_name">PingNG</string>
     <string name="pingng_psiphon_enabled">Psiphon Over Xray</string>
+    <string name="pingng_tor_enabled">Tor Over Xray</string>
+    <string name="pingng_tor_hint">ترافیک TCP از Tor و ترافیک UDP از تونل اصلی کانفیگ عبور می‌کند.</string>
     <string name="pingng_psiphon_status">Psiphon</string>
     <string name="pingng_psiphon_region">کشور</string>
     <string name="pingng_psiphon_region_summary">انتخاب</string>

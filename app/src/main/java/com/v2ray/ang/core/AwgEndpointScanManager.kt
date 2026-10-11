@@ -14,11 +14,12 @@ import kotlinx.coroutines.withContext
 /** One application-owned scan shared by the editor and the connection flow. */
 object AwgEndpointScanManager {
     private var active: Deferred<String>? = null
+    private var activeGuid: String? = null
     val isRunning: Boolean get() = active?.isActive == true
 
     @Synchronized
     fun start(context: Context, guid: String, profile: ProfileItem, skipAutoScanOnce: Boolean): Deferred<String> {
-        active?.takeIf { it.isActive }?.let { return it }
+        active?.takeIf { it.isActive && activeGuid == guid }?.let { return it }
         val app = context.applicationContext as AngApplication
         val task = app.applicationScope.async(Dispatchers.IO) {
             try {
@@ -53,6 +54,7 @@ object AwgEndpointScanManager {
             }
         }
         active = task
+        activeGuid = guid
         return task
     }
 
@@ -60,6 +62,7 @@ object AwgEndpointScanManager {
     fun cancel() {
         active?.cancel()
         active = null
+        activeGuid = null
         val guid = AwgEndpointScanState.state.value.guid
         if (guid.isNotBlank()) AwgEndpointScanState.clear(guid)
     }

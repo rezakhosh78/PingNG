@@ -27,6 +27,7 @@ data class MainUiState(
     val isTesting: Boolean = false,
     val status: MainStatus = MainStatus.Disconnected,
     val psiphonStates: Map<String, String> = emptyMap(),
+    val torStates: Map<String, String> = emptyMap(),
     val locateTarget: LocateTarget? = null,
     val confirmRemove: Boolean = false,
     val doubleColumnDisplay: Boolean = false,

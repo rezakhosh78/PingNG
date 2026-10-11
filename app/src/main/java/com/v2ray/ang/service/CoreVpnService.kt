@@ -142,9 +142,9 @@ open class CoreVpnService : VpnService(), ServiceControl {
             // cancel the startup and close a TUN that was already created.
             val job = serviceScope.launch {
                 try {
-                    if (shouldBootstrapPsiphon()) {
-                        LogUtil.i(AppConfig.TAG, "StartCore-VPN: Holding VPN until Psiphon connects")
-                        PingNgDiagnostics.record("VPN held until Psiphon connects")
+                    if (shouldBootstrapSecondLayer()) {
+                        LogUtil.i(AppConfig.TAG, "StartCore-VPN: Holding VPN until the selected second layer connects")
+                        PingNgDiagnostics.record("VPN held until the selected second layer connects")
                         if (!CoreServiceManager.isRunning() && !CoreServiceManager.startCoreLoop(null)) {
                             if (!startupCancelled.get()) {
                                 unlockStart()
@@ -227,6 +227,20 @@ open class CoreVpnService : VpnService(), ServiceControl {
         RootLanSharing.startClientSharing(this)
     }
 
+    /** Establishes TUN only after Tor has established its first circuit. */
+    fun startVpnAfterTor() {
+        if ((::mInterface.isInitialized && mInterface.fileDescriptor.valid()) || !CoreServiceManager.isRunning()) return
+        LogUtil.i(AppConfig.TAG, "StartCore-VPN: Tor ready; establishing VPN interface")
+        PingNgDiagnostics.record("Tor ready; establishing Android VPN interface")
+        if (!setupVpnService()) return
+        if (!CoreServiceManager.promoteBootstrappedCoreToVpn(mInterface)) {
+            LogUtil.e(AppConfig.TAG, "StartCore-VPN: Failed to promote Tor bootstrap to VPN")
+            stopAllService()
+            return
+        }
+        RootLanSharing.startClientSharing(this)
+    }
+
     override fun stopService() {
         startupCancelled.set(true)
         WarpMasqueBridge.cancelStartup()
@@ -278,7 +292,9 @@ open class CoreVpnService : VpnService(), ServiceControl {
         // here would make two native engines read/own the same descriptor and
         // can crash libwg-go before awgTurnOn returns. Keep tun2socks for the
         // cores that actually need the userspace proxy path.
-        if (selectedProfile?.configType == EConfigType.AMNEZIAWG && !selectedProfile.psiphonEnabled) {
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG &&
+            !selectedProfile.psiphonEnabled && !selectedProfile.torEnabled
+        ) {
             LogUtil.i(AppConfig.TAG, "StartCore-VPN: AmneziaWG selected; HEV startup skipped")
         } else {
             runTun2socks()
@@ -286,10 +302,10 @@ open class CoreVpnService : VpnService(), ServiceControl {
         return true
     }
 
-    private fun shouldBootstrapPsiphon(): Boolean {
+    private fun shouldBootstrapSecondLayer(): Boolean {
         val guid = MmkvManager.getSelectServer() ?: return false
         val profile = MmkvManager.decodeServerConfig(guid) ?: return false
-        return profile.psiphonEnabled
+        return profile.psiphonEnabled || profile.torEnabled
     }
 
     private fun prepareWarpMasqueRegistration() {
@@ -368,7 +384,9 @@ open class CoreVpnService : VpnService(), ServiceControl {
     private fun configureNetworkSettings(builder: Builder) {
         val selectedProfile = MmkvManager.getSelectServer()
             ?.let(MmkvManager::decodeServerConfig)
-        if (selectedProfile?.configType == EConfigType.AMNEZIAWG && !selectedProfile.psiphonEnabled) {
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG &&
+            !selectedProfile.psiphonEnabled && !selectedProfile.torEnabled
+        ) {
             val text = selectedProfile.amneziawgConfig
                 ?: error("فایل کانفیگ AmneziaWG در پروفایل پیدا نشد")
             val awg = AmneziaWgFmt.readConfig(text)
@@ -435,7 +453,10 @@ open class CoreVpnService : VpnService(), ServiceControl {
         //if (MmkvManager.decodeSettingsBool(AppConfig.PREF_LOCAL_DNS_ENABLED) == true) {
         //  builder.addDnsServer(PRIVATE_VLAN4_ROUTER)
         //} else {
-        val vpnDnsServers = if (selectedProfile?.configType == EConfigType.AMNEZIAWG && selectedProfile.psiphonEnabled) {
+        val vpnDnsServers = if (selectedProfile?.configType == EConfigType.AMNEZIAWG && selectedProfile.torEnabled) {
+            AmneziaWgFmt.readConfig(selectedProfile.amneziawgConfig.orEmpty()).dnsServers
+                .filter(Utils::isPureIpAddress).ifEmpty { SettingsManager.getVpnDnsServers() }
+        } else if (selectedProfile?.configType == EConfigType.AMNEZIAWG && selectedProfile.psiphonEnabled) {
             AmneziaWgFmt.readConfig(selectedProfile.amneziawgConfig.orEmpty()).dnsServers
                 .filter(Utils::isPureIpAddress).ifEmpty { SettingsManager.getVpnDnsServers() }
         } else SettingsManager.getVpnDnsServers()
@@ -512,6 +533,15 @@ open class CoreVpnService : VpnService(), ServiceControl {
         // avoid a loop, but route the rest of the device through WARP.
         val selectedProfile = MmkvManager.getSelectServer()
             ?.let(MmkvManager::decodeServerConfig)
+        if (selectedProfile?.torEnabled == true) {
+            // Every Tor Over profile captures the whole device. The AWG
+            // engine protects its transport sockets from this VPN itself.
+            if (selectedProfile.configType != EConfigType.AMNEZIAWG) {
+                builder.addDisallowedApplication(selfPackageName)
+            }
+            PingNgDiagnostics.record("Tor Over profile: full-device VPN route enabled")
+            return
+        }
         if (selectedProfile?.configType == EConfigType.AMNEZIAWG) {
             val perAppProxy = MmkvManager.decodeSettingsBool(AppConfig.PREF_PER_APP_PROXY) == true
             val apps = MmkvManager.decodeSettingsStringSet(AppConfig.PREF_PER_APP_PROXY_SET)
@@ -582,9 +612,11 @@ open class CoreVpnService : VpnService(), ServiceControl {
     private fun runTun2socks() {
         val selectedProfile = MmkvManager.getSelectServer()
             ?.let(MmkvManager::decodeServerConfig)
-        if (selectedProfile?.configType == EConfigType.AMNEZIAWG && selectedProfile.psiphonEnabled) {
+        if (selectedProfile?.configType == EConfigType.AMNEZIAWG &&
+            (selectedProfile.psiphonEnabled || selectedProfile.torEnabled)
+        ) {
             val port = CoreServiceManager.amneziaFinalSocksPort()
-            check(port in 1..65535) { "AmneziaWG final SOCKS gateway unavailable" }
+            check(port in 1..65535) { "AmneziaWG second-layer SOCKS gateway unavailable" }
             check(TProxyService.isNativeAvailable()) { "HEV native tunnel unavailable" }
             tun2SocksService = TProxyService(applicationContext, mInterface, { isRunning },
                 { runTun2socks() }, socksPortOverride = port)
