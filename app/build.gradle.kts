@@ -492,7 +492,12 @@ android {
 }
 
 tasks.configureEach {
-    if (name.startsWith("merge") && (name.endsWith("Assets") || name.endsWith("JniLibFolders"))) {
+    val consumesGeneratedSnowflakeRuntime =
+        name.startsWith("merge") && (name.endsWith("Assets") || name.endsWith("JniLibFolders"))
+    // AGP 9's lint model reads source-set assets directly instead of depending
+    // on the mergeAssets task, so declare the generated Snowflake inputs here.
+    val generatesLintVitalModel = name.startsWith("generate") && name.endsWith("LintVitalReportModel")
+    if (consumesGeneratedSnowflakeRuntime || generatesLintVitalModel) {
         dependsOn(prepareSnowflakeRuntime)
     }
 }
