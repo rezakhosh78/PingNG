@@ -40,34 +40,75 @@ jobs:
           ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
 
-      - name: Locate Android project root
+      - name: Locate or restore Gradle project root
         id: project
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f "$GITHUB_WORKSPACE/gradlew" ]]; then
-            project_dir="$GITHUB_WORKSPACE"
-          else
-            mapfile -d '' gradlew_files < <(
+          find_settings() {
+            mapfile -d '' settings_files < <(
               find "$GITHUB_WORKSPACE" \
-                -type d \( -name .git -o -name .gradle \) -prune -o \
-                -type f -name gradlew -print0
+                -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
+                -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print0
             )
-            if [[ "${#gradlew_files[@]}" -ne 1 ]]; then
-              if [[ "${#gradlew_files[@]}" -eq 0 ]]; then
-                echo 'No Gradle wrapper (gradlew) found in the checked-out source.'
-                echo 'Commit the project Gradle wrapper or correct the checked-out source ref.'
-              else
-                echo 'More than one gradlew was found; set the Android project directory explicitly:'
-                printf ' - %s\n' "${gradlew_files[@]}"
+          }
+
+          find_settings
+          if [[ "${#settings_files[@]}" -eq 0 && -f "$GITHUB_WORKSPACE/app/build.gradle.kts" ]]; then
+            echo 'Root Gradle metadata is missing; checking this branch history for a complete Android build configuration.'
+            required_files=(settings.gradle.kts build.gradle.kts gradle/libs.versions.toml)
+            mapfile -t history_commits < <(
+              git -C "$GITHUB_WORKSPACE" rev-list HEAD -- \
+                settings.gradle.kts build.gradle.kts gradle/libs.versions.toml gradle.properties
+            )
+            metadata_commit=''
+            for commit in "${history_commits[@]}"; do
+              complete=true
+              for file in "${required_files[@]}"; do
+                if ! git -C "$GITHUB_WORKSPACE" cat-file -e "$commit:$file" 2>/dev/null; then
+                  complete=false
+                  break
+                fi
+              done
+              if [[ "$complete" == true ]]; then
+                metadata_commit="$commit"
+                break
               fi
-              exit 1
+            done
+
+            if [[ -n "$metadata_commit" ]]; then
+              for file in "${required_files[@]}"; do
+                mkdir -p "$GITHUB_WORKSPACE/$(dirname "$file")"
+                git -C "$GITHUB_WORKSPACE" show "$metadata_commit:$file" > "$GITHUB_WORKSPACE/$file"
+              done
+              if git -C "$GITHUB_WORKSPACE" cat-file -e "$metadata_commit:gradle.properties" 2>/dev/null; then
+                git -C "$GITHUB_WORKSPACE" show "$metadata_commit:gradle.properties" > "$GITHUB_WORKSPACE/gradle.properties"
+              fi
+              echo "Restored Gradle metadata from commit ${metadata_commit:0:8}."
+              find_settings
             fi
-            project_dir="$(dirname "${gradlew_files[0]}")"
+          fi
+
+          if [[ "${#settings_files[@]}" -ne 1 ]]; then
+            if [[ "${#settings_files[@]}" -eq 0 ]]; then
+              echo 'No Gradle settings file exists in this checkout or its history.'
+              echo "Checked-out commit: $(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)"
+              echo "Requested source ref: $SOURCE_REF"
+              git -C "$GITHUB_WORKSPACE" ls-tree -r --name-only HEAD | head -80
+            else
+              echo 'More than one Gradle project was found; select the Android project directory explicitly:'
+              printf ' - %s\n' "${settings_files[@]}"
+            fi
+            exit 1
+          fi
+          project_dir="$(dirname "${settings_files[0]}")"
+          if [[ "$project_dir" == "$GITHUB_WORKSPACE" ]]; then
+            project_dir='.'
+          else
             project_dir="${project_dir#"$GITHUB_WORKSPACE"/}"
           fi
           echo "project_dir=$project_dir" >> "$GITHUB_OUTPUT"
-          echo "Android project root: $project_dir"
+          echo "Gradle project root: $project_dir"
 
       - name: Validate release inputs
         shell: bash
@@ -85,7 +126,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -119,10 +159,8 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Grant Gradle wrapper permission
-        working-directory: ${{ steps.project.outputs.project_dir }}
-        run: chmod +x ./gradlew
+        with:
+          gradle-version: '9.8.0'
 
       - name: Validate signing secrets
         shell: bash
@@ -172,7 +210,7 @@ jobs:
 
       - name: Build F-Droid release APKs
         working-directory: ${{ steps.project.outputs.project_dir }}
-        run: ./gradlew :app:assembleFdroidRelease --no-daemon --stacktrace
+        run: gradle :app:assembleFdroidRelease --no-daemon --stacktrace
 
       - name: Align, sign, and verify every APK
         shell: bash
