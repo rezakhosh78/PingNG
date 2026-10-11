@@ -40,6 +40,35 @@ jobs:
           ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
 
+      - name: Locate Android project root
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$GITHUB_WORKSPACE/gradlew" ]]; then
+            project_dir="$GITHUB_WORKSPACE"
+          else
+            mapfile -d '' gradlew_files < <(
+              find "$GITHUB_WORKSPACE" \
+                -type d \( -name .git -o -name .gradle \) -prune -o \
+                -type f -name gradlew -print0
+            )
+            if [[ "${#gradlew_files[@]}" -ne 1 ]]; then
+              if [[ "${#gradlew_files[@]}" -eq 0 ]]; then
+                echo 'No Gradle wrapper (gradlew) found in the checked-out source.'
+                echo 'Commit the project Gradle wrapper or correct the checked-out source ref.'
+              else
+                echo 'More than one gradlew was found; set the Android project directory explicitly:'
+                printf ' - %s\n' "${gradlew_files[@]}"
+              fi
+              exit 1
+            fi
+            project_dir="$(dirname "${gradlew_files[0]}")"
+            project_dir="${project_dir#"$GITHUB_WORKSPACE"/}"
+          fi
+          echo "project_dir=$project_dir" >> "$GITHUB_OUTPUT"
+          echo "Android project root: $project_dir"
+
       - name: Validate release inputs
         shell: bash
         run: |
@@ -78,6 +107,7 @@ jobs:
 
       - name: Configure Android SDK path
         shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
           android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
@@ -91,6 +121,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Grant Gradle wrapper permission
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: chmod +x ./gradlew
 
       - name: Validate signing secrets
@@ -140,10 +171,12 @@ jobs:
           echo "KEYSTORE_PATH=$keystore_path" >> "$GITHUB_ENV"
 
       - name: Build F-Droid release APKs
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: ./gradlew :app:assembleFdroidRelease --no-daemon --stacktrace
 
       - name: Align, sign, and verify every APK
         shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
@@ -157,7 +190,8 @@ jobs:
           [[ -x "$zipalign" ]] || { echo "Missing $zipalign"; exit 1; }
           [[ -f "$apksigner" ]] || { echo "Missing $apksigner"; exit 1; }
 
-          mkdir -p release-assets
+          release_dir="$GITHUB_WORKSPACE/release-assets"
+          mkdir -p "$release_dir"
           mapfile -d '' apk_files < <(
             find app/build/outputs/apk/fdroid/release -type f -name '*.apk' -print0 | sort -z
           )
@@ -168,7 +202,7 @@ jobs:
 
           for apk in "${apk_files[@]}"; do
             aligned="$RUNNER_TEMP/$(basename "$apk").aligned.apk"
-            signed="release-assets/$(basename "$apk")"
+            signed="$release_dir/$(basename "$apk")"
             "$zipalign" -p -f 4 "$apk" "$aligned"
             "$apksigner" sign \
               --ks "$KEYSTORE_PATH" \
@@ -180,8 +214,8 @@ jobs:
             "$zipalign" -c -P 4 -v 4 "$signed"
           done
 
-          sha256sum release-assets/*.apk > release-assets/SHA256SUMS
-          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+          sha256sum "$release_dir"/*.apk > "$release_dir/SHA256SUMS"
+          find "$release_dir" -maxdepth 1 -type f -printf '%f\n' | sort
 
       - name: Upload signed APKs
         uses: actions/upload-artifact@v4
