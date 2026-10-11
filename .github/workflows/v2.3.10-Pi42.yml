@@ -40,6 +40,76 @@ jobs:
           ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
 
+      - name: Locate or restore Gradle project root
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          find_settings() {
+            mapfile -d '' settings_files < <(
+              find "$GITHUB_WORKSPACE" \
+                -type d \( -name .git -o -name .gradle -o -name build \) -prune -o \
+                -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print0
+            )
+          }
+
+          find_settings
+          if [[ "${#settings_files[@]}" -eq 0 && -f "$GITHUB_WORKSPACE/app/build.gradle.kts" ]]; then
+            echo 'Root Gradle metadata is missing; checking this branch history for a complete Android build configuration.'
+            required_files=(settings.gradle.kts build.gradle.kts gradle/libs.versions.toml)
+            mapfile -t history_commits < <(
+              git -C "$GITHUB_WORKSPACE" rev-list HEAD -- \
+                settings.gradle.kts build.gradle.kts gradle/libs.versions.toml gradle.properties
+            )
+            metadata_commit=''
+            for commit in "${history_commits[@]}"; do
+              complete=true
+              for file in "${required_files[@]}"; do
+                if ! git -C "$GITHUB_WORKSPACE" cat-file -e "$commit:$file" 2>/dev/null; then
+                  complete=false
+                  break
+                fi
+              done
+              if [[ "$complete" == true ]]; then
+                metadata_commit="$commit"
+                break
+              fi
+            done
+
+            if [[ -n "$metadata_commit" ]]; then
+              for file in "${required_files[@]}"; do
+                mkdir -p "$GITHUB_WORKSPACE/$(dirname "$file")"
+                git -C "$GITHUB_WORKSPACE" show "$metadata_commit:$file" > "$GITHUB_WORKSPACE/$file"
+              done
+              if git -C "$GITHUB_WORKSPACE" cat-file -e "$metadata_commit:gradle.properties" 2>/dev/null; then
+                git -C "$GITHUB_WORKSPACE" show "$metadata_commit:gradle.properties" > "$GITHUB_WORKSPACE/gradle.properties"
+              fi
+              echo "Restored Gradle metadata from commit ${metadata_commit:0:8}."
+              find_settings
+            fi
+          fi
+
+          if [[ "${#settings_files[@]}" -ne 1 ]]; then
+            if [[ "${#settings_files[@]}" -eq 0 ]]; then
+              echo 'No Gradle settings file exists in this checkout or its history.'
+              echo "Checked-out commit: $(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD)"
+              echo "Requested source ref: $SOURCE_REF"
+              git -C "$GITHUB_WORKSPACE" ls-tree -r --name-only HEAD | head -80
+            else
+              echo 'More than one Gradle project was found; select the Android project directory explicitly:'
+              printf ' - %s\n' "${settings_files[@]}"
+            fi
+            exit 1
+          fi
+          project_dir="$(dirname "${settings_files[0]}")"
+          if [[ "$project_dir" == "$GITHUB_WORKSPACE" ]]; then
+            project_dir='.'
+          else
+            project_dir="${project_dir#"$GITHUB_WORKSPACE"/}"
+          fi
+          echo "project_dir=$project_dir" >> "$GITHUB_OUTPUT"
+          echo "Gradle project root: $project_dir"
+
       - name: Validate release inputs
         shell: bash
         run: |
@@ -56,7 +126,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -78,6 +147,7 @@ jobs:
 
       - name: Configure Android SDK path
         shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
           android_sdk="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
@@ -89,9 +159,8 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Grant Gradle wrapper permission
-        run: chmod +x ./gradlew
+        with:
+          gradle-version: '9.8.0'
 
       - name: Validate signing secrets
         shell: bash
@@ -140,10 +209,12 @@ jobs:
           echo "KEYSTORE_PATH=$keystore_path" >> "$GITHUB_ENV"
 
       - name: Build F-Droid release APKs
-        run: ./gradlew :app:assembleFdroidRelease --no-daemon --stacktrace
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        run: gradle :app:assembleFdroidRelease --no-daemon --stacktrace
 
       - name: Align, sign, and verify every APK
         shell: bash
+        working-directory: ${{ steps.project.outputs.project_dir }}
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
@@ -157,7 +228,8 @@ jobs:
           [[ -x "$zipalign" ]] || { echo "Missing $zipalign"; exit 1; }
           [[ -f "$apksigner" ]] || { echo "Missing $apksigner"; exit 1; }
 
-          mkdir -p release-assets
+          release_dir="$GITHUB_WORKSPACE/release-assets"
+          mkdir -p "$release_dir"
           mapfile -d '' apk_files < <(
             find app/build/outputs/apk/fdroid/release -type f -name '*.apk' -print0 | sort -z
           )
@@ -168,7 +240,7 @@ jobs:
 
           for apk in "${apk_files[@]}"; do
             aligned="$RUNNER_TEMP/$(basename "$apk").aligned.apk"
-            signed="release-assets/$(basename "$apk")"
+            signed="$release_dir/$(basename "$apk")"
             "$zipalign" -p -f 4 "$apk" "$aligned"
             "$apksigner" sign \
               --ks "$KEYSTORE_PATH" \
@@ -180,8 +252,8 @@ jobs:
             "$zipalign" -c -P 4 -v 4 "$signed"
           done
 
-          sha256sum release-assets/*.apk > release-assets/SHA256SUMS
-          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort
+          sha256sum "$release_dir"/*.apk > "$release_dir/SHA256SUMS"
+          find "$release_dir" -maxdepth 1 -type f -printf '%f\n' | sort
 
       - name: Upload signed APKs
         uses: actions/upload-artifact@v4

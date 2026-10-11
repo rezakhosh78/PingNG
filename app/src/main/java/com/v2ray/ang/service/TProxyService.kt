@@ -1,0 +1,154 @@
+package com.v2ray.ang.service
+
+import android.content.Context
+import android.os.ParcelFileDescriptor
+import com.v2ray.ang.AppConfig
+import com.v2ray.ang.contracts.Tun2SocksControl
+import com.v2ray.ang.core.PingNgDiagnostics
+import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.SettingsManager
+import com.v2ray.ang.util.LogUtil
+import java.io.File
+
+/**
+ * Manages the tun2socks process that handles VPN traffic
+ */
+class TProxyService(
+    private val context: Context,
+    private val vpnInterface: ParcelFileDescriptor,
+    private val isRunningProvider: () -> Boolean,
+    private val restartCallback: () -> Unit,
+    private val socksPortOverride: Int? = null
+) : Tun2SocksControl {
+    companion object {
+        private val nativeLoadResult: Result<Unit> = runCatching {
+            System.loadLibrary("hev-socks5-tunnel")
+        }
+
+        /**
+         * Source-only Android Studio packages do not always contain the optional HEV binary.
+         * Treat it as an optional accelerator and let xray-core own the TUN when it is absent.
+         */
+        @JvmStatic
+        fun isNativeAvailable(): Boolean = nativeLoadResult.isSuccess
+
+        @JvmStatic
+        fun nativeLoadFailure(): String? = nativeLoadResult.exceptionOrNull()?.let {
+            "${it.javaClass.simpleName}: ${it.message.orEmpty()}"
+        }
+
+        @JvmStatic
+        @Suppress("FunctionName")
+        private external fun TProxyStartService(configPath: String, fd: Int): Boolean
+
+        @JvmStatic
+        @Suppress("FunctionName")
+        private external fun TProxyStopService(): Boolean
+
+        @JvmStatic
+        @Suppress("FunctionName")
+        private external fun TProxyIsRunning(): Boolean
+
+        @JvmStatic
+        @Suppress("FunctionName")
+        private external fun TProxyGetStats(): LongArray?
+
+    }
+
+    /**
+     * Starts the tun2socks process with the appropriate parameters.
+     */
+    override fun startTun2Socks() {
+        if (!isNativeAvailable()) {
+            LogUtil.w(
+                AppConfig.TAG,
+                "HEV TUN is unavailable; xray-core TUN fallback must be used (${nativeLoadFailure()})"
+            )
+            PingNgDiagnostics.record("HEV TUN unavailable; using Xray TUN fallback")
+            return
+        }
+//        LogUtil.i(AppConfig.TAG, "Starting HevSocks5Tunnel via JNI")
+
+        val configContent = buildConfig()
+        val configFile = File(context.filesDir, "hev-socks5-tunnel.yaml").apply {
+            writeText(configContent)
+        }
+//        LogUtil.i(AppConfig.TAG, "Config file created: ${configFile.absolutePath}")
+        LogUtil.d(AppConfig.TAG, "HevSocks5Tunnel Config content:\n$configContent")
+
+        try {
+//            LogUtil.i(AppConfig.TAG, "TProxyStartService...")
+            val started = TProxyStartService(configFile.absolutePath, vpnInterface.fd)
+            if (started) {
+                LogUtil.i(AppConfig.TAG, "HevSocks5Tunnel started; VPN traffic is attached to Xray SOCKS")
+                PingNgDiagnostics.record("HEV TUN started; forwarding VPN traffic to Xray SOCKS")
+            } else {
+                LogUtil.e(AppConfig.TAG, "HevSocks5Tunnel returned false; VPN traffic is not being forwarded")
+                PingNgDiagnostics.record("HEV TUN failed to start; VPN traffic is not being forwarded")
+                if (socksPortOverride != null) error("HEV could not attach the Psiphon Over AmneziaWG VPN")
+            }
+        } catch (e: Throwable) {
+            LogUtil.e(AppConfig.TAG, "HevSocks5Tunnel failed to start", e)
+            PingNgDiagnostics.record("HEV TUN start failed", e)
+            if (socksPortOverride != null) throw e
+        }
+    }
+
+    private fun buildConfig(): String {
+        val socksPort = socksPortOverride ?: SettingsManager.getSocksPort()
+        val socksUsername = if (socksPortOverride == null) SettingsManager.getSocksUsername() else null
+        val socksPassword = if (socksPortOverride == null) SettingsManager.getSocksPassword() else null
+        val vpnConfig = SettingsManager.getCurrentVpnInterfaceAddressConfig()
+        val escapedSocksUsername = socksUsername?.replace("'", "''")
+        val escapedSocksPassword = socksPassword?.replace("'", "''")
+        return buildString {
+            appendLine("tunnel:")
+            appendLine("  mtu: ${SettingsManager.getVpnMtu()}")
+            appendLine("  ipv4: ${vpnConfig.ipv4Client}")
+
+            if (MmkvManager.decodeSettingsBool(AppConfig.PREF_IPV6_ENABLED)) {
+                appendLine("  ipv6: '${vpnConfig.ipv6Client}'")
+            }
+
+            appendLine("socks5:")
+            appendLine("  port: ${socksPort}")
+            appendLine("  address: ${AppConfig.LOOPBACK}")
+            appendLine("  udp: 'udp'")
+            if (escapedSocksUsername != null && escapedSocksPassword != null) {
+                appendLine("  username: '${escapedSocksUsername}'")
+                appendLine("  password: '${escapedSocksPassword}'")
+            }
+
+            // Read-write timeout settings
+            val timeoutSetting = MmkvManager.decodeSettingsString(AppConfig.PREF_HEV_TUNNEL_RW_TIMEOUT) ?: AppConfig.HEVTUN_RW_TIMEOUT
+            val parts = timeoutSetting.split(",")
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            val tcpTimeout = parts.getOrNull(0)?.toIntOrNull() ?: 300
+            val udpTimeout = parts.getOrNull(1)?.toIntOrNull() ?: 60
+
+            appendLine("misc:")
+            appendLine("  tcp-read-write-timeout: ${tcpTimeout * 1000}")
+            appendLine("  udp-read-write-timeout: ${udpTimeout * 1000}")
+            appendLine("  log-level: ${MmkvManager.decodeSettingsString(AppConfig.PREF_HEV_TUNNEL_LOGLEVEL) ?: "warn"}")
+        }
+    }
+
+    /**
+     * Stops the tun2socks process
+     */
+    override fun stopTun2Socks() {
+        try {
+            LogUtil.i(AppConfig.TAG, "TProxyStopService...")
+            TProxyStopService()
+            // HEV exposes a process-global singleton. Wait briefly until it has released the TUN
+            // before another native engine is allowed to receive a recycled descriptor number.
+            repeat(25) {
+                if (!TProxyIsRunning()) return
+                Thread.sleep(10)
+            }
+        } catch (e: Throwable) {
+            LogUtil.e(AppConfig.TAG, "Failed to stop hev-socks5-tunnel", e)
+        }
+    }
+}

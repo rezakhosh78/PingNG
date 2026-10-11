@@ -544,13 +544,11 @@ tasks.configureEach {
     if (name.startsWith("merge") && (name.endsWith("Assets") || name.endsWith("JniLibFolders"))) {
         dependsOn(prepareSnowflakeRuntime)
     }
-}
 
-// Keep an explicit edge for LintVital analyzers as an AGP 9 safeguard. The
-// generated-source API above is the primary wiring for assets and JNI libs.
-tasks.all { task ->
-    if (task.name.startsWith("lintVitalAnalyze", ignoreCase = true)) {
-        task.dependsOn(prepareSnowflakeRuntime)
+    // Keep an explicit edge for LintVital analyzers as an AGP 9 safeguard.
+    // The generated-source API above is the primary wiring for assets and JNI libs.
+    if (name.startsWith("lintVitalAnalyze", ignoreCase = true)) {
+        dependsOn(prepareSnowflakeRuntime)
     }
 }
 
