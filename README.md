@@ -2,7 +2,7 @@
 
 # 🚀 PingNG
 
-### A v2rayNG fork with native Desync, WARP, the Oberon core, DNS tunnels, and Psiphon
+### A v2rayNG fork with native Desync, WARP, the Oberon core, DNS tunnels, and Psiphon and Tor
 
 Control connection behavior per profile, configure WARP tunnels, customize TLS, and troubleshoot from one Android client.
 
@@ -36,10 +36,16 @@ PingNG is synced with v2rayNG 2.3.10 and keeps its familiar experience while add
 | DNSTT DNS tunnels and DNSTT-to-SSH profiles | — | ✅ |
 | AmneziaWG profiles | — | ✅ |
 | Psiphon over MasterDNS | — | ✅ |
+| Psiphon over DNSTT | — | ✅ |
+| Psiphon over VLESS | — | ✅ |
 | Psiphon over AmneziaWG | — | ✅ |
 | FinalMask controls and search for WARP profiles | — | ✅ |
 | Psiphon CDN Fronting on profiles | — | ✅ |
 | Psiphon over WARP, WARP Plus, and AmneziaWG | — | ✅ |
+| Tor over MasterDNS | — | ✅ |
+| Tor over DNSTT | — | ✅ |
+| Tor over VLESS | — | ✅ |
+| Tor over AmneziaWG | — | ✅ |
 | WARP key registration through a proxy | — | ✅ |
 | Smart custom Desync parameter editor | — | ✅ |
 | Random multi-domain Fake SNI | — | ✅ |
