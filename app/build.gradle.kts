@@ -4,12 +4,107 @@ import java.io.RandomAccessFile as ElfRandomAccessFile
 import java.nio.ByteBuffer as ElfByteBuffer
 import java.nio.ByteOrder as ElfByteOrder
 import java.util.zip.ZipFile
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     id("com.jaredsburrows.license")
+}
+
+abstract class PrepareSnowflakeRuntimeTask : DefaultTask() {
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val iptProxyAar: ConfigurableFileCollection
+
+    @get:OutputDirectory
+    abstract val assetsDirectory: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val jniLibsDirectory: DirectoryProperty
+
+    @get:InputFile
+    abstract val d8Executable: RegularFileProperty
+
+    @get:Input
+    abstract val windowsHost: Property<Boolean>
+
+    @TaskAction
+    fun prepareRuntime() {
+        val iptProxyFile = iptProxyAar.singleFile
+        val generatedAssets = assetsDirectory.get().asFile
+        val generatedJniLibs = jniLibsDirectory.get().asFile
+        generatedAssets.deleteRecursively()
+        generatedJniLibs.deleteRecursively()
+
+        val workDirectory = temporaryDir.resolve("snowflakeRuntime")
+        workDirectory.deleteRecursively()
+        workDirectory.mkdirs()
+        val classesJar = File(workDirectory, "IPtProxy-classes.jar")
+        val snowflakeAssetDirectory = File(generatedAssets, "tor-snowflake-runtime")
+        snowflakeAssetDirectory.mkdirs()
+
+        ZipFile(iptProxyFile).use { aar ->
+            val classesEntry = aar.getEntry("classes.jar")
+                ?: error("IPtProxy AAR does not contain classes.jar")
+            aar.getInputStream(classesEntry).use { input ->
+                classesJar.outputStream().use { output -> input.copyTo(output) }
+            }
+
+            var copiedNativeLibraries = 0
+            val entries = aar.entries()
+            while (entries.hasMoreElements()) {
+                val entry = entries.nextElement()
+                val parts = entry.name.split('/')
+                if (entry.isDirectory || parts.size != 3 || parts[0] != "jni" || parts[2] != "libgojni.so") {
+                    continue
+                }
+                val destination = File(generatedJniLibs, "${parts[1]}/libpingng_snowflake.so")
+                destination.parentFile.mkdirs()
+                aar.getInputStream(entry).use { input ->
+                    destination.outputStream().use { output -> input.copyTo(output) }
+                }
+                copiedNativeLibraries++
+            }
+            check(copiedNativeLibraries > 0) { "IPtProxy AAR does not contain libgojni.so for any ABI" }
+        }
+
+        val isWindows = windowsHost.get()
+        val d8 = d8Executable.get().asFile
+        val dexOutputDirectory = File(workDirectory, "dex").apply { mkdirs() }
+        val d8Arguments = listOf(
+            "--min-api", "24",
+            "--output", dexOutputDirectory.absolutePath,
+            classesJar.absolutePath,
+        )
+        val command = if (isWindows) {
+            listOf("cmd.exe", "/d", "/c", d8.absolutePath) + d8Arguments
+        } else {
+            listOf(d8.absolutePath) + d8Arguments
+        }
+        val d8Process = ProcessBuilder(command).redirectErrorStream(true).start()
+        val d8Output = d8Process.inputStream.bufferedReader().use { it.readText() }
+        check(d8Process.waitFor() == 0) { "D8 failed to prepare IPtProxy runtime DEX:\n$d8Output" }
+
+        val dexFiles = dexOutputDirectory.listFiles()
+            ?.filter { it.isFile && it.extension.equals("dex", ignoreCase = true) }
+            ?.sortedBy { it.name }
+            .orEmpty()
+        check(dexFiles.isNotEmpty()) { "D8 did not produce any Snowflake runtime DEX files" }
+        dexFiles.forEach { dex -> dex.copyTo(File(snowflakeAssetDirectory, dex.name), overwrite = true) }
+    }
 }
 
 // Android Studio versions that still request this legacy Kotlin model task
@@ -218,91 +313,6 @@ if (!isValidAar(libV2rayFile)) {
 
 ensureAmneziaWgNativeLibraries()
 
-val prepareSnowflakeRuntime = tasks.register("prepareSnowflakeRuntime") {
-    inputs.files(iptProxyRuntimeConfiguration)
-    outputs.dir(snowflakeRuntimeAssetsDir)
-    outputs.dir(snowflakeRuntimeJniLibsDir)
-
-    doLast {
-        val iptProxyAar = iptProxyRuntimeConfiguration.resolve().singleOrNull()
-            ?: error("Expected exactly one IPtProxy AAR in iptProxyRuntime")
-        val generatedAssets = snowflakeRuntimeAssetsDir.get().asFile
-        val generatedJniLibs = snowflakeRuntimeJniLibsDir.get().asFile
-        project.delete(generatedAssets, generatedJniLibs)
-
-        val workDirectory = layout.buildDirectory.dir("tmp/snowflakeRuntime").get().asFile
-        project.delete(workDirectory)
-        workDirectory.mkdirs()
-        val classesJar = File(workDirectory, "IPtProxy-classes.jar")
-        val snowflakeAssetDirectory = File(generatedAssets, "tor-snowflake-runtime")
-        snowflakeAssetDirectory.mkdirs()
-
-        ZipFile(iptProxyAar).use { aar ->
-            val classesEntry = aar.getEntry("classes.jar")
-                ?: error("IPtProxy AAR does not contain classes.jar")
-            aar.getInputStream(classesEntry).use { input ->
-                classesJar.outputStream().use { output -> input.copyTo(output) }
-            }
-
-            var copiedNativeLibraries = 0
-            val entries = aar.entries()
-            while (entries.hasMoreElements()) {
-                val entry = entries.nextElement()
-                val parts = entry.name.split('/')
-                if (entry.isDirectory || parts.size != 3 || parts[0] != "jni" || parts[2] != "libgojni.so") {
-                    continue
-                }
-                val destination = File(generatedJniLibs, "${parts[1]}/libpingng_snowflake.so")
-                destination.parentFile.mkdirs()
-                aar.getInputStream(entry).use { input ->
-                    destination.outputStream().use { output -> input.copyTo(output) }
-                }
-                copiedNativeLibraries++
-            }
-            check(copiedNativeLibraries > 0) { "IPtProxy AAR does not contain libgojni.so for any ABI" }
-        }
-
-        val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
-        val d8Name = if (isWindows) "d8.bat" else "d8"
-        val buildTools = android.sdkDirectory.resolve("build-tools")
-            .listFiles()
-            ?.filter { File(it, d8Name).isFile }
-            .orEmpty()
-        val selectedBuildTools = buildTools.maxWithOrNull(Comparator { left, right ->
-            val leftParts = left.name.split('.').map { it.toIntOrNull() ?: 0 }
-            val rightParts = right.name.split('.').map { it.toIntOrNull() ?: 0 }
-            var comparison = 0
-            for (index in 0 until maxOf(leftParts.size, rightParts.size)) {
-                comparison = leftParts.getOrElse(index) { 0 }.compareTo(rightParts.getOrElse(index) { 0 })
-                if (comparison != 0) break
-            }
-            comparison
-        }) ?: error("Android SDK build-tools with $d8Name are required to build the Snowflake runtime")
-        val d8 = File(selectedBuildTools, d8Name)
-        val dexOutputDirectory = File(workDirectory, "dex").apply { mkdirs() }
-        val d8Arguments = listOf(
-            "--min-api", "24",
-            "--output", dexOutputDirectory.absolutePath,
-            classesJar.absolutePath,
-        )
-        val command = if (isWindows) {
-            listOf("cmd.exe", "/d", "/c", d8.absolutePath) + d8Arguments
-        } else {
-            listOf(d8.absolutePath) + d8Arguments
-        }
-        val d8Process = ProcessBuilder(command).redirectErrorStream(true).start()
-        val d8Output = d8Process.inputStream.bufferedReader().use { it.readText() }
-        check(d8Process.waitFor() == 0) { "D8 failed to prepare IPtProxy runtime DEX:\n$d8Output" }
-
-        val dexFiles = dexOutputDirectory.listFiles()
-            ?.filter { it.isFile && it.extension.equals("dex", ignoreCase = true) }
-            ?.sortedBy { it.name }
-            .orEmpty()
-        check(dexFiles.isNotEmpty()) { "D8 did not produce any Snowflake runtime DEX files" }
-        dexFiles.forEach { dex -> dex.copyTo(File(snowflakeAssetDirectory, dex.name), overwrite = true) }
-    }
-}
-
 android {
     namespace = "com.v2ray.ang"
     compileSdk = 37
@@ -370,8 +380,6 @@ android {
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("libs")
-            jniLibs.srcDir(snowflakeRuntimeJniLibsDir.get().asFile)
-            assets.srcDir(snowflakeRuntimeAssetsDir.get().asFile)
         }
     }
 
@@ -491,14 +499,58 @@ android {
 
 }
 
+val isWindowsHost = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
+val d8ExecutableName = if (isWindowsHost) "d8.bat" else "d8"
+val d8ExecutableProvider = providers.provider {
+    val buildTools = android.sdkDirectory.resolve("build-tools")
+        .listFiles()
+        ?.filter { File(it, d8ExecutableName).isFile }
+        .orEmpty()
+    val selectedBuildTools = buildTools.maxWithOrNull(Comparator { left, right ->
+        val leftParts = left.name.split('.').map { it.toIntOrNull() ?: 0 }
+        val rightParts = right.name.split('.').map { it.toIntOrNull() ?: 0 }
+        var comparison = 0
+        for (index in 0 until maxOf(leftParts.size, rightParts.size)) {
+            comparison = leftParts.getOrElse(index) { 0 }.compareTo(rightParts.getOrElse(index) { 0 })
+            if (comparison != 0) break
+        }
+        comparison
+    }) ?: error("Android SDK build-tools with $d8ExecutableName are required to build the Snowflake runtime")
+    File(selectedBuildTools, d8ExecutableName)
+}
+
+val prepareSnowflakeRuntime = tasks.register<PrepareSnowflakeRuntimeTask>("prepareSnowflakeRuntime") {
+    iptProxyAar.from(iptProxyRuntimeConfiguration)
+    assetsDirectory.set(snowflakeRuntimeAssetsDir)
+    jniLibsDirectory.set(snowflakeRuntimeJniLibsDir)
+    d8Executable.set(layout.file(d8ExecutableProvider))
+    windowsHost.set(isWindowsHost)
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            prepareSnowflakeRuntime,
+            PrepareSnowflakeRuntimeTask::assetsDirectory,
+        )
+        variant.sources.jniLibs?.addGeneratedSourceDirectory(
+            prepareSnowflakeRuntime,
+            PrepareSnowflakeRuntimeTask::jniLibsDirectory,
+        )
+    }
+}
+
 tasks.configureEach {
-    val consumesGeneratedSnowflakeRuntime =
-        name.startsWith("merge") && (name.endsWith("Assets") || name.endsWith("JniLibFolders"))
-    // AGP 9's lint model reads source-set assets directly instead of depending
-    // on the mergeAssets task, so declare the generated Snowflake inputs here.
-    val generatesLintVitalModel = name.startsWith("generate") && name.endsWith("LintVitalReportModel")
-    if (consumesGeneratedSnowflakeRuntime || generatesLintVitalModel) {
+    if (name.startsWith("merge") && (name.endsWith("Assets") || name.endsWith("JniLibFolders"))) {
         dependsOn(prepareSnowflakeRuntime)
+    }
+}
+
+// Keep an explicit edge for LintVital analyzers as an AGP 9 safeguard. The
+// generated-source API above is the primary wiring for assets and JNI libs.
+tasks.all { task ->
+    if (task.name.startsWith("lintVitalAnalyze", ignoreCase = true)) {
+        task.dependsOn(prepareSnowflakeRuntime)
     }
 }
 
