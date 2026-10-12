@@ -14,9 +14,6 @@
     <string name="pull_down_to_refresh">Yeniləmək üçün aşağı çəkin!</string>
 
     <!-- Notifications -->
-    <string name="notification_channel_service">v2rayNG xidməti</string>
-    <string name="notification_channel_subscription_updates">Abunəlik yenilənmələri</string>
-    <string name="notification_channel_connection_checks">Bağlantı yoxlamaları</string>
     <string name="notification_action_stop_v2ray">Dayandır</string>
     <string name="toast_permission_denied">İcazə rədd edildi</string>
     <string name="toast_permission_denied_notification">Bildiriş icazəsi rədd edildi</string>
@@ -178,9 +175,6 @@
     <string name="summary_pref_per_app_proxy">Ümumi: seçilmiş tətbiqlər proksidən istifadə edir, seçilməyənlər birbaşa qoşulur;\nYayınma rejimi: seçilmiş tətbiqlər birbaşa qoşulur, seçilməyənlər proksidən istifadə edir.\nProksi istifadə etməli olan tətbiqlərin avtomatik seçilməsi seçimi menyudadır.</string>
     <string name="title_pref_is_booted">Cihaz açılanda qoşul</string>
     <string name="summary_pref_is_booted">Cihaz işə düşdükdən sonra avtomatik olaraq seçilmiş serverə qoşulun. Android fonda başladılmanı məhdudlaşdıra bilər.</string>
-    <string name="title_system_vpn_settings">Sistem VPN tənzimləmələri</string>
-    <string name="summary_system_vpn_settings">Bu cihaz dəstəkləyirsə, Həmişə açıq VPN-i konfiqurasiya etmək üçün Android VPN tənzimləmələrini açın.</string>
-    <string name="toast_system_vpn_settings_unavailable">Sistem VPN tənzimləmələri əlçatmazdır.</string>
 
 
     <string name="subscription_updater_job_tips">Tapşırıq arxa fonda icra olunacaq və gedişat məlumatı bildirişdə göstəriləcək.</string>
@@ -281,19 +275,14 @@
     <string name="summary_pref_group_all_display">Hər abunəlik qrupundakı profilləri bir vərəqdə birləşdirin.</string>
 
     <!-- AboutActivity -->
-    <string name="title_pref_feedback">Əks-əlaqə</string>
-    <string name="summary_pref_feedback">GitHub-da təkliflərinizi bildirin və ya xətaları məruzə edin</string>
     <string name="summary_pref_tg_group">Telegram qrupuna qoşulun</string>
     <string name="toast_tg_app_not_found">Telegram tətbiqi tapılmadı</string>
-    <string name="title_privacy_policy">Məxfilik siyasəti</string>
     <string name="title_qr_code">QR kod</string>
     <string name="title_about">Haqqında</string>
     <string name="title_source_code">Mənbə kodu</string>
-    <string name="title_oss_license">Açıq mənbə lisenziyaları</string>
     <string name="title_translators">Tərcüməçilər</string>
     <string name="title_tg_channel">Telegram kanalı</string>
 
-    <string name="title_pref_promotion">Təşviqat</string>
 
     <string name="title_pref_auto_update_subscription">Abunəlikləri avtomatik yenilə</string>
     <string name="summary_pref_auto_update_subscription">Abunəliklərinizi arxa fonda təyin olunmuş intervallarla avtomatik yeniləyin. Cihazdan asılı olaraq bu funksiya həmişə işləməyə bilər</string>
@@ -355,15 +344,8 @@
     <string name="title_del_config_count">%d konfiqurasiya silinsin</string>
     <string name="title_import_config_count">%d konfiqurasiya idxal edilsin</string>
     <string name="title_export_config_count">%d konfiqurasiya ixrac edilsin</string>
-    <plurals name="title_update_config_count">
-        <item quantity="one">%1$d konfiqurasiya yeniləndi</item>
-
-        <item quantity="other">%1$d konfiqurasiya yeniləndi</item>
-    </plurals>
-    <plurals name="title_update_asset_count">
-        <item quantity="one">%1$d resurs faylı yeniləndi</item>
-        <item quantity="other">%1$d resurs faylı yeniləndi</item>
-    </plurals>
+    <string name="title_update_config_count">%1$d konfiqurasiya yeniləndi</string>
+    <string name="title_update_asset_count">%1$d resurs faylı yeniləndi</string>
     <string name="title_update_subscription_result">%1$d konfiqurasiya yeniləndi (%2$d uğurlu, %3$d uğursuz, %4$d ötürüldü)</string>
     <string name="title_update_subscription_no_subscription">Abunəlik yoxdur</string>
     <string name="toast_server_not_found_in_group">Seçilmiş server cari qrupda tapılmadı</string>
