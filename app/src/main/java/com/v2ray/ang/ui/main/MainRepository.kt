@@ -167,6 +167,8 @@ class MainRepository(
     override fun getSubscriptionItem(id: String): SubscriptionItem? =
         MmkvManager.decodeSubscription(id)
 
+    override fun getDefaultTrafficUsedBytes(): Long = MmkvManager.getDefaultTrafficUsedBytes()
+
     override fun getServerGuidList(groupId: String): List<String> =
         if (groupId.isEmpty()) {
             MmkvManager.decodeAllServerList().filter { guid ->

@@ -22,6 +22,17 @@ import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.PackageUidResolver
 import com.v2ray.ang.util.Utils
 
+internal fun ensureOutboundTrafficStats(config: JsonObject) {
+    if (config.get("stats")?.isJsonObject != true) config.add("stats", JsonObject())
+
+    val policy = config.get("policy")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
+    val system = policy.get("system")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
+    system.addProperty("statsOutboundUplink", true)
+    system.addProperty("statsOutboundDownlink", true)
+    policy.add("system", system)
+    config.add("policy", policy)
+}
+
 object CoreConfigManager {
     private const val CONNECT_HTTP_PROXY_TAG = "pingng-connect-http-proxy"
     private const val WARP_MASQUE_RESOLVED_TAG = "pingng-warp-masque-resolved"
@@ -100,23 +111,8 @@ object CoreConfigManager {
 
         val json = JsonUtil.parseString(raw)?.takeIf { it.isJsonObject }?.asJsonObject ?: return result
 
-        // Inject or remove traffic statistics configuration based on user preference
-        if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) == true) {
-            if (!json.has("stats")) {
-                json.add("stats", JsonObject())
-            }
-            if (!json.has("policy")) {
-                val policyObj = JsonObject()
-                val systemObj = JsonObject()
-                systemObj.addProperty("statsOutboundUplink", true)
-                systemObj.addProperty("statsOutboundDownlink", true)
-                policyObj.add("system", systemObj)
-                json.add("policy", policyObj)
-            }
-        } else {
-            json.remove("stats")
-            json.remove("policy")
-        }
+        // Keep counters enabled for Default's cumulative usage even when speed text is hidden.
+        ensureOutboundTrafficStats(json)
 
         configureConnectHttpProxy(json)
 
@@ -377,7 +373,6 @@ object CoreConfigManager {
         }
 
         applyObservability(v2rayConfig, balancerStrategies)
-        applySpeedDisabled(v2rayConfig)
         resolveOutboundDomainsToHosts(v2rayConfig)
 
         return v2rayConfig
@@ -600,13 +595,7 @@ object CoreConfigManager {
             "${AppConfig.TAG_BALANCER_PRE}-${resolvedOutbound.tag}"
         }
         val strategyType = BalancerStrategyType.from(resolvedOutbound.profile.policyGroupType)
-        val fallbackTag = if (strategyType.supportsObservatory && resolvedOutbound.profile.policyGroupTestOutbounds != false) {
-            resolvedOutbound.profile.policyGroupFallbackTag
-                ?.takeIf { it.isNotEmpty() && it != AppConfig.TAG_PROXY }
-            // Xray excludes dead random/roundRobin candidates only when fallbackTag is set;
-            // without this default, an enabled empty field creates no observatory.
-                ?: membersToAdd.first().tag
-        } else null
+        val fallbackTag = resolvePolicyGroupFallbackTag(strategyType, resolvedOutbound.profile, membersToAdd.first().tag)
         val strategy = buildBalancerStrategy(
             strategyType = strategyType,
             selector = listOf(memberTagPrefix),
@@ -621,6 +610,27 @@ object CoreConfigManager {
         balancerStrategies.add(strategy)
         policyGroupBalancerTags[resolvedOutbound.tag] = balancerTag
     }
+
+    internal fun resolvePolicyGroupFallbackTag(
+        strategyType: BalancerStrategyType,
+        profile: ProfileItem,
+        firstMemberTag: String,
+    ): String? {
+        if (strategyType.requiresObservatory || strategyType.requiresBurstObservatory) {
+            // Missing or failed probes must not let a matched rule use Xray's default outbound.
+            return firstMemberTag
+        }
+        return if (strategyType.supportsObservatory && profile.policyGroupTestOutbounds != false) {
+            profile.policyGroupFallbackTag
+                ?.takeIf { it.isNotEmpty() && it != AppConfig.TAG_PROXY }
+            // Xray excludes dead random/roundRobin candidates only when fallbackTag is set;
+            // without this default, an enabled empty field creates no observatory.
+                ?: firstMemberTag
+        } else null
+    }
+
+    internal fun shouldUseStandardObservatory(strategyType: BalancerStrategyType, fallbackTag: String?): Boolean =
+        strategyType.requiresObservatory || (strategyType.supportsObservatory && fallbackTag != null)
 
     /**
      * Trim runtime sections that are not needed for latency testing.
@@ -1073,16 +1083,6 @@ object CoreConfigManager {
                     mux = null
                 )
             )
-        }
-    }
-
-    /**
-     * Remove speed-test runtime sections when the feature is disabled.
-     */
-    private fun applySpeedDisabled(v2rayConfig: V2rayConfig) {
-        if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) != true) {
-            v2rayConfig.stats = null
-            v2rayConfig.policy = null
         }
     }
 
@@ -1667,7 +1667,7 @@ object CoreConfigManager {
             fallbackTag = fallbackTag,
             strategy = V2rayConfig.RoutingBean.StrategyObject(type = strategyType.policyGroupType)
         )
-        val observatory = if (strategyType.requiresObservatory || fallbackTag != null) {
+        val observatory = if (shouldUseStandardObservatory(strategyType, fallbackTag)) {
             V2rayConfig.ObservatoryObject(
                 subjectSelector = selector,
                 probeUrl = probeUrl,

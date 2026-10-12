@@ -6,6 +6,7 @@ import android.text.TextUtils
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.core.CoreConfigManager
 import com.v2ray.ang.core.MasterDnsBridge
+import com.v2ray.ang.core.isInvalidPingResult
 import com.v2ray.ang.core.MasterDnsShareCodec
 import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpPlusConfig
@@ -783,7 +784,10 @@ object AngConfigManager {
         val serverList = MmkvManager.decodeServerList(subId)
         val invalidServers = serverList.filter {
             val aff = MmkvManager.decodeServerAffiliationInfo(it)
-            aff != null && aff.testDelayMillis < 0L
+            aff != null && isInvalidPingResult(
+                MmkvManager.decodeServerConfig(it),
+                aff.testDelayMillis,
+            )
         }
         MmkvManager.removeServers(invalidServers, subId)
     }

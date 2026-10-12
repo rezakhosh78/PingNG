@@ -9,8 +9,8 @@
     <string name="pingng_psiphon_status">Psiphon</string>
     <string name="pingng_psiphon_region">کشور</string>
     <string name="pingng_psiphon_region_summary">انتخاب</string>
-    <string name="pingng_psiphon_short_hint">ابتدا Xray وصل می‌شود، سپس ترافیک از Psiphon عبور می‌کند.</string>
-    <string name="pingng_psiphon_awg_hint">تونل AmneziaWG فعال می‌ماند؛ تنظیمات Psiphon همراه این پروفایل ذخیره می‌شود.</string>
+    <string name="pingng_psiphon_short_hint">ترافیک TCP از Psiphon عبور می‌کند؛ برای جلوگیری از نشت IP مسیر اول، UDP به‌جز DNS مسدود می‌شود.</string>
+    <string name="pingng_psiphon_awg_hint">AmneziaWG مسیر زیرین باقی می‌ماند؛ TCP از Psiphon خارج می‌شود و UDP به‌جز DNS برای جلوگیری از نشت IP مسدود است.</string>
     <string name="pingng_psiphon_masterdns_hint">ابتدا MasterDNS وصل می‌شود، سپس ترافیک از Psiphon عبور می‌کند.</string>
     <string name="app_tile_first_use">برای اولین استفاده از این قابلیت، لطفاً ابتدا از داخل برنامه یک سرور اضافه کنید</string>
     <string name="navigation_drawer_open">باز کردن منو کشویی</string>
@@ -63,6 +63,7 @@
     <string name="confirm_delete_duplicate_profiles">آیا مطمئن هستید که می‌خواهید همه پروفایل‌های تکراری نمایش‌داده‌شده را حذف کنید؟</string>
     <string name="confirm_delete_invalid_profiles">لطفاً ابتدا پروفایل‌ها را آزمایش کنید. آیا مطمئن هستید که می‌خواهید همه پروفایل‌های نامعتبر نمایش‌داده‌شده را حذف کنید؟</string>
     <string name="confirm_delete_profile">آیا مطمئن هستید که می‌خواهید این پروفایل را حذف کنید؟</string>
+    <string name="confirm_delete_profile_named">آیا از حذف «%1$s» مطمئن هستید؟</string>
     <string name="confirm_delete_policy_group">آیا مطمئن هستید که می‌خواهید این گروه سیاست را حذف کنید؟</string>
     <string name="confirm_delete_proxy_chain_member">آیا مطمئن هستید که می‌خواهید این عضو زنجیره پراکسی را حذف کنید؟</string>
     <string name="confirm_delete_routing_rule">آیا مطمئن هستید که می‌خواهید این قانون مسیریابی را حذف کنید؟</string>
@@ -118,8 +119,9 @@
     <string name="server_lab_reserved">Reserved (اختیاری، جدا شده با کاما)</string>
     <string name="server_lab_local_address">آدرس محلی (IPv4/IPv6 اختیاری، جدا شده با کاما)</string>
     <string name="server_lab_local_mtu">MTU (اختیاری، پیش‌فرض 1420)</string>
-    <string name="server_lab_kcp_mtu">mKCP MTU (اختیاری، پیش‌فرض هسته 1350)</string>
-    <string name="server_lab_kcp_tti">mKCP TTI (اختیاری، پیش‌فرض هسته 50)</string>
+    <string name="server_lab_remote_dns">remoteDNS (اختیاری، آدرس‌های IPv4/IPv6 جدا شده با کاما)</string>
+    <string name="server_lab_kcp_mtu">mKCP MTU (اختیاری، پیش‌فرض 1350)</string>
+    <string name="server_lab_kcp_tti">mKCP TTI (اختیاری، پیش‌فرض 50 میلی‌ثانیه)</string>
     <string name="toast_success">موفقیت‌آمیز</string>
     <string name="toast_failure">شکست!</string>
     <string name="toast_none_data">داده‌ای یافت نشد</string>
@@ -382,6 +384,7 @@
     <string name="toast_tg_app_not_found">برنامه تلگرام پیدا نشد</string>
     <string name="title_qr_code">کد QR</string>
     <string name="title_about">درباره</string>
+    <string name="title_translators">مترجمان</string>
     <string name="title_source_code">کد منبع</string>
     <string name="title_tg_channel">کانال تلگرام</string>
 
@@ -437,6 +440,10 @@
     <string name="title_ping_all_server">آزمایش تأخیر TCP (TCPing)</string>
     <string name="title_real_ping_all_server">آزمایش تأخیر واقعی</string>
     <string name="title_real_ping_subscription">تست تأخیر واقعی همهٔ کانفیگ‌های این سابسکریپشن</string>
+    <string name="title_real_ping_default">تست تأخیر واقعی کانفیگ‌های شما</string>
+    <string name="subscription_default_notice_title" translatable="false">📢 Default</string>
+    <string name="subscription_default_notice_message" translatable="false">⚙️ Your Configs</string>
+    <string name="subscription_default_no_quota">بدون سهمیهٔ اشتراک</string>
     <string name="title_user_asset_setting">فایل های منبع جغرافیایی</string>
     <string name="title_sort_by_test_results">مرتب‌سازی بر اساس نتایج آزمایش</string>
     <string name="title_filter_config">فیلتر کردن کانفیگ‌ها</string>
@@ -486,7 +493,6 @@
     <string name="connection_test_testing">در حال آزمایش…</string>
     <string name="connection_test_testing_count">تست کردن %d کانفیگ…</string>
     <string name="connection_test_available">اتصال در %1$s با موفقیت برقرار شد</string>
-    <string name="connection_tunnel_active_delay_unavailable">تونل فعال است؛ بررسی تأخیر در دسترس نیست</string>
     <string name="warp_endpoint_searching">در حال جست‌وجوی اندپوینت‌های WARP…</string>
     <string name="warp_desync_masque_note">Desync به اتصال TLS بیرونی MASQUE/H2 هدایت می‌شود. برای ذخیره‌ی یکی از حالت‌ها در این پروفایل، آن را انتخاب کنید.</string>
     <string name="server_test_delay_value">%1$d میلی‌ثانیه</string>

@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
@@ -133,6 +133,7 @@ fun LogcatScreen(
     val scope = rememberCoroutineScope()
     val logs by viewModel.filteredLogs.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val logEntries = remember(logs) { createLogcatEntries(logs) }
 
     var searchQuery by remember { mutableStateOf("") }
     var showSearch by remember { mutableStateOf(false) }
@@ -213,8 +214,8 @@ fun LogcatScreen(
                     .verticalScrollbar(listState),
                 contentPadding = NavigationBarsBottomPadding()
             ) {
-                itemsIndexed(items = logs, key = { index, _ -> index }) { _, log ->
-                    LogcatItem(log = log, onLongClick = { Utils.setClipboard(context, log) })
+                items(items = logEntries, key = { it.key }) { entry ->
+                    LogcatItem(log = entry.text, onLongClick = { Utils.setClipboard(context, entry.text) })
                     ItemDivider()
                 }
             }

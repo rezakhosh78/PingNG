@@ -50,7 +50,7 @@ class UserAssetViewModel(application: Application) : BaseViewModel(application) 
         }.also { reloadJob = it }
     }
 
-    private fun buildAssetList(
+    internal fun buildAssetList(
         decodedAssets: List<AssetUrlCache>?,
         geoFilesSource: String
     ): List<AssetUrlCache> {

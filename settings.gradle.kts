@@ -25,5 +25,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PingNG-Pi42-AWGWARP-StartScan"
+rootProject.name = "PingNG-Pi43-AWGWARP-StartScan"
 include(":app")

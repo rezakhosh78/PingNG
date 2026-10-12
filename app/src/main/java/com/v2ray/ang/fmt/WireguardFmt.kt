@@ -29,6 +29,7 @@ object WireguardFmt : FmtBase() {
 
         config.secretKey = uri.userInfo.orEmpty()
         config.localAddress = queryParam["address"] ?: AppConfig.WIREGUARD_LOCAL_ADDRESS_V4
+        config.remoteDNS = queryParam["dns"] ?: AppConfig.WIREGUARD_LOCAL_REMOTE_DNS
         config.publicKey = queryParam["publickey"].orEmpty()
         config.preSharedKey = queryParam["presharedkey"]?.nullIfBlank()
         config.mtu = Utils.parseInt(queryParam["mtu"] ?: AppConfig.WIREGUARD_LOCAL_MTU)
@@ -80,6 +81,7 @@ object WireguardFmt : FmtBase() {
         config.secretKey = interfaceParams["privatekey"].orEmpty()
         config.remarks = System.currentTimeMillis().toString()
         config.localAddress = interfaceParams["address"] ?: AppConfig.WIREGUARD_LOCAL_ADDRESS_V4
+        config.remoteDNS = interfaceParams["dns"] ?: AppConfig.WIREGUARD_LOCAL_REMOTE_DNS
         config.mtu = Utils.parseInt(interfaceParams["mtu"] ?: AppConfig.WIREGUARD_LOCAL_MTU)
         config.publicKey = peerParams["publickey"].orEmpty()
         config.preSharedKey = peerParams["presharedkey"]?.nullIfBlank()
@@ -112,6 +114,9 @@ object WireguardFmt : FmtBase() {
             dicQuery["reserved"] = config.reserved.removeWhiteSpace().orEmpty()
         }
         dicQuery["address"] = config.localAddress.removeWhiteSpace().orEmpty()
+        if (config.remoteDNS != null) {
+            dicQuery["dns"] = config.remoteDNS.removeWhiteSpace().orEmpty()
+        }
         if (config.mtu != null) {
             dicQuery["mtu"] = config.mtu.toString()
         }

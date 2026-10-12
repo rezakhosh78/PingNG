@@ -182,6 +182,13 @@ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
         return;
     }
 
+    // Psiphon is TCP-only. Keep DNS/53 available through the underlay but
+    // discard other UDP before it can leave through the first-hop tunnel.
+    if (hev_config_get_socks5_server ()->udp_dns_only && port != 53) {
+        pbuf_free (p);
+        return;
+    }
+
     if (self->frames > UDP_POOL_SIZE) {
         pbuf_free (p);
         return;

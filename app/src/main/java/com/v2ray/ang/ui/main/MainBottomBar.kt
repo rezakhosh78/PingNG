@@ -103,7 +103,7 @@ fun MainBottomBar(
                         rotationAnim.animateTo(720f, animationSpec = tween(durationMillis = 3000))
                     }
                 }
-                onAction(MainAction.ToggleService)
+                onAction(serviceFabAction(isRunning))
             },
             modifier = Modifier
                 .align(Alignment.TopEnd)

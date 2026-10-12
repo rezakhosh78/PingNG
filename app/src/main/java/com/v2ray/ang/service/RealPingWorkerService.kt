@@ -5,6 +5,8 @@ import com.v2ray.ang.AppConfig
 import com.v2ray.ang.core.CoreConfigManager
 import com.v2ray.ang.core.CoreNativeManager
 import com.v2ray.ang.core.CoreServiceManager
+import com.v2ray.ang.core.filterPingableGuids
+import com.v2ray.ang.core.isProfilePingable
 import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.dto.RealPingEvent
@@ -50,10 +52,11 @@ internal object RealPingExecutionLimiter {
  */
 class RealPingWorkerService(
     private val context: Context,
-    private val guids: List<String>,
+    guids: List<String>,
     private val onlyTcp: Boolean = false,
     private val onEvent: (RealPingEvent) -> Unit = {}
 ) {
+    private val pingableGuids = filterPingableGuids(guids, MmkvManager::decodeServerConfig)
     private val job = SupervisorJob()
     private val concurrency = SettingsManager.getRealPingConcurrency()
     private val dispatcher = Executors.newFixedThreadPool(if (onlyTcp) concurrency * 2 else concurrency).asCoroutineDispatcher()
@@ -63,7 +66,7 @@ class RealPingWorkerService(
     private val totalCount = AtomicInteger(0)
 
     fun start() {
-        val jobs = guids.map { guid ->
+        val jobs = pingableGuids.map { guid ->
             totalCount.incrementAndGet()
             scope.launch {
                 runningCount.incrementAndGet()
@@ -114,6 +117,7 @@ class RealPingWorkerService(
         val retFailure = -1L
 
         val config = MmkvManager.decodeServerConfig(guid) ?: return retFailure
+        if (!isProfilePingable(config)) return retFailure
         val isSelectedLiveProfile = guid == MmkvManager.getSelectServer() && CoreServiceManager.isRunning()
 
         // DNSTT exposes its own local SOCKS listener. Probe that listener
@@ -212,6 +216,7 @@ class RealPingWorkerService(
         val retFailure = -1L
 
         val config = MmkvManager.decodeServerConfig(guid) ?: return retFailure
+        if (!isProfilePingable(config)) return retFailure
         if (!config.configType.isComplexType()
             && config.configType != EConfigType.HYSTERIA2
             && config.configType != EConfigType.WIREGUARD

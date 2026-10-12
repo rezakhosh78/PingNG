@@ -101,8 +101,9 @@
     <string name="server_lab_reserved">Reserved (可选，逗号隔开)</string>
     <string name="server_lab_local_address">本地地址 (可选 IPv4/IPv6，逗号隔开)</string>
     <string name="server_lab_local_mtu">MTU（可选，默认 1420）</string>
-    <string name="server_lab_kcp_mtu">mKCP MTU（可选，核心默认 1350）</string>
-    <string name="server_lab_kcp_tti">mKCP TTI（可选，核心默认 50）</string>
+    <string name="server_lab_remote_dns">remoteDNS(可选,多个 IPv4/IPv6 地址用逗号分隔)</string>
+    <string name="server_lab_kcp_mtu">mKCP MTU（可选，默认 1350）</string>
+    <string name="server_lab_kcp_tti">mKCP TTI（可选，默认 50 毫秒）</string>
     <string name="toast_success">成功</string>
     <string name="toast_failure">失败</string>
     <string name="toast_none_data">没有数据</string>
@@ -279,6 +280,7 @@
     <string name="toast_tg_app_not_found">未找到 Telegram 应用</string>
     <string name="title_qr_code">二维码</string>
     <string name="title_about">关于</string>
+    <string name="title_translators">翻译贡献者</string>
     <string name="title_source_code">源代码</string>
     <string name="title_tg_channel">Telegram 频道</string>
 

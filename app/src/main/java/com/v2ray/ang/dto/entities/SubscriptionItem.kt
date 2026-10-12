@@ -37,13 +37,17 @@ data class SubscriptionItem(
     }
 
     fun applyUserEdit(name: String, newUrl: String, previousName: String) {
-        if (newUrl.isBlank()) {
+        if (newUrl.isBlank() && url.isNotBlank()) {
+            // Removing a real subscription URL turns this entry back into the
+            // built-in Default group. A group that already has no URL is the
+            // built-in group itself, though, and its user-selected name must
+            // remain editable.
             customRemarks = null
             providerRemarks = null
             remarks = "Default"
         } else {
             if (name != previousName) customRemarks = name.takeIf { it.isNotBlank() }
-            remarks = customRemarks ?: providerRemarks ?: name
+            remarks = customRemarks ?: providerRemarks ?: name.takeIf { it.isNotBlank() } ?: "Default"
         }
         url = newUrl
     }

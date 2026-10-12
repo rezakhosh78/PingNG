@@ -30,6 +30,20 @@ class SubscriptionNameTest {
         sub.applyProviderTitle("Provider")
         assertEquals("Provider", sub.remarks)
     }
+    @Test fun defaultSubscriptionNameCanBeEditedWithoutAUrl() {
+        val sub = SubscriptionItem(remarks = "Default")
+        sub.applyUserEdit("Home", "", "Default")
+        assertEquals("Home", sub.remarks)
+        assertEquals("Home", sub.customRemarks)
+        assertTrue(sub.url.isEmpty())
+
+        // Saving another edit must not reset the renamed built-in group.
+        sub.applyUserEdit("Home", "", "Home")
+        assertEquals("Home", sub.remarks)
+
+        sub.applyUserEdit("Personal", "", "Home")
+        assertEquals("Personal", sub.remarks)
+    }
     @Test fun SavingOtherSettingsDoesNotLockName() {
         val sub = SubscriptionItem(remarks = "Provider", url = "https://example.com/sub")
         sub.applyUserEdit("Provider", sub.url, "Provider")

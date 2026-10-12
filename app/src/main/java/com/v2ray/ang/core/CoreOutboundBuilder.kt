@@ -255,9 +255,25 @@ object CoreOutboundBuilder {
             ipv4Addresses.ifEmpty { listOf(AppConfig.WIREGUARD_LOCAL_ADDRESS_V4) }
         }
 
+        val defaultDNS = AppConfig.WIREGUARD_LOCAL_REMOTE_DNS.split(",")
+        val rawDNS = profileItem.remoteDNS
+            ?.split(",")
+            ?.map { it.trim() }
+            ?.filter { it.isNotEmpty() }
+            ?.ifEmpty { null }
+            ?: defaultDNS
+
+        val remotes = if (MmkvManager.decodeSettingsBool(AppConfig.PREF_IPV6_ENABLED) == true) {
+            rawDNS
+        } else {
+            val ipv4Dns = rawDNS.filter { !it.contains(":") }
+            ipv4Dns.ifEmpty { defaultDNS.filter { !it.contains(":") } }
+        }
+
         outboundBean?.settings?.let { wireguard ->
             wireguard.secretKey = profileItem.secretKey
             wireguard.address = addresses
+            wireguard.port = null
             wireguard.peers?.firstOrNull()?.let { peer ->
                 peer.publicKey = profileItem.publicKey.orEmpty()
                 peer.preSharedKey = profileItem.preSharedKey?.nullIfBlank()
@@ -271,6 +287,7 @@ object CoreOutboundBuilder {
                 peer.endpoint = Utils.getIpv6Address(profileItem.server) + ":$endpointPort"
             }
             wireguard.mtu = profileItem.mtu
+            wireguard.remoteDNS = remotes
             wireguard.reserved = profileItem.reserved?.takeIf { it.isNotBlank() }?.split(",")?.filter { it.isNotBlank() }?.map { it.trim().toInt() }
         }
 

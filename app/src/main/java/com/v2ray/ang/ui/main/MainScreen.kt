@@ -20,6 +20,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -65,10 +66,18 @@ fun MainScreen(
     var showDelAllConfirm by remember { mutableStateOf(false) }
     var showDelDuplicateConfirm by remember { mutableStateOf(false) }
     var showDelInvalidConfirm by remember { mutableStateOf(false) }
-    var showRemoveConfirm by remember { mutableStateOf<String?>(null) }
+    var showRemoveConfirm by rememberSaveable(stateSaver = ServerDeleteTarget.Saver) {
+        mutableStateOf<ServerDeleteTarget?>(null)
+    }
     var shareTarget by remember { mutableStateOf<Triple<String, ProfileItem, Boolean>?>(null) }
     val removeServer: (String) -> Unit = { guid ->
-        if (confirmRemove) showRemoveConfirm = guid else onAction(MainAction.RemoveServer(guid))
+        if (confirmRemove) {
+            val displayName = mainViewModel.serversForGroup(uiState.selectedGroupId).value
+                .firstOrNull { it.guid == guid }?.profile?.remarks.orEmpty()
+            showRemoveConfirm = ServerDeleteTarget(guid, displayName)
+        } else {
+            onAction(MainAction.RemoveServer(guid))
+        }
     }
 
     val pagerState = rememberPagerState(
@@ -172,7 +181,10 @@ fun MainScreen(
         onConfirmDelInvalid = { showDelInvalidConfirm = false; onAction(MainAction.RemoveInvalidServers) },
         showRemoveConfirm = showRemoveConfirm,
         onDismissRemove = { showRemoveConfirm = null },
-        onConfirmRemove = { guid -> showRemoveConfirm = null; onAction(MainAction.RemoveServer(guid)) }
+        onConfirmRemove = { target ->
+            showRemoveConfirm = null
+            onAction(MainAction.RemoveServer(target.guid))
+        }
     )
 
     if (shareTarget != null) {
@@ -283,6 +295,7 @@ fun MainScreen(
                         val group = groups.getOrNull(page) ?: return@HorizontalPager
 
                         key(group.id) {
+                            val isDefaultGroup = isDefaultSubscriptionGroup(group.id)
                             GroupPagerPage(
                             groupId = group.id,
                             subscriptionRemarks = group.remarks,
@@ -295,6 +308,7 @@ fun MainScreen(
                             trafficUsedRequests = group.trafficUsedRequests,
                             isWorkerSubscription = group.isWorkerSubscription,
                             hasSubscriptionLink = group.hasSubscriptionLink,
+                            isDefaultSubscription = isDefaultGroup,
                             isUpdatingSubscription = isLoading,
                             isTestingSubscription = uiState.isTesting,
                             onUpdateSubscription = if (group.hasSubscriptionLink) {
@@ -302,7 +316,11 @@ fun MainScreen(
                             } else {
                                 null
                             },
-                            onTestSubscriptionRealDelay = if (group.hasSubscriptionLink) {
+                            onTestSubscriptionRealDelay = if (canTestGroupRealDelay(
+                                    hasSubscriptionLink = group.hasSubscriptionLink,
+                                    isDefaultGroup = isDefaultGroup,
+                                )
+                            ) {
                                 { onAction(MainAction.TestRealSubscription(group.id)) }
                             } else {
                                 null

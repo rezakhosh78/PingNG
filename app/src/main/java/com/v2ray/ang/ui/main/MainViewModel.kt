@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.R
+import com.v2ray.ang.core.isProfilePingable
 import com.v2ray.ang.dto.ConnectionTestResult
 import com.v2ray.ang.dto.GroupMapItem
 import com.v2ray.ang.dto.LocateTarget
@@ -39,6 +40,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.PatternSyntaxException
+
+internal fun ConnectionTestResult.isTunnelReachableWithoutDelay(): Boolean =
+    delayMillis < 0 && !ipAddress.isNullOrBlank()
 
 class MainViewModel(
     application: Application,
@@ -77,6 +81,7 @@ class MainViewModel(
     private var preloadJob: Job? = null
     private var selectedGroupLoadJob: Job? = null
     private var reloadJob: Job? = null
+    private var defaultTrafficUsageJob: Job? = null
 
     @Volatile
     private var testingGroupId: String? = null
@@ -87,6 +92,12 @@ class MainViewModel(
     init {
         collectServiceEvents()
         setupGroupTab()
+        defaultTrafficUsageJob = viewModelScope.launch(ioDispatcher) {
+            while (true) {
+                updateDefaultTrafficUsage(dataSource.getDefaultTrafficUsedBytes())
+                delay(2_000L)
+            }
+        }
     }
 
     private fun collectServiceEvents() {
@@ -228,10 +239,10 @@ class MainViewModel(
         val status = if (result.delayMillis >= 0) {
             val delay = dataSource.getString(R.string.server_test_delay_value, result.delayMillis)
             dataSource.getString(R.string.connection_test_available, delay)
-        } else if (!result.ipAddress.isNullOrBlank()) {
+        } else if (result.isTunnelReachableWithoutDelay()) {
             // Delay URLs can be blocked while the tunnel itself is healthy. An
             // independently verified exit IP is positive tunnel evidence.
-            dataSource.getString(R.string.connection_tunnel_active_delay_unavailable)
+            dataSource.getString(R.string.connection_connected)
         } else {
             val detail = result.errorMessage.ifBlank {
                 dataSource.getString(R.string.connection_test_empty_message)
@@ -293,6 +304,7 @@ class MainViewModel(
             }
 
             MainAction.ToggleService,
+            MainAction.StopService,
             MainAction.TestCurrentServer,
             MainAction.ImportQRcode,
             MainAction.ImportClipboard,
@@ -379,7 +391,7 @@ class MainViewModel(
             ServersCache(
                 guid = guid,
                 profile = profile.copy(),
-                testDelayMillis = affiliation?.testDelayMillis ?: 0L
+                testDelayMillis = visiblePingDelayMillis(profile, affiliation?.testDelayMillis ?: 0L)
             )
         }
 
@@ -524,8 +536,16 @@ class MainViewModel(
                             cache.subscription.supportUrl?.takeIf { url -> url.isNotBlank() }
                                 ?: cache.subscription.url.takeIf { url -> url.isNotBlank() }
                         },
-                        trafficTotalBytes = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficTotalBytes,
-                        trafficUsedBytes = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficUsedBytes,
+                        trafficTotalBytes = when {
+                            cache.guid.isEmpty() -> -1
+                            isDefaultSubscriptionGroup(cache.guid) -> 0L
+                            else -> cache.subscription.trafficTotalBytes
+                        },
+                        trafficUsedBytes = when {
+                            cache.guid.isEmpty() -> -1
+                            isDefaultSubscriptionGroup(cache.guid) -> dataSource.getDefaultTrafficUsedBytes()
+                            else -> cache.subscription.trafficUsedBytes
+                        },
                         expirationEpochSeconds = if (cache.guid.isEmpty()) -1 else cache.subscription.expirationEpochSeconds,
                         trafficTotalRequests = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficTotalRequests,
                         trafficUsedRequests = if (cache.guid.isEmpty()) -1 else cache.subscription.trafficUsedRequests,
@@ -899,11 +919,16 @@ class MainViewModel(
     private fun testRealPingForGroup(groupId: String, onlyTcp: Boolean) {
         dataSource.cancelAllPing()
         val servers = mutableServersForGroup(groupId).value
-        if (servers.isEmpty()) {
-            _uiState.update { it.copy(isTesting = false) }
+        val serverGuids = pingableServerGuids(servers)
+        if (serverGuids.isEmpty()) {
+            _uiState.update {
+                it.copy(
+                    isTesting = false,
+                    status = if (it.isRunning) MainStatus.Connected else MainStatus.Disconnected,
+                )
+            }
             return
         }
-        val serverGuids = servers.map { it.guid }
         mutableServersForGroup(groupId).update { current ->
             current.map { server ->
                 if (server.testDelayMillis == 0L) server
@@ -932,8 +957,19 @@ class MainViewModel(
     }
 
     fun testCurrentServerRealPing() {
+        val selectedGuid = uiState.value.selectedGuid ?: return
+        val profile = dataSource.decodeServerConfig(selectedGuid) ?: return
+        if (!isProfilePingable(profile)) return
         _uiState.update { it.copy(status = MainStatus.Testing) }
         dataSource.testCurrentServerRealPing()
+    }
+
+    private fun updateDefaultTrafficUsage(usedBytes: Long) {
+        val normalizedBytes = usedBytes.coerceAtLeast(0L)
+        _uiState.update { state ->
+            val groups = state.groups.map { it.withDefaultTrafficUsage(normalizedBytes) }
+            if (groups == state.groups) state else state.copy(groups = groups)
+        }
     }
 
     /** Clears a previous result so the Desync tuner can await the next probe. */
@@ -996,6 +1032,7 @@ class MainViewModel(
         preloadJob?.cancel()
         selectedGroupLoadJob?.cancel()
         reloadJob?.cancel()
+        defaultTrafficUsageJob?.cancel()
         filterJob?.cancel()
         psiphonReconnectStatusJobs.values.forEach { it.cancel() }
         psiphonReconnectStatusJobs.clear()

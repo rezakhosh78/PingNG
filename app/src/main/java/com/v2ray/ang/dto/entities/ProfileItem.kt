@@ -104,6 +104,8 @@ data class ProfileItem(
     var localAddress: String? = null,
     var reserved: String? = null,
     var mtu: Int? = null,
+    /** WireGuard resolver list; null means use the app default. */
+    var remoteDNS: String? = null,
     var warpKeepAlive: Int? = null,
     var warpEndpointCandidates: String? = null,
     var warpEndpointTestEnabled: Boolean? = null,

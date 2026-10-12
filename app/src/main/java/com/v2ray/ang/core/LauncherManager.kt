@@ -9,6 +9,7 @@ import com.v2ray.ang.R
 import com.v2ray.ang.extension.isComplexType
 import com.v2ray.ang.extension.toast
 import com.v2ray.ang.extension.toastError
+import com.v2ray.ang.dto.TestServiceMessage
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.helper.MessageHelper
@@ -92,6 +93,12 @@ object LauncherManager {
     }
 
     fun stopService(context: Context) {
+        // Delay-test workers can own temporary bridges used by the active VPN.
+        // Cancel them first so they cannot restart shared resources during teardown.
+        MessageHelper.sendMsg2TestService(
+            context,
+            TestServiceMessage(key = AppConfig.MSG_MEASURE_CONFIG_CANCEL),
+        )
         // The DNS core can still be scanning before CoreServiceManager registers a running service.
         MasterDnsBridge.cancelStartup()
         MessageHelper.sendMsg2Service(context, AppConfig.MSG_STATE_STOP, "")

@@ -619,7 +619,8 @@ open class CoreVpnService : VpnService(), ServiceControl {
             check(port in 1..65535) { "AmneziaWG second-layer SOCKS gateway unavailable" }
             check(TProxyService.isNativeAvailable()) { "HEV native tunnel unavailable" }
             tun2SocksService = TProxyService(applicationContext, mInterface, { isRunning },
-                { runTun2socks() }, socksPortOverride = port)
+                { runTun2socks() }, socksPortOverride = port,
+                udpDnsOnly = selectedProfile.psiphonEnabled)
         } else if (selectedProfile?.configType == EConfigType.AMNEZIAWG) {
             tun2SocksService?.stopTun2Socks()
             tun2SocksService = null

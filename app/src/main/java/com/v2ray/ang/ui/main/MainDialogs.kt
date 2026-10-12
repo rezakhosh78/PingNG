@@ -16,9 +16,9 @@ fun MainDialogs(
     showDelInvalidConfirm: Boolean,
     onDismissDelInvalid: () -> Unit,
     onConfirmDelInvalid: () -> Unit,
-    showRemoveConfirm: String?,
+    showRemoveConfirm: ServerDeleteTarget?,
     onDismissRemove: () -> Unit,
-    onConfirmRemove: (String) -> Unit,
+    onConfirmRemove: (ServerDeleteTarget) -> Unit,
 ) {
     if (showDelAllConfirm) {
         DeleteConfirmDialog(
@@ -42,10 +42,15 @@ fun MainDialogs(
         )
     }
     if (showRemoveConfirm != null) {
-        val guid = showRemoveConfirm
+        val target = showRemoveConfirm
+        val message = if (target.displayName.isNotBlank()) {
+            stringResource(R.string.confirm_delete_profile_named, target.displayName)
+        } else {
+            stringResource(R.string.confirm_delete_profile)
+        }
         DeleteConfirmDialog(
-            message = stringResource(R.string.confirm_delete_profile),
-            onConfirm = { onConfirmRemove(guid) },
+            message = message,
+            onConfirm = { onConfirmRemove(target) },
             onDismiss = onDismissRemove
         )
     }

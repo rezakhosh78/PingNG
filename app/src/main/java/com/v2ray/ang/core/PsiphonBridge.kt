@@ -94,15 +94,17 @@ object PsiphonBridge {
     // upstream tunnel. Treat it as usable only while the runtime reports an
     // established tunnel; otherwise delay and exit-IP checks race reconnects.
     fun activeSocksPort(): Int = socksPort.takeIf { connected && it in 1..65535 } ?: 0
+    fun hasPreparedEgress(profile: ProfileItem?): Boolean = profile?.let {
+        it.psiphonEnabled && plannedSocksPort in 1..65535
+    } == true
+
     fun usesStableEgress(profile: ProfileItem?): Boolean = profile?.let {
-        // HEV can attach the Android VPN to Xray's already-running SOCKS
-        // inbound after Psiphon connects. Prepare the final route up front for
-        // every HEV + Psiphon profile so we never restart Xray underneath
-        // Psiphon's HTTP upstream (which immediately drops its tunnel).
+        // HEV and the AmneziaWG netstack can keep Xray and Psiphon's upstream
+        // running while the Android VPN is attached or the tunnel reconnects.
         it.psiphonEnabled && (it.configType == com.v2ray.ang.enums.EConfigType.AMNEZIAWG || SettingsManager.isUsingHevTun()) &&
             plannedSocksPort in 1..65535
     } == true
-    /** Reserve the final Psiphon listener before the native AWG gateway starts. */
+    /** Reserves one Psiphon SOCKS port shared by Xray routing and the AWG gateway. */
     @Synchronized
     fun prepareAmneziaEgress(): Int {
         if (plannedSocksPort !in 1..65535) plannedSocksPort = findFreePort()
@@ -127,8 +129,7 @@ object PsiphonBridge {
         if (upstreamHttpPort !in 1..65535) {
             upstreamHttpPort = findFreePort()
         }
-        if (profile.psiphonEnabled && SettingsManager.isUsingHevTun() &&
-            plannedSocksPort !in 1..65535) plannedSocksPort = findFreePort()
+        if (profile.psiphonEnabled && plannedSocksPort !in 1..65535) plannedSocksPort = findFreePort()
         if (inbounds.none { it.isJsonObject && it.asJsonObject.get("tag")?.asString == UPSTREAM_TAG }) {
             inbounds.add(JsonObject().apply {
                 addProperty("tag", UPSTREAM_TAG)
@@ -183,8 +184,8 @@ object PsiphonBridge {
             rules.add(rule)
         }
 
-        val finalSocksPort = if (usesStableEgress(profile)) plannedSocksPort else activeSocksPort()
-        if (finalSocksPort in 1..65535 && (connected || usesStableEgress(profile))) {
+        val finalSocksPort = if (hasPreparedEgress(profile)) plannedSocksPort else activeSocksPort()
+        if (finalSocksPort in 1..65535 && (connected || hasPreparedEgress(profile))) {
             if (outbounds.none { it.isJsonObject && it.asJsonObject.get("tag")?.asString == EGRESS_TAG }) {
                 outbounds.add(JsonObject().apply {
                     addProperty("tag", EGRESS_TAG)
@@ -241,41 +242,23 @@ object PsiphonBridge {
             // Custom JSON files do not necessarily call their TUN/mixed inbound
             // "tun". Route every user-facing inbound explicitly; otherwise the
             // Psiphon switch appears enabled but traffic keeps using the old
-            // route. UDP stays on Xray because Psiphon's listener is TCP-only.
+            // route.
             val userInboundTags = inbounds.mapNotNull { inbound ->
                 inbound.takeIf { it.isJsonObject }?.asJsonObject
                     ?.get("tag")?.takeIf { it.isJsonPrimitive }?.asString
                     ?.takeUnless { it == UPSTREAM_TAG }
             }.distinct().ifEmpty { listOf("tun") }
-            // Keep DNS interception ahead of the Psiphon catch-all. The
-            // generic UDP rule below used to win over CoreConfigManager's
-            // UDP/53 -> dns-out rule, so DNS was sent to the WARP SOCKS hop
-            // and browsers failed while cached-IP apps such as Telegram kept
-            // working. Only add this rule when the prepared config really has
-            // a DNS outbound; custom configs without one must retain their
-            // original behavior instead of referencing a missing tag.
-            val hasDnsOutbound = outbounds.any {
-                it.isJsonObject &&
-                    it.asJsonObject.get("tag")?.takeIf { tag -> tag.isJsonPrimitive }?.asString == "dns-out" &&
-                    it.asJsonObject.get("protocol")?.takeIf { protocol -> protocol.isJsonPrimitive }
-                        ?.asString?.equals("dns", ignoreCase = true) == true
-            }
-            if (hasDnsOutbound) {
-                finalRules.add(JsonObject().apply {
-                    addProperty("type", "field")
-                    add("inboundTag", JsonArray().also { tags -> userInboundTags.forEach(tags::add) })
-                    addProperty("network", "udp")
-                    addProperty("port", "53")
-                    addProperty("outboundTag", "dns-out")
-                })
-                PingNgDiagnostics.record("Psiphon DNS interception: UDP/53 -> dns-out")
-            }
-            finalRules.add(JsonObject().apply {
-                addProperty("type", "field")
-                add("inboundTag", JsonArray().also { tags -> userInboundTags.forEach(tags::add) })
-                addProperty("network", "udp")
-                addProperty("outboundTag", upstreamOutbound)
-            })
+            // Keep DNS interception ahead of the UDP block. Previously all UDP
+            // went through the first-hop tunnel, so browsers using QUIC and
+            // other UDP clients exposed that tunnel's exit IP instead of
+            // Psiphon's. DNS/53 may keep using dns-out; other UDP fails closed.
+            val dnsOutboundTag = PsiphonRoutingPolicy.ensureDnsOutbound(outbounds)
+            val udpBlockTag = PsiphonRoutingPolicy.ensureUdpBlockOutbound(outbounds)
+            PsiphonRoutingPolicy.userUdpRules(dnsOutboundTag, udpBlockTag)
+                .forEach { finalRules.add(it) }
+            PingNgDiagnostics.record(
+                "Psiphon UDP policy: DNS/53 -> $dnsOutboundTag; other UDP -> $udpBlockTag",
+            )
             finalRules.add(JsonObject().apply {
                 addProperty("type", "field")
                 add("inboundTag", JsonArray().also { tags -> userInboundTags.forEach(tags::add) })
@@ -292,7 +275,8 @@ object PsiphonBridge {
             rules.drop(1).forEach { finalRules.add(it) }
             routing.add("rules", finalRules)
             PingNgDiagnostics.record(
-                "Psiphon final route applied: TCP -> $EGRESS_TAG; upstream -> $upstreamOutbound",
+                "Psiphon final route applied: TCP -> $EGRESS_TAG; DNS/53 -> $dnsOutboundTag; " +
+                    "other UDP -> $udpBlockTag; upstream -> $upstreamOutbound",
             )
         } else {
             routing.add("rules", rules)
@@ -318,7 +302,7 @@ object PsiphonBridge {
                 .putExtra(AppConfig.EXTRA_PSIPHON_CDN_SETS, profile.psiphonCdnSets.orEmpty())
                 .putExtra(AppConfig.EXTRA_PSIPHON_FORCE_LOCAL_UPSTREAM, profile.configType == com.v2ray.ang.enums.EConfigType.AMNEZIAWG)
                 .putExtra(AppConfig.EXTRA_PSIPHON_UPSTREAM_PORT, upstreamHttpPort)
-                .putExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, if (usesStableEgress(profile)) plannedSocksPort else 0)
+                .putExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, if (hasPreparedEgress(profile)) plannedSocksPort else 0)
             ContextCompat.startForegroundService(service, intent)
         } catch (e: Throwable) {
             runtimeRunning = false

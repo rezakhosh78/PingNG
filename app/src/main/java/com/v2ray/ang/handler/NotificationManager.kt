@@ -39,12 +39,9 @@ object NotificationManager {
     private var speedNotificationJob: Job? = null
     private var mNotificationManager: NotificationManager? = null
 
-    /**
-     * Starts the speed notification.
-     * @param currentConfig The current profile configuration.
-     */
+    /** Polls the core traffic counters and updates speed text when that setting is enabled. */
+    @Synchronized
     fun startSpeedNotification() {
-        if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) != true) return
         if (speedNotificationJob != null || CoreServiceManager.isRunning() == false) return
 
         var lastZeroSpeed = false
@@ -93,8 +90,9 @@ object NotificationManager {
 
         mBuilder = NotificationCompat.Builder(service, channelId)
             .setSmallIcon(R.drawable.ic_pingng_status)
-            .setContentTitle(service.getString(R.string.app_name))
-            .setContentText(currentConfig?.remarks)
+            .setContentTitle(currentConfig?.remarks?.takeIf { it.isNotBlank() }
+                ?: service.getString(R.string.app_name))
+            .setContentText(service.getString(R.string.connection_connected))
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .setShowWhen(false)
@@ -130,6 +128,7 @@ object NotificationManager {
     /**
      * Cancels the notification.
      */
+    @Synchronized
     fun cancelNotification() {
         val service = getService() ?: return
         service.stopForeground(Service.STOP_FOREGROUND_REMOVE)
@@ -143,6 +142,7 @@ object NotificationManager {
     /**
      * Stops the speed notification.
      */
+    @Synchronized
     fun stopSpeedNotification() {
         speedNotificationJob?.let {
             it.cancel()
@@ -256,7 +256,13 @@ object NotificationManager {
         val proxyTotal = proxyUplink + proxyDownlink
         val directTotal = directUplink + directDownlink
         val zeroSpeed = proxyTotal + directTotal == 0L
-        if (!zeroSpeed || !lastZeroSpeed) {
+        val vpnTrafficTotal = proxyTotal + directTotal
+        if (vpnTrafficTotal > 0L) {
+            MmkvManager.addDefaultTrafficUsedBytes(vpnTrafficTotal)
+        }
+        if (MmkvManager.decodeSettingsBool(AppConfig.PREF_SPEED_ENABLED) == true &&
+            (!zeroSpeed || !lastZeroSpeed)
+        ) {
             val text = StringBuilder()
             appendSpeedString(
                 text, AppConfig.TAG_PROXY,

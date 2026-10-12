@@ -13,10 +13,12 @@ import com.tencent.mmkv.MMKVHandler
 import com.tencent.mmkv.MMKVLogLevel
 import com.tencent.mmkv.MMKVRecoverStrategic
 import com.v2ray.ang.AppConfig.DEFAULT_SUBSCRIPTION_ID
+import com.v2ray.ang.AppConfig.PREF_DEFAULT_TRAFFIC_USED_BYTES
 import com.v2ray.ang.AppConfig.PREF_IS_BOOTED
 import com.v2ray.ang.AppConfig.PREF_ROUTING_RULESET
 import com.v2ray.ang.AppConfig.TAG
 import com.v2ray.ang.BuildConfig
+import com.v2ray.ang.core.isInvalidPingResult
 import com.v2ray.ang.dto.entities.AssetUrlCache
 import com.v2ray.ang.dto.entities.AssetUrlItem
 import com.v2ray.ang.dto.entities.ProfileItem
@@ -76,6 +78,7 @@ object MmkvManager {
     private val subStorage by lazy { MMKV.mmkvWithID(ID_SUB, MMKV.MULTI_PROCESS_MODE) }
     private val assetStorage by lazy { MMKV.mmkvWithID(ID_ASSET, MMKV.MULTI_PROCESS_MODE) }
     private val settingsStorage by lazy { MMKV.mmkvWithID(ID_SETTING, MMKV.MULTI_PROCESS_MODE) }
+    private val defaultTrafficUsageLock = Any()
 
     private inline fun <T> withProfileIndexLock(block: () -> T): T {
         return synchronized(mainStorage) {
@@ -191,6 +194,19 @@ object MmkvManager {
 
     fun setCoreServiceStatus(running: Boolean) {
         mainStorage.encode(KEY_CORE_SERVICE_RUNNING, running)
+    }
+
+    fun getDefaultTrafficUsedBytes(): Long =
+        decodeSettingsLong(PREF_DEFAULT_TRAFFIC_USED_BYTES, 0L).coerceAtLeast(0L)
+
+    /** Adds measured VPN traffic to the persistent, unmetered Default-group counter. */
+    fun addDefaultTrafficUsedBytes(bytes: Long) {
+        if (bytes <= 0L) return
+        synchronized(defaultTrafficUsageLock) {
+            val current = getDefaultTrafficUsedBytes()
+            val updated = if (Long.MAX_VALUE - current < bytes) Long.MAX_VALUE else current + bytes
+            encodeSettings(PREF_DEFAULT_TRAFFIC_USED_BYTES, updated)
+        }
     }
 
     /**
@@ -601,7 +617,7 @@ object MmkvManager {
         var count = 0
         if (guid.isNotEmpty()) {
             decodeServerAffiliationInfo(guid)?.let { aff ->
-                if (aff.testDelayMillis < 0L) {
+                if (isInvalidPingResult(decodeServerConfig(guid), aff.testDelayMillis)) {
                     removeServer(guid)
                     count++
                 }
@@ -609,7 +625,7 @@ object MmkvManager {
         } else {
             serverAffStorage.allKeys()?.forEach { key ->
                 decodeServerAffiliationInfo(key)?.let { aff ->
-                    if (aff.testDelayMillis < 0L) {
+                    if (isInvalidPingResult(decodeServerConfig(key), aff.testDelayMillis)) {
                         removeServer(key)
                         count++
                     }

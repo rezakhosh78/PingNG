@@ -183,6 +183,7 @@ hev_config_parse_socks5 (yaml_document_t *doc, yaml_node_t *base)
     const char *port = NULL;
     const char *udpm = NULL;
     const char *udpa = NULL;
+    const char *udp_dns_only = NULL;
     const char *user = NULL;
     const char *pass = NULL;
     const char *mark = NULL;
@@ -218,6 +219,8 @@ hev_config_parse_socks5 (yaml_document_t *doc, yaml_node_t *base)
             udpm = value;
         else if (0 == strcmp (key, "udp-address"))
             udpa = value;
+        else if (0 == strcmp (key, "udp-dns-only"))
+            udp_dns_only = value;
         else if (0 == strcmp (key, "pipeline"))
             pipe = value;
         else if (0 == strcmp (key, "username"))
@@ -253,6 +256,9 @@ hev_config_parse_socks5 (yaml_document_t *doc, yaml_node_t *base)
 
     if (udpm && (strcasecmp (udpm, "udp") == 0))
         srv.udp_in_udp = 1;
+
+    if (udp_dns_only && (strcasecmp (udp_dns_only, "true") == 0))
+        srv.udp_dns_only = 1;
 
     if (udpa)
         strncpy (srv.udp_addr, udpa, 256 - 1);

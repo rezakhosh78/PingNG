@@ -188,6 +188,38 @@ object CoreServiceManager {
             WarpMasqueBridge.stop()
             MasterDnsBridge.stop()
             WarpMasqueDesyncProxy.stop()
+            autoExitProbeJob?.cancel()
+            autoExitProbeJob = null
+            probeScope?.cancel()
+            probeScope = null
+            networkMonitor?.unregister()
+            networkMonitor = null
+            if (receiverRegistered) {
+                runCatching { service.unregisterReceiver(mMsgReceive) }
+                receiverRegistered = false
+            }
+            if (coreControllerDelegate.isInitialized()) {
+                runCatching { CoreNativeManager.reconcileBrowserDialer("") }
+                browserDialer?.stop()
+                browserDialer = null
+                if (runCatching { coreController.isRunning }.getOrDefault(false)) {
+                    val controller = coreController
+                    coreStopJob = CoroutineScope(Dispatchers.IO).launch {
+                        try {
+                            controller.stopLoop()
+                            PingNgDiagnostics.record("Partial core stopped after startup failure")
+                        } catch (stopError: Throwable) {
+                            PingNgDiagnostics.record("Partial core cleanup failed", stopError)
+                        } finally {
+                            MmkvManager.setCoreServiceStatus(false)
+                        }
+                    }
+                }
+            }
+            currentVpnInterface = null
+            currentConfig = null
+            currentConfigGuid = null
+            MmkvManager.setCoreServiceStatus(false)
             LogUtil.e(AppConfig.TAG, "StartCore-Manager: $message", e)
             PingNgDiagnostics.record("Core start failed: $message", e)
             MessageHelper.sendMsg2UI(service, AppConfig.MSG_STATE_START_FAILURE, message)
@@ -673,7 +705,7 @@ object CoreServiceManager {
         }
         if (!isRunning()) return
         if (PsiphonBridge.usesStableEgress(currentConfig)) {
-            PingNgDiagnostics.record("Psiphon reconnecting; keeping MasterDNS upstream Xray running")
+            PingNgDiagnostics.record("Psiphon reconnecting; keeping the reserved SOCKS route fail-closed")
             return
         }
         CoroutineScope(Dispatchers.Default).launch {
@@ -936,6 +968,10 @@ object CoreServiceManager {
         return scope.launch {
             val service = getService() ?: return@launch
             if (!isProbeCurrent(generation)) return@launch
+            if (!isProfilePingable(currentConfig)) {
+                PingNgDiagnostics.record("Skipped delay check for MasterDNS profile")
+                return@launch
+            }
             val psiphonProfile = currentConfig?.psiphonEnabled == true
             val torProfile = currentConfig?.torEnabled == true
             val secondLayerProfile = psiphonProfile || torProfile

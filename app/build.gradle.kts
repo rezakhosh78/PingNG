@@ -122,7 +122,7 @@ if (tasks.findByName("prepareKotlinBuildScriptModel") == null) {
 // Keep the version overridable so a newer signed AAR can be tested without
 // editing the build logic: ./gradlew -PXRAY_ANDROID_LIB_VERSION=...
 val xrayAndroidLibVersion = providers.gradleProperty("XRAY_ANDROID_LIB_VERSION")
-    .orElse("26.9.30")
+    .orElse("26.10.10")
     .get()
 val libV2rayFile = layout.projectDirectory.file("libs/libv2ray.aar").asFile
 val amneziaWgAndroidVersion = providers.gradleProperty("AMNEZIAWG_ANDROID_VERSION")
@@ -322,10 +322,10 @@ android {
         applicationId = "com.pingng.android"
         minSdk = 24
         targetSdk = 37
-        // Increment for the isolated Snowflake runtime DEX and native library packaging.
-        versionCode = 763
-        // PingNG Pi42 version metadata. Upstream tag 2.3.10 source changes integrated.
-        versionName = "v2.3.10-Pi42"
+        // Keep versionCode monotonic for Pi43 while preserving ABI-specific APK codes.
+        versionCode = 764
+        // PingNG Pi43 is synchronized with official v2rayNG 2.3.11.
+        versionName = "v2.3.11-Pi43"
         // Keep the bundled native engine version observable without calling a
         // native diagnostic entry point during tunnel startup. Some older
         // extracted libwg-go.so builds can panic from awgVersion() itself.
@@ -475,6 +475,7 @@ android {
             "ru",
             "fa",
             "ar",
+            "az",
             "bn",
             "bqi-rIR"
         )

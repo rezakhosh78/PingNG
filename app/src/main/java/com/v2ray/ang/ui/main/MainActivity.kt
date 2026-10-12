@@ -146,6 +146,7 @@ class MainActivity : HelperBaseComponentActivity() {
             onAction = { action ->
                 when (action) {
                     MainAction.ToggleService -> handleFabAction()
+                    MainAction.StopService -> stopServiceFromButton()
                     MainAction.TestCurrentServer -> handleLayoutTestClick()
                     MainAction.ImportQRcode -> importQRcode()
                     MainAction.ImportClipboard -> importClipboard()
@@ -210,6 +211,30 @@ class MainActivity : HelperBaseComponentActivity() {
         mainViewModel.reloadServerList()
     }
 
+    private fun stopServiceFromButton() {
+        val state = mainViewModel.uiState.value
+        mainViewModel.setServiceStartPending(false)
+        mainViewModel.cancelAllPing()
+
+        val awgScan = AwgEndpointScanState.state.value
+        if (warpEndpointTestJob?.isActive == true) warpEndpointTestJob?.cancel()
+        AwgEndpointScanManager.cancel()
+        EndpointScannerCli.cancelActiveScans()
+        mainViewModel.clearEndpointSearchProgress()
+        if (awgScan.running) AwgEndpointScanState.clear(awgScan.guid)
+        if (desyncTunerJob?.isActive == true) desyncTunerJob?.cancel()
+        stopDesyncSearchKeepAlive()
+
+        state.selectedGuid?.let(MmkvManager::decodeServerConfig)
+            ?.takeIf { it.configType == EConfigType.WARP }
+            ?.let { WarpMasqueBridge.cancelStartup() }
+        state.selectedGuid?.let(MmkvManager::decodeServerConfig)
+            ?.takeIf(MasterDnsBridge::isProfile)
+            ?.let { MasterDnsBridge.cancelStartup() }
+
+        LauncherManager.stopService(this)
+    }
+
     private fun handleFabAction() {
         if (warpEndpointTestJob?.isActive == true) {
             val awgScan = AwgEndpointScanState.state.value
@@ -222,7 +247,7 @@ class MainActivity : HelperBaseComponentActivity() {
             // Endpoint verification may have already started the core/VPN.
             // Cancel the Android service too; cancelling the UI coroutine
             // alone leaves the native probe and VPN foreground service alive.
-            LauncherManager.stopService(this)
+            stopServiceFromButton()
             toast("Endpoint scan canceled")
             return
         }
@@ -235,8 +260,7 @@ class MainActivity : HelperBaseComponentActivity() {
             }
         }
         if (desyncTunerJob?.isActive == true) {
-            cancelDesyncSearch()
-            LauncherManager.stopService(this)
+            stopServiceFromButton()
             return
         }
         val state = mainViewModel.uiState.value
@@ -244,14 +268,7 @@ class MainActivity : HelperBaseComponentActivity() {
             state.psiphonStates[state.selectedGuid] == com.v2ray.ang.dto.PsiphonStatus.CONNECTING ||
             state.torStates[state.selectedGuid] == com.v2ray.ang.dto.TorStatus.CONNECTING
         ) {
-            mainViewModel.setServiceStartPending(false)
-            state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
-                ?.takeIf { it.configType == EConfigType.WARP }
-                ?.let { WarpMasqueBridge.cancelStartup() }
-            state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
-                ?.takeIf(MasterDnsBridge::isProfile)
-                ?.let { MasterDnsBridge.cancelStartup() }
-            LauncherManager.stopService(this)
+            stopServiceFromButton()
         } else {
             val selected = state.selectedGuid?.let { MmkvManager.decodeServerConfig(it) }
             mainViewModel.setServiceStartPending(

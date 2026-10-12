@@ -776,6 +776,11 @@ class ServerWireguardActivity : BaseServerActivity() {
             { state.mtu = it },
             keyboardType = KeyboardType.Number
         )
+        FormTextField(
+            stringResource(R.string.server_lab_remote_dns),
+            state.remoteDNS,
+            { state.remoteDNS = it }
+        )
 
         if (showRawFinalMask) {
             FormTextField(

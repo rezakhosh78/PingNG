@@ -106,6 +106,7 @@ fun GroupPagerPage(
     trafficUsedRequests: Long,
     isWorkerSubscription: Boolean,
     hasSubscriptionLink: Boolean,
+    isDefaultSubscription: Boolean,
     isUpdatingSubscription: Boolean,
     isTestingSubscription: Boolean,
     onUpdateSubscription: (() -> Unit)?,
@@ -135,7 +136,9 @@ fun GroupPagerPage(
     val canReorder = groupId.isNotEmpty() && searchQuery.isEmpty()
 
     Column(modifier = Modifier.fillMaxSize()) {
-        if (hasSubscriptionLink) SubscriptionNoticeBanner(subscriptionRemarks, notice)
+        if (shouldShowGroupNotice(hasSubscriptionLink, isDefaultSubscription)) {
+            SubscriptionNoticeBanner(subscriptionRemarks, notice, isDefaultSubscription)
+        }
         SubscriptionMetadataRow(
             supportUrl = supportUrl,
             trafficTotalBytes = trafficTotalBytes,
@@ -144,6 +147,7 @@ fun GroupPagerPage(
             trafficTotalRequests = trafficTotalRequests,
             trafficUsedRequests = trafficUsedRequests,
             isWorkerSubscription = isWorkerSubscription,
+            isDefaultSubscription = isDefaultSubscription,
             isUpdatingSubscription = isUpdatingSubscription,
             isTestingSubscription = isTestingSubscription,
             onUpdateSubscription = onUpdateSubscription,
@@ -181,7 +185,21 @@ fun GroupPagerPage(
 }
 
 @Composable
-private fun SubscriptionNoticeBanner(subscriptionRemarks: String, notice: String?) {
+private fun SubscriptionNoticeBanner(
+    subscriptionRemarks: String,
+    notice: String?,
+    isDefaultSubscription: Boolean,
+) {
+    val title = if (isDefaultSubscription) {
+        stringResource(R.string.subscription_default_notice_title)
+    } else {
+        "📢 ${subscriptionRemarks.ifBlank { stringResource(R.string.title_sub_update) }}"
+    }
+    val noticeText = if (isDefaultSubscription) {
+        stringResource(R.string.subscription_default_notice_message)
+    } else {
+        notice?.trim()?.takeIf { it.isNotEmpty() }
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -192,11 +210,11 @@ private fun SubscriptionNoticeBanner(subscriptionRemarks: String, notice: String
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
             Text(
-                text = "📢 ${subscriptionRemarks.ifBlank { stringResource(R.string.title_sub_update) }}",
+                text = title,
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
             )
-            notice?.trim()?.takeIf { it.isNotEmpty() }?.let { text ->
+            noticeText?.let { text ->
                 Text(
                     text = subscriptionNoticeText(text),
                     modifier = Modifier.padding(top = 2.dp),
@@ -232,6 +250,7 @@ private fun SubscriptionMetadataRow(
     trafficTotalRequests: Long,
     trafficUsedRequests: Long,
     isWorkerSubscription: Boolean,
+    isDefaultSubscription: Boolean,
     isUpdatingSubscription: Boolean,
     isTestingSubscription: Boolean,
     onUpdateSubscription: (() -> Unit)?,
@@ -245,7 +264,8 @@ private fun SubscriptionMetadataRow(
     // row visually occupied until real counters are available, without
     // pretending that a numeric quota was received.
     val hasWorkerPlaceholder = isWorkerSubscription && !hasUsage
-    val shouldShowUsage = hasUsage || hasWorkerPlaceholder
+    val hasDefaultPlaceholder = isDefaultSubscription && !hasUsage
+    val shouldShowUsage = hasUsage || hasWorkerPlaceholder || hasDefaultPlaceholder
     // -1 means that the provider did not advertise an expiry. Zero is an
     // explicit never-expire value and must be rendered as ∞. Worker links
     // default to never expiring when the provider omits an expiry. The same
@@ -263,6 +283,8 @@ private fun SubscriptionMetadataRow(
     val usedFraction = when {
         isRequestQuota -> trafficUsedRequests.toFloat() / trafficTotalRequests.toFloat()
         hasByteQuota && trafficTotalBytes > 0L -> trafficUsedBytes.toFloat() / trafficTotalBytes.toFloat()
+        isDefaultSubscription && hasByteQuota && trafficTotalBytes == 0L ->
+            defaultTrafficUsageFraction(trafficUsedBytes)
         else -> 0f
     }
     val usageText = when {
@@ -281,6 +303,7 @@ private fun SubscriptionMetadataRow(
             "0",
             "0",
         )
+        hasDefaultPlaceholder -> context.getString(R.string.subscription_default_no_quota)
         else -> null
     }
     val expirationText = if (hasExpiry) {
@@ -381,7 +404,10 @@ private fun SubscriptionMetadataRow(
                 ) {
                     Icon(
                         painter = painterResource(R.drawable.ic_speed_24dp),
-                        contentDescription = stringResource(R.string.title_real_ping_subscription),
+                        contentDescription = stringResource(
+                            if (isDefaultSubscription) R.string.title_real_ping_default
+                            else R.string.title_real_ping_subscription,
+                        ),
                         tint = MaterialTheme.colorScheme.secondary,
                     )
                 }

@@ -18,7 +18,8 @@ class TProxyService(
     private val vpnInterface: ParcelFileDescriptor,
     private val isRunningProvider: () -> Boolean,
     private val restartCallback: () -> Unit,
-    private val socksPortOverride: Int? = null
+    private val socksPortOverride: Int? = null,
+    private val udpDnsOnly: Boolean = false,
 ) : Tun2SocksControl {
     companion object {
         private val nativeLoadResult: Result<Unit> = runCatching {
@@ -114,6 +115,7 @@ class TProxyService(
             appendLine("  port: ${socksPort}")
             appendLine("  address: ${AppConfig.LOOPBACK}")
             appendLine("  udp: 'udp'")
+            appendLine("  udp-dns-only: '${udpDnsOnly}'")
             if (escapedSocksUsername != null && escapedSocksPassword != null) {
                 appendLine("  username: '${escapedSocksUsername}'")
                 appendLine("  password: '${escapedSocksPassword}'")
