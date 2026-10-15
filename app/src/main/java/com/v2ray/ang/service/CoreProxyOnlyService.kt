@@ -11,6 +11,8 @@ import com.v2ray.ang.core.LauncherManager
 import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.core.WarpRegistrationProxy
+import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.helper.MessageHelper
 import com.v2ray.ang.handler.AppLocaleManager
 import com.v2ray.ang.handler.NotificationManager
 import com.v2ray.ang.util.LogUtil
@@ -26,6 +28,8 @@ class CoreProxyOnlyService : Service(), ServiceControl {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var startupJob: Job? = null
     @Volatile private var startupCancelled = false
+    private var registrationResultGuid: String? = null
+    private var registrationSucceeded = false
 
     fun isStartupCancelled(): Boolean = startupCancelled
 
@@ -54,6 +58,34 @@ class CoreProxyOnlyService : Service(), ServiceControl {
                 CoreServiceManager.reconfigureDesync()
             }
             return START_STICKY
+        }
+
+        if (intent?.action == LauncherManager.ACTION_PREPARE_MASQUE_REGISTRATION) {
+            if (startupJob?.isActive == true) return START_NOT_STICKY
+            val guid = intent.getStringExtra("profile_guid") ?: return START_NOT_STICKY
+            startupCancelled = false
+            startupJob = serviceScope.launch {
+                try {
+                    val profile = MmkvManager.decodeServerConfig(guid)
+                        ?: error("MASQUE/H2 configuration was not found")
+                    WarpRegistrationProxy.prepareMasqueRegistration(
+                        this@CoreProxyOnlyService, guid, profile,
+                        profile.warpRegistrationProxyGuid ?: WarpRegistrationProxy.AUTO)
+                    if (!startupCancelled) {
+                        registrationResultGuid = guid
+                        registrationSucceeded = true
+                    }
+                } catch (error: Throwable) {
+                    if (!startupCancelled) {
+                        LogUtil.e(AppConfig.TAG, "StartCore-Proxy: MASQUE registration failed for $guid", error)
+                        registrationResultGuid = guid
+                        registrationSucceeded = false
+                    }
+                } finally {
+                    stopSelf(startId)
+                }
+            }
+            return START_NOT_STICKY
         }
 
         if (CoreServiceManager.isRunning()) {
@@ -89,6 +121,11 @@ class CoreProxyOnlyService : Service(), ServiceControl {
         serviceScope.cancel()
         super.onDestroy()
         CoreServiceManager.stopCoreLoop(this)
+        registrationResultGuid?.let { guid ->
+            MessageHelper.sendMsg2UI(this,
+                if (registrationSucceeded) AppConfig.MSG_MASQUE_REGISTRATION_READY
+                else AppConfig.MSG_MASQUE_REGISTRATION_FAILED, guid)
+        }
     }
 
     /**

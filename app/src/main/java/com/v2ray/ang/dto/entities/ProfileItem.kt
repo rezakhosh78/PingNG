@@ -145,6 +145,8 @@ data class ProfileItem(
     var warpMasqueDns: String? = null,
     /** Optional complete MASQUE JSON, useful when registration is blocked. */
     var warpMasqueConfigJson: String? = null,
+    /** Binds the locally obtained MASQUE registration to this profile identity. */
+    var warpMasqueRegistrationGuid: String? = null,
 
     var obfsPassword: String? = null,
     var portHopping: String? = null,

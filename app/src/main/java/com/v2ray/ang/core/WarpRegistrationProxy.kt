@@ -3,6 +3,7 @@ package com.v2ray.ang.core
 import android.content.Context
 import android.app.Service
 import com.v2ray.ang.R
+import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.fmt.VlessFmt
@@ -10,6 +11,7 @@ import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.util.JsonUtil
 import java.io.File
+import java.lang.ref.SoftReference
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
@@ -33,10 +35,16 @@ object WarpRegistrationProxy {
 
     data class Choice(val guid: String, val label: String)
 
-    fun prepareSelectedMasqueRegistration(service: Service) {
+    fun hasMasqueRegistrationReady(context: Context, guid: String, profile: ProfileItem): Boolean =
+        hasMasqueCredentials(profile) && profile.warpMasqueRegistrationGuid == guid &&
+            (!WarpMasqueConfig.shouldAutoScan(profile) || EndpointScannerCli.hasMasqueH2Account(context, guid))
+
+    suspend fun prepareSelectedMasqueRegistration(service: Service) {
         val guid = MmkvManager.getSelectServer() ?: return
         val profile = MmkvManager.decodeServerConfig(guid) ?: return
         if (profile.configType != EConfigType.WARP) return
+        if (!WarpMasqueConfig.isDescription(profile.description)) return
+        if (hasMasqueRegistrationReady(service, guid, profile)) return
         prepareMasqueRegistration(
             service = service,
             targetGuid = guid,
@@ -84,48 +92,74 @@ object WarpRegistrationProxy {
                 ?.let { " · $it:${profile.serverPort}" }.orEmpty()
             Choice(guid, if ((duplicateNames[remark] ?: 0) > 1) "$remark$target" else remark)
         }
-        return listOf(Choice(BUNDLED_PROXY_GUID, PUBLIC_PROXY_REMARK)) + choices
+        return WarpProxyChoiceLabels.makeUnique(
+            (listOf(Choice(BUNDLED_PROXY_GUID, PUBLIC_PROXY_REMARK)) + choices).map {
+                WarpProxyChoiceLabel(it.guid, it.label)
+            },
+            reservedLabels = setOf(AUTO_LABEL),
+        ).map { Choice(it.guid, it.label) }
     }
 
     /** Registers a MASQUE profile before TUN setup, with the saved or automatic Proxy choice. */
-    fun prepareMasqueRegistration(
+    suspend fun prepareMasqueRegistration(
         service: Service,
         targetGuid: String,
         targetProfile: ProfileItem,
         proxyGuid: String,
-    ) {
-        if (hasMasqueCredentials(targetProfile)) return
+    ) = registrationMutex.withLock {
+        withContext(Dispatchers.IO) {
+            fun scannerMissing() = WarpMasqueConfig.shouldAutoScan(targetProfile) &&
+                !EndpointScannerCli.hasMasqueH2Account(service, targetGuid)
+            if (hasMasqueRegistrationReady(service, targetGuid, targetProfile)) return@withContext
 
-        if (proxyGuid == AUTO) {
-            runCatching { WarpMasqueBridge.prepareRegistration(service, targetGuid, targetProfile) }
-                .onSuccess { return }
-                .onFailure { directFailure ->
-                    if (directFailure is CancellationException) throw directFailure
-                    targetProfile.warpMasqueConfigJson = null
-                    runCatching {
-                        registerMasqueThroughProxy(
-                            service,
-                            targetGuid,
-                            targetProfile,
-                            BUNDLED_PROXY_GUID,
-                        )
-                    }.onFailure { proxyFailure ->
-                        if (proxyFailure is CancellationException) throw proxyFailure
-                        throw IllegalStateException(
-                            "WARP MASQUE registration failed directly and through Proxy-1: " +
-                                (proxyFailure.message ?: proxyFailure.javaClass.simpleName),
-                            proxyFailure,
-                        ).also { it.addSuppressed(directFailure) }
+            if (proxyGuid == AUTO) {
+                val directFailure = try {
+                    if (!hasMasqueCredentials(targetProfile) || targetProfile.warpMasqueRegistrationGuid != targetGuid) {
+                        targetProfile.warpMasqueConfigJson = null
+                        if (targetProfile.warpMasqueRegistrationGuid != targetGuid)
+                            File(service.filesDir, "warp-masque/$targetGuid.json").delete()
+                        WarpMasqueBridge.prepareRegistration(service, targetGuid, targetProfile)
+                        targetProfile.warpMasqueRegistrationGuid = targetGuid
+                        MmkvManager.encodeServerConfig(targetGuid, targetProfile)
                     }
+                    if (scannerMissing()) EndpointScannerCli.prepareMasqueH2Account(service, targetGuid)
+                    return@withContext
+                } catch (error: Throwable) {
+                    if (!WarpMasqueRegistrationFallbackPolicy.shouldFallbackToProxy1(
+                            autoSelected = true,
+                            directAttemptFailed = true,
+                            canceled = error is CancellationException,
+                        )
+                    ) throw error
+                    PingNgDiagnostics.record(
+                        "Direct MASQUE registration failed; automatically retrying through Proxy-1",
+                        error,
+                    )
+                    error
                 }
-            return
-        }
+                try {
+                    registerMasqueThroughProxy(
+                        service,
+                        targetGuid,
+                        targetProfile,
+                        BUNDLED_PROXY_GUID,
+                    )
+                } catch (proxyFailure: Throwable) {
+                    if (proxyFailure is CancellationException) throw proxyFailure
+                    throw IllegalStateException(
+                        "WARP MASQUE registration failed directly and through Proxy-1: " +
+                            (proxyFailure.message ?: proxyFailure.javaClass.simpleName),
+                        proxyFailure,
+                    ).also { it.addSuppressed(directFailure) }
+                }
+                return@withContext
+            }
 
-        targetProfile.warpMasqueConfigJson = null
-        registerMasqueThroughProxy(service, targetGuid, targetProfile, proxyGuid)
+            registerMasqueThroughProxy(service, targetGuid, targetProfile, proxyGuid)
+        }
     }
 
-    private fun registerMasqueThroughProxy(
+    private suspend fun registerMasqueThroughProxy(
         service: Service,
         targetGuid: String,
         targetProfile: ProfileItem,
@@ -141,42 +175,93 @@ object WarpRegistrationProxy {
         requireUsable(proxyProfile)
 
         val previousGuid = MmkvManager.getSelectServer()
-        var proxyCoreStarted = false
+        val previousServiceControl = CoreServiceManager.serviceControl?.get()
+        val host = when (service) {
+            is com.v2ray.ang.service.CoreVpnService -> WarpMasqueRegistrationExecutionPolicy.Host.VPN
+            is com.v2ray.ang.service.CoreRootService -> WarpMasqueRegistrationExecutionPolicy.Host.ROOT
+            is com.v2ray.ang.service.CoreProxyOnlyService -> WarpMasqueRegistrationExecutionPolicy.Host.PROXY_ONLY
+            else -> WarpMasqueRegistrationExecutionPolicy.Host.OTHER
+        }
+        val execution = WarpMasqueRegistrationExecutionPolicy.executionFor(host)
+        val registrationProxyGuid = if (bundled) INTERNAL_PROFILE_GUID else proxyGuid
+        var proxyOnlyStartRequested = false
+        var currentServiceCoreStarted = false
         if (bundled) MmkvManager.encodeEphemeralServerConfig(INTERNAL_PROFILE_GUID, proxyProfile)
         try {
             if (CoreServiceManager.isRunning()) {
-                CoreServiceManager.stopCoreLoop(service)
-                waitForCoreServiceBlocking(false, service)
+                val runningService = CoreServiceManager.serviceControl?.get()?.getService() ?: service
+                CoreServiceManager.stopCoreLoop(runningService)
+                waitForDaemonCore(false, service)
             }
             checkStartupActive(service)
-            MmkvManager.setSelectServer(if (bundled) INTERNAL_PROFILE_GUID else proxyGuid)
-            check(CoreServiceManager.startCoreLoop(null)) {
-                "Could not start the selected Proxy profile"
+            MmkvManager.setSelectServer(registrationProxyGuid)
+            PingNgDiagnostics.record("Starting MASQUE registration through Proxy profile $registrationProxyGuid")
+            when (execution) {
+                WarpMasqueRegistrationExecutionPolicy.Execution.TEMPORARY_PROXY_ONLY_SERVICE -> {
+                    proxyOnlyStartRequested = true
+                    LauncherManager.startProxyOnlyService(service.applicationContext, registrationProxyGuid)
+                }
+
+                WarpMasqueRegistrationExecutionPolicy.Execution.CURRENT_SERVICE -> {
+                    check(CoreServiceManager.startCoreLoop(null)) {
+                        "Could not start the selected MASQUE registration Proxy profile"
+                    }
+                    currentServiceCoreStarted = true
+                }
             }
-            proxyCoreStarted = true
+            waitForDaemonCore(true, service)
             val socksPort = SettingsManager.getSocksPort()
-            waitForSocksBlocking(socksPort, service)
+            waitForSocks(socksPort, service)
             checkStartupActive(service)
-            check(WarpMasqueBridge.registerWithProxy(service, targetGuid, targetProfile, socksPort)) {
-                "WARP MASQUE registration through Proxy failed"
+            PingNgDiagnostics.record("MASQUE registration Proxy SOCKS listener is ready on port $socksPort")
+            if (!hasMasqueCredentials(targetProfile) || targetProfile.warpMasqueRegistrationGuid != targetGuid) {
+                targetProfile.warpMasqueConfigJson = null
+                if (targetProfile.warpMasqueRegistrationGuid != targetGuid)
+                    File(service.filesDir, "warp-masque/$targetGuid.json").delete()
+                check(WarpMasqueBridge.registerWithProxy(service, targetGuid, targetProfile, socksPort)) {
+                    "WARP MASQUE registration through Proxy failed"
+                }
+                targetProfile.warpMasqueRegistrationGuid = targetGuid
+                MmkvManager.encodeServerConfig(targetGuid, targetProfile)
+            }
+            if (WarpMasqueConfig.shouldAutoScan(targetProfile) &&
+                !EndpointScannerCli.hasMasqueH2Account(service, targetGuid)) {
+                EndpointScannerCli.prepareMasqueH2Account(service, targetGuid, socksPort)
             }
         } finally {
-            try {
-                if (proxyCoreStarted || CoreServiceManager.isRunning()) {
-                    CoreServiceManager.stopCoreLoop(service)
-                    waitForCoreServiceBlocking(false, service, checkCancellation = false)
-                }
-            } finally {
-                previousGuid?.let(MmkvManager::setSelectServer)
-                if (bundled) {
-                    MmkvManager.removeEphemeralServerConfig(INTERNAL_PROFILE_GUID)
+            withContext(NonCancellable) {
+                try {
+                    if (proxyOnlyStartRequested) {
+                        LauncherManager.stopProxyOnlyService(
+                            service.applicationContext,
+                            registrationProxyGuid,
+                        )
+                        waitForDaemonCore(false, service, checkCancellation = false)
+                    } else if (currentServiceCoreStarted || CoreServiceManager.isRunning()) {
+                        val runningService = CoreServiceManager.serviceControl?.get()?.getService() ?: service
+                        CoreServiceManager.stopCoreLoop(runningService)
+                        waitForDaemonCore(false, service, checkCancellation = false)
+                    }
+                } finally {
+                    previousGuid?.let(MmkvManager::setSelectServer)
+                    if (execution == WarpMasqueRegistrationExecutionPolicy.Execution.TEMPORARY_PROXY_ONLY_SERVICE) {
+                        val restoreControl = previousServiceControl ?: (service as? ServiceControl)
+                        if (restoreControl != null) {
+                            CoreServiceManager.serviceControl = SoftReference(restoreControl)
+                        }
+                    }
+                    if (bundled) {
+                        MmkvManager.removeEphemeralServerConfig(INTERNAL_PROFILE_GUID)
+                    }
                 }
             }
         }
     }
 
     private fun hasMasqueCredentials(profile: ProfileItem): Boolean = runCatching {
-        val root = JsonUtil.parseString(profile.warpMasqueConfigJson.orEmpty())?.asJsonObject
+        val config = profile.warpMasqueConfigJson?.takeIf(String::isNotBlank)
+            ?: return@runCatching false
+        val root = JsonUtil.parseString(config)?.asJsonObject
             ?: return@runCatching false
         listOf("private_key", "access_token", "id").all { key ->
             root.get(key)?.asString?.isNotBlank() == true
@@ -295,9 +380,7 @@ object WarpRegistrationProxy {
     }
 
     private fun requireUsable(profile: ProfileItem) {
-        if (profile.configType == EConfigType.WARP &&
-            profile.warpMasqueConfigJson?.let { it.contains("private_key") && it.contains("access_token") } != true
-        ) {
+        if (profile.configType == EConfigType.WARP && !hasMasqueCredentials(profile)) {
             throw IllegalStateException("Selected WARP Proxy has no registered credentials")
         }
         if (profile.configType == EConfigType.WIREGUARD &&
@@ -314,31 +397,32 @@ object WarpRegistrationProxy {
         }
     }
 
-    private fun waitForCoreServiceBlocking(
+    private suspend fun waitForDaemonCore(
         shouldRun: Boolean,
         service: Service,
         checkCancellation: Boolean = true,
     ) {
         repeat(300) {
             if (checkCancellation) checkStartupActive(service)
-            if (MmkvManager.isCoreServiceRunning() == shouldRun) return
-            Thread.sleep(100)
+            if (CoreServiceManager.isRunning() == shouldRun) return
+            delay(100)
         }
-        check(MmkvManager.isCoreServiceRunning() == shouldRun) {
-            "Proxy service did not stop in time"
+        check(CoreServiceManager.isRunning() == shouldRun) {
+            if (shouldRun) "Selected MASQUE registration Proxy did not start its core in time"
+            else "MASQUE registration Proxy core did not stop in time"
         }
     }
 
-    private fun waitForSocksBlocking(port: Int, service: Service) {
+    private suspend fun waitForSocks(port: Int, service: Service) {
         repeat(300) {
             checkStartupActive(service)
             val ready = runCatching {
                 Socket().use { socket -> socket.connect(InetSocketAddress("127.0.0.1", port), 150) }
             }.isSuccess
             if (ready) return
-            Thread.sleep(100)
+            delay(100)
         }
-        throw IllegalStateException("Selected Proxy did not start its local SOCKS listener")
+        throw IllegalStateException("Selected MASQUE registration Proxy did not start its local SOCKS listener")
     }
 
     private fun checkStartupActive(service: Service) {

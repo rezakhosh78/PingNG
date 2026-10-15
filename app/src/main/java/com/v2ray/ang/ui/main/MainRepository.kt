@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import androidx.core.content.ContextCompat
 import com.v2ray.ang.AngApplication
 import com.v2ray.ang.AppConfig
+import com.v2ray.ang.core.AwgEndpointScanState
 import com.v2ray.ang.R
 import com.v2ray.ang.dto.ConnectionTestResult
 import com.v2ray.ang.dto.PsiphonStatus
@@ -97,6 +98,11 @@ class MainRepository(
 
                 else -> null
             }
+            val registeringMasque = AwgEndpointScanState.state.value.let {
+                it.running && it.message.startsWith("Obtaining MASQUE/H2 authorization")
+            }
+            if (registeringMasque && (event == MainServiceEvent.StateRunning ||
+                    event == MainServiceEvent.StateStartSuccess)) return
             event?.let { _mainServiceEvent.tryEmit(it) }
         }
     }

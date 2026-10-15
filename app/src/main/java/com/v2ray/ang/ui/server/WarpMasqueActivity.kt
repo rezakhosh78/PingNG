@@ -33,6 +33,8 @@ import com.v2ray.ang.core.AwgEndpointScanState
 import com.v2ray.ang.core.EndpointScannerCli
 import com.v2ray.ang.core.WarpMasqueConfig
 import com.v2ray.ang.core.WarpRegistrationProxy
+import com.v2ray.ang.core.WarpProxyChoiceLabel
+import com.v2ray.ang.core.WarpProxyChoiceLabels
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.extension.toast
@@ -79,12 +81,20 @@ class WarpMasqueActivity : BaseServerActivity() {
             mutableStateOf(initialConfig.warpRegistrationProxyGuid ?: WarpRegistrationProxy.AUTO)
         }
         val proxyChoices = remember(editGuid) { WarpRegistrationProxy.choices(editGuid) }
-        val selectedProxyLabel = if (registrationProxyGuid == WarpRegistrationProxy.AUTO) {
-            WarpRegistrationProxy.AUTO_LABEL
-        } else {
-            proxyChoices.firstOrNull { it.guid == registrationProxyGuid }?.label
-                ?: WarpRegistrationProxy.AUTO_LABEL
+        val proxyChoiceLabels = remember(proxyChoices) {
+            proxyChoices.map { WarpProxyChoiceLabel(it.guid, it.label) }
         }
+        val effectiveRegistrationProxyGuid = WarpProxyChoiceLabels.normalizeGuid(
+            registrationProxyGuid,
+            proxyChoiceLabels,
+            WarpRegistrationProxy.AUTO,
+        )
+        val selectedProxyLabel = WarpProxyChoiceLabels.labelForGuid(
+            effectiveRegistrationProxyGuid,
+            proxyChoiceLabels,
+            WarpRegistrationProxy.AUTO,
+            WarpRegistrationProxy.AUTO_LABEL,
+        )
         var endpoints by rememberSaveable {
             val stored = initialConfig.warpMasqueEndpointCandidates?.trim()
             mutableStateOf(
@@ -140,7 +150,7 @@ class WarpMasqueActivity : BaseServerActivity() {
                         TextButton(onClick = {
                             saveServer(
                                 remarks = remarks,
-                                registrationProxyGuid = registrationProxyGuid,
+                                registrationProxyGuid = effectiveRegistrationProxyGuid,
                                 endpoints = endpoints,
                                 primaryEndpoint = primaryEndpoint,
                                 endpointPort = endpointPort,
@@ -230,12 +240,12 @@ class WarpMasqueActivity : BaseServerActivity() {
                         value = selectedProxyLabel,
                         options = listOf(WarpRegistrationProxy.AUTO_LABEL) + proxyChoices.map { it.label },
                         onValueChange = { selected ->
-                            registrationProxyGuid = if (selected == WarpRegistrationProxy.AUTO_LABEL) {
-                                WarpRegistrationProxy.AUTO
-                            } else {
-                                proxyChoices.firstOrNull { it.label == selected }?.guid
-                                    ?: WarpRegistrationProxy.AUTO
-                            }
+                            registrationProxyGuid = WarpProxyChoiceLabels.guidForLabel(
+                                selected,
+                                proxyChoiceLabels,
+                                WarpRegistrationProxy.AUTO,
+                                WarpRegistrationProxy.AUTO_LABEL,
+                            )
                         },
                     )
                 }

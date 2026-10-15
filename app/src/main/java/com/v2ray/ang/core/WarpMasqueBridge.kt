@@ -255,11 +255,14 @@ object WarpMasqueBridge {
             "--accept-tos",
         ).directory(runtimeDir).redirectErrorStream(true)
         registrationProxy?.let { proxy ->
+            PingNgDiagnostics.record("Launching MASQUE registration through the selected local SOCKS Proxy")
             registerCommand.environment().apply {
                 put("HTTP_PROXY", proxy)
                 put("HTTPS_PROXY", proxy)
+                put("ALL_PROXY", proxy)
                 put("http_proxy", proxy)
                 put("https_proxy", proxy)
+                put("all_proxy", proxy)
             }
         }
         val register = registerCommand.start()

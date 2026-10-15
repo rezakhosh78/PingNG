@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -354,6 +355,22 @@ const tunnelDiscoverySample = 64
 const tunnelDiscoveryBudget = 40 * time.Second
 
 func obtainAccount(ctx context.Context, o options, ips []netip.Addr, timeout time.Duration, existing account) (account, error) {
+	if proxyAddress := os.Getenv("PINGNG_MASQUE_REGISTRATION_SOCKS"); proxyAddress != "" {
+		proxyURL, err := url.Parse(proxyAddress)
+		if err != nil || proxyURL.Scheme != "socks5" || proxyURL.Hostname() != "127.0.0.1" || proxyURL.Port() == "" || proxyURL.User != nil || proxyURL.Path != "" {
+			return account{}, fmt.Errorf("invalid local registration proxy")
+		}
+		client := &http.Client{Timeout: registerTimeout, Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+		registered, err := mintWGAccount(ctx, client, existing)
+		if err != nil {
+			return account{}, err
+		}
+		registered.Masque = mintMasque(ctx, client, existing.Masque)
+		if registered.Masque == nil {
+			return account{}, fmt.Errorf("MASQUE authorization through local proxy failed")
+		}
+		return registered, nil
+	}
 	fmt.Fprintln(os.Stderr, errPal.dim("Checking Cloudflare API availability..."))
 	direct := &http.Client{Timeout: registerTimeout, Transport: regTransport()}
 	if apiReachable(direct) {

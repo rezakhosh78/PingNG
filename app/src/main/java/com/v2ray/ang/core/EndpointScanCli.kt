@@ -530,11 +530,34 @@ object EndpointScannerCli {
         restrictPrivateFile(accountFile)
     }
 
+    fun hasMasqueH2Account(context: Context, profileId: String): Boolean =
+        hasMasqueCredentials(File(File(context.applicationContext.noBackupFilesDir, "endpoint-scan"),
+            "masque-${profileId.fileSafe()}.json"))
+
+    suspend fun prepareMasqueH2Account(context: Context, profileId: String, socksPort: Int? = null) {
+        withContext(Dispatchers.IO) {
+            val workDir = File(context.applicationContext.noBackupFilesDir, "endpoint-scan").apply { mkdirs() }
+            val accountFile = File(workDir, "masque-${profileId.fileSafe()}.json")
+            if (hasMasqueCredentials(accountFile)) return@withContext
+            val binary = requireExecutable(context.applicationContext)
+            runCatching { accountFile.delete() }
+            val result = runChild(workDir,
+                listOf(binary.absolutePath, "register", "-a", accountFile.absolutePath),
+                REGISTER_TIMEOUT_MS,
+                registrationSocksPort = socksPort)
+            check(result.first == 0 && hasMasqueCredentials(accountFile)) {
+                "WARP H2 account setup failed (${result.first})"
+            }
+            restrictPrivateFile(accountFile)
+        }
+    }
+
     private suspend fun runChild(
         workDir: File,
         arguments: List<String>,
         timeoutMs: Long,
         idleTimeoutMs: Long = timeoutMs,
+        registrationSocksPort: Int? = null,
         onOutput: suspend (String) -> Unit = {},
     ): Pair<Int, String> = coroutineScope {
         val process = ProcessBuilder(arguments)
@@ -545,6 +568,11 @@ object EndpointScannerCli {
                 environment()["TERM"] = "dumb"
                 environment()["NO_COLOR"] = "1"
                 environment()["GOMAXPROCS"] = Runtime.getRuntime().availableProcessors().coerceIn(2, 8).toString()
+                if (registrationSocksPort != null) {
+                    require(registrationSocksPort in 1..65535)
+                    environment()["PINGNG_MASQUE_REGISTRATION_SOCKS"] =
+                        "socks5://127.0.0.1:$registrationSocksPort"
+                }
             }
             .start()
         activeProcesses += process

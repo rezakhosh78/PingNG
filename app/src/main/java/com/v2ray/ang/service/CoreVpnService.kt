@@ -22,6 +22,7 @@ import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.core.PingNgDiagnostics
 import com.v2ray.ang.core.WarpMasqueBridge
 import com.v2ray.ang.core.WarpMasqueConfig
+import com.v2ray.ang.core.WarpMasqueStartupPolicy
 import com.v2ray.ang.core.WarpRegistrationProxy
 import com.v2ray.ang.core.WarpPlusConfig
 import com.v2ray.ang.core.MasterDnsBridge
@@ -142,7 +143,17 @@ open class CoreVpnService : VpnService(), ServiceControl {
             // cancel the startup and close a TUN that was already created.
             val job = serviceScope.launch {
                 try {
-                    if (shouldBootstrapSecondLayer()) {
+                    val bootstrapSecondLayer = shouldBootstrapSecondLayer()
+                    if (WarpMasqueStartupPolicy.shouldRegisterBeforeSecondLayer(
+                            selectedConfigType,
+                            bootstrapSecondLayer,
+                        )
+                    ) {
+                        // This early bootstrap path used to skip the selected Proxy and let the
+                        // MASQUE core register directly. Prepare credentials before starting it.
+                        prepareWarpMasqueRegistration()
+                    }
+                    if (bootstrapSecondLayer) {
                         LogUtil.i(AppConfig.TAG, "StartCore-VPN: Holding VPN until the selected second layer connects")
                         PingNgDiagnostics.record("VPN held until the selected second layer connects")
                         if (!CoreServiceManager.isRunning() && !CoreServiceManager.startCoreLoop(null)) {
@@ -154,7 +165,7 @@ open class CoreVpnService : VpnService(), ServiceControl {
                         }
                         return@launch
                     }
-                    prepareWarpMasqueRegistration()
+                    if (!bootstrapSecondLayer) prepareWarpMasqueRegistration()
                     check(!startupCancelled.get()) { "VPN startup canceled" }
                     if (!setupVpnService()) {
                         unlockStart()
@@ -308,10 +319,11 @@ open class CoreVpnService : VpnService(), ServiceControl {
         return profile.psiphonEnabled || profile.torEnabled
     }
 
-    private fun prepareWarpMasqueRegistration() {
+    private suspend fun prepareWarpMasqueRegistration() {
         val guid = MmkvManager.getSelectServer() ?: return
         val profile = MmkvManager.decodeServerConfig(guid) ?: return
         if (profile.configType != com.v2ray.ang.enums.EConfigType.WARP) return
+        if (!com.v2ray.ang.core.WarpMasqueConfig.isDescription(profile.description)) return
         LogUtil.i(AppConfig.TAG, "StartCore-VPN: registering WARP MASQUE before VPN setup")
         WarpRegistrationProxy.prepareMasqueRegistration(
             service = this,

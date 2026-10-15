@@ -72,9 +72,13 @@ func loadScanAccount(path string) error {
 }
 
 func runRegisterCmd(ctx context.Context, opts options) error {
-	_, ips, err := setupScan(opts)
-	if err != nil {
-		return err
+	var ips []netip.Addr
+	var err error
+	if os.Getenv("PINGNG_MASQUE_REGISTRATION_SOCKS") == "" {
+		_, ips, err = setupScan(opts)
+		if err != nil {
+			return err
+		}
 	}
 	timeout := time.Duration(opts.timeoutSec) * time.Second
 

@@ -1,6 +1,9 @@
 package com.v2ray.ang.ui.main
 
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -88,6 +91,29 @@ class MainActivity : HelperBaseComponentActivity() {
 
     private var desyncTunerJob: Job? = null
     private var warpEndpointTestJob: Job? = null
+    private var pendingMasqueRegistrationGuid: String? = null
+    private val masqueRegistrationReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val guid = intent?.getStringExtra("content") ?: return
+            if (guid != pendingMasqueRegistrationGuid) return
+            pendingMasqueRegistrationGuid = null
+            AwgEndpointScanState.clear(guid)
+            if (mainViewModel.uiState.value.selectedGuid != guid) {
+                mainViewModel.setServiceStartPending(false)
+                return
+            }
+            when (intent.getIntExtra("key", 0)) {
+                AppConfig.MSG_MASQUE_REGISTRATION_READY -> {
+                    mainViewModel.reloadServerList()
+                    startV2Ray()
+                }
+                AppConfig.MSG_MASQUE_REGISTRATION_FAILED -> {
+                    mainViewModel.setServiceStartPending(false)
+                    toast("MASQUE/H2 registration failed")
+                }
+            }
+        }
+    }
 
     private val mainViewModel: MainViewModel by viewModels {
         MainViewModel.Factory(application, MainRepository(application as AngApplication))
@@ -133,9 +159,16 @@ class MainActivity : HelperBaseComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ContextCompat.registerReceiver(this, masqueRegistrationReceiver,
+            IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), Utils.receiverFlags())
         mainViewModel.onAction(MainAction.Initialize)
 
         checkAndRequestPermission(PermissionType.POST_NOTIFICATIONS) {}
+    }
+
+    override fun onDestroy() {
+        unregisterReceiver(masqueRegistrationReceiver)
+        super.onDestroy()
     }
 
     @Composable
@@ -212,6 +245,7 @@ class MainActivity : HelperBaseComponentActivity() {
     }
 
     private fun stopServiceFromButton() {
+        pendingMasqueRegistrationGuid = null
         val state = mainViewModel.uiState.value
         mainViewModel.setServiceStartPending(false)
         mainViewModel.cancelAllPing()
@@ -439,6 +473,22 @@ class MainActivity : HelperBaseComponentActivity() {
         if (selected != null && selected.configType == EConfigType.WARP &&
             WarpMasqueConfig.isDescription(selected.description)
         ) {
+            if (!com.v2ray.ang.core.WarpRegistrationProxy.hasMasqueRegistrationReady(
+                    applicationContext, guid, selected)) {
+                if (pendingMasqueRegistrationGuid == guid) return
+                pendingMasqueRegistrationGuid = guid
+                AwgEndpointScanState.begin(guid, "Obtaining MASQUE/H2 authorization…")
+                try {
+                    LauncherManager.prepareMasqueRegistration(this, guid)
+                } catch (error: Throwable) {
+                    pendingMasqueRegistrationGuid = null
+                    AwgEndpointScanState.clear(guid)
+                    mainViewModel.setServiceStartPending(false)
+                    PingNgDiagnostics.record("MASQUE/H2 registration service failed to start", error)
+                    toast("MASQUE/H2 registration failed")
+                }
+                return
+            }
             if (!WarpMasqueConfig.shouldAutoScan(selected)) {
                 AwgEndpointScanState.clear(guid)
                 startV2RayNow()

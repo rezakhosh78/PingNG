@@ -23,6 +23,16 @@ import com.v2ray.ang.util.Utils
 
 object LauncherManager {
     const val ACTION_RECONFIGURE_DESYNC = "com.v2ray.ang.action.RECONFIGURE_DESYNC"
+    const val ACTION_PREPARE_MASQUE_REGISTRATION = "com.v2ray.ang.action.PREPARE_MASQUE_REGISTRATION"
+
+    fun prepareMasqueRegistration(context: Context, guid: String) {
+        MmkvManager.setSelectServer(guid)
+        val intent = Intent(context.applicationContext, CoreProxyOnlyService::class.java).apply {
+            action = ACTION_PREPARE_MASQUE_REGISTRATION
+            putExtra("profile_guid", guid)
+        }
+        ContextCompat.startForegroundService(context, intent)
+    }
 
     fun startServiceFromToggle(context: Context): Boolean {
         if (MmkvManager.getSelectServer().isNullOrEmpty()) {
@@ -56,14 +66,10 @@ object LauncherManager {
         }
     }
 
-    /**
-     * Starts Xray with only its local proxy inbounds for diagnostics/search.
-     * This deliberately ignores the user's VPN/root mode so a Desync search
-     * never enables the Android VPN interface for every candidate.
-     */
+    /** Starts Xray with only its local proxy inbounds for a temporary local-proxy task. */
     fun startProxyOnlyService(context: Context, guid: String? = null) {
-        LogUtil.i(AppConfig.TAG, "LauncherManager: start proxy-only service for diagnostics")
-        PingNgDiagnostics.record("Starting proxy-only Xray for Desync search")
+        LogUtil.i(AppConfig.TAG, "LauncherManager: start temporary proxy-only service")
+        PingNgDiagnostics.record("Starting proxy-only core for a temporary local-proxy task")
 
         if (guid != null) {
             MmkvManager.setSelectServer(guid)
@@ -72,9 +78,19 @@ object LauncherManager {
         try {
             startContextService(context, forceProxyOnly = true)
         } catch (e: Exception) {
-            LogUtil.e(AppConfig.TAG, "LauncherManager: proxy-only start failed", e)
-            PingNgDiagnostics.record("Proxy-only service launch failed", e)
+            LogUtil.e(AppConfig.TAG, "LauncherManager: proxy-only start failed for ${guid ?: "current profile"}", e)
+            PingNgDiagnostics.record("Proxy-only service launch failed for ${guid ?: "current profile"}", e)
             context.toast(e.message ?: e.javaClass.simpleName)
+        }
+    }
+
+    /** Stops only the temporary proxy-only service, leaving a caller's VPN/root service intact. */
+    fun stopProxyOnlyService(context: Context, guid: String? = null) {
+        runCatching {
+            context.stopService(Intent(context.applicationContext, CoreProxyOnlyService::class.java))
+        }.onFailure {
+            LogUtil.e(AppConfig.TAG, "LauncherManager: proxy-only service stop failed for ${guid ?: "current profile"}", it)
+            PingNgDiagnostics.record("Proxy-only service stop failed for ${guid ?: "current profile"}", it)
         }
     }
 
