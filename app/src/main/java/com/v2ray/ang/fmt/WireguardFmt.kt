@@ -86,14 +86,9 @@ object WireguardFmt : FmtBase() {
         config.publicKey = peerParams["publickey"].orEmpty()
         config.preSharedKey = peerParams["presharedkey"]?.nullIfBlank()
         val endpoint = peerParams["endpoint"].orEmpty()
-        val endpointParts = endpoint.split(":", limit = 2)
-        if (endpointParts.size == 2) {
-            config.server = endpointParts[0]
-            config.serverPort = endpointParts[1]
-        } else {
-            config.server = endpoint
-            config.serverPort = ""
-        }
+        val (endpointHost, endpointPort) = AmneziaWgFmt.splitEndpoint(endpoint)
+        config.server = endpointHost.orEmpty()
+        config.serverPort = endpointPort.orEmpty()
         config.reserved = peerParams["reserved"] ?: "0,0,0"
 
         return config

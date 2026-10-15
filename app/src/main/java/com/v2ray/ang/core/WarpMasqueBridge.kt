@@ -112,7 +112,13 @@ object WarpMasqueBridge {
             val configured = configuredPrimary.takeIf {
                 it.isNotBlank() && (it != WarpMasqueConfig.DEFAULT_ENDPOINT || saved.isNullOrBlank())
             }?.let { value ->
-                if (value.contains(':')) value else "$value:${profile.warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT}"
+                val parsed = com.v2ray.ang.fmt.AmneziaWgFmt.splitEndpoint(value)
+                val alreadyHasPort = value.startsWith("[") && parsed.second?.toIntOrNull() in 1..65535 ||
+                    value.count { it == ':' } == 1 && parsed.second?.toIntOrNull() in 1..65535
+                if (alreadyHasPort) value else {
+                    val host = value.removePrefix("[").removeSuffix("]")
+                    "${com.v2ray.ang.util.Utils.getIpv6Address(host)}:${profile.warpMasqueEndpointPort ?: WarpMasqueConfig.DEFAULT_PORT}"
+                }
             }
             parseCandidates(configured ?: saved ?: WarpMasqueConfig.PRIMARY_ENDPOINT).firstOrNull()
                 ?: throw IllegalStateException("Invalid manual WARP MASQUE endpoint")
@@ -122,7 +128,7 @@ object WarpMasqueBridge {
             LogUtil.i(AppConfig.TAG, "$TAG searching for an H2 endpoint")
             val scannedEndpoint = try {
                 val candidates = kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-                    EndpointScannerCli.scanMasqueH2Endpoints(context, guid, sni)
+                    EndpointScannerCli.scanMasqueH2Endpoints(context, guid, sni, EndpointScanSettings.load(guid))
                 }
                 profile.awgEndpointCandidates = EndpointScannerCli.encodeCandidates(candidates)
                 candidates.first().endpoint.also {
@@ -304,8 +310,11 @@ object WarpMasqueBridge {
             ?: JsonObject()
         // Keep the normal endpoint in sync for core versions that use it
         // during registration or reconnect before entering HTTP/2 mode.
-        root.addProperty("endpoint_v4", endpoint.host)
-        if (http2Enabled) root.addProperty("endpoint_h2_v4", endpoint.host)
+        val isIpv6 = endpoint.host.contains(':')
+        root.addProperty(if (isIpv6) "endpoint_v6" else "endpoint_v4", endpoint.host)
+        if (http2Enabled) {
+            root.addProperty(if (isIpv6) "endpoint_h2_v6" else "endpoint_h2_v4", endpoint.host)
+        }
         if (desyncProxy == null) root.remove("http_proxy") else root.addProperty("http_proxy", desyncProxy)
         configFile.writeText(JsonUtil.toJsonPretty(root).orEmpty())
     }
@@ -542,7 +551,7 @@ object WarpMasqueBridge {
     }
 
     private data class Endpoint(val host: String, val port: Int) {
-        val rendered: String get() = "$host:$port"
+        val rendered: String get() = "${com.v2ray.ang.util.Utils.getIpv6Address(host)}:$port"
     }
 
     private data class StartedEndpoint(
@@ -582,7 +591,16 @@ object WarpMasqueBridge {
     }
 
     private fun expandToken(token: String): List<Endpoint> {
-        val normalized = token.removePrefix("[").removeSuffix("]")
+        val normalized = token.trim()
+        if (normalized.startsWith("[")) {
+            val close = normalized.indexOf(']')
+            if (close > 0 && normalized.getOrNull(close + 1) == ':') {
+                val port = normalized.substring(close + 2).toIntOrNull()
+                if (port != null && port in 1..65535)
+                    return listOf(Endpoint(normalized.substring(1, close), port))
+            }
+            return emptyList()
+        }
         val slash = normalized.indexOf('/')
         if (slash > 0) {
             val base = normalized.substring(0, slash)
@@ -595,8 +613,9 @@ object WarpMasqueBridge {
                 }
             }
         }
-        val port = normalized.substringAfterLast(':', "443").toIntOrNull() ?: 443
-        val host = normalized.substringBeforeLast(':')
+        val bareIpv6 = normalized.count { it == ':' } > 1
+        val port = if (bareIpv6) 443 else normalized.substringAfterLast(':', "443").toIntOrNull() ?: 443
+        val host = if (bareIpv6) normalized else normalized.substringBeforeLast(':')
         return if (host.isNotBlank()) listOf(Endpoint(host, port)) else emptyList()
     }
 }

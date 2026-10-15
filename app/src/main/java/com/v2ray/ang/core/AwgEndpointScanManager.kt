@@ -18,7 +18,7 @@ object AwgEndpointScanManager {
     val isRunning: Boolean get() = active?.isActive == true
 
     @Synchronized
-    fun start(context: Context, guid: String, profile: ProfileItem, skipAutoScanOnce: Boolean): Deferred<String> {
+    fun start(context: Context, guid: String, profile: ProfileItem, skipAutoScanOnce: Boolean, scanOptions: EndpointScanOptions = EndpointScanSettings.load(guid)): Deferred<String> {
         active?.takeIf { it.isActive && activeGuid == guid }?.let { return it }
         val app = context.applicationContext as AngApplication
         val task = app.applicationScope.async(Dispatchers.IO) {
@@ -26,7 +26,7 @@ object AwgEndpointScanManager {
                 val account = EndpointScannerCli.accountFromConfig(profile.amneziawgConfig.orEmpty(), profile.reserved)
                     ?: error("AWG WARP configuration is incomplete")
                 AwgEndpointScanState.begin(guid, "Scanning endpoints…")
-                val result = EndpointScannerCli.scan(app, account) { line ->
+                val result = EndpointScannerCli.scan(app, account, scanOptions) { line ->
                     AwgEndpointScanState.update(guid, line)
                 }
                 val endpoint = AmneziaWgFmt.readConfig(result.config).peers.firstOrNull()?.get("endpoint").orEmpty()

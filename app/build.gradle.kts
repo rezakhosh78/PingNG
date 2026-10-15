@@ -1,5 +1,6 @@
 import java.net.URI
 import java.net.HttpURLConnection
+import java.security.MessageDigest
 import java.io.RandomAccessFile as ElfRandomAccessFile
 import java.nio.ByteBuffer as ElfByteBuffer
 import java.nio.ByteOrder as ElfByteOrder
@@ -10,6 +11,7 @@ import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.OutputDirectory
@@ -104,6 +106,272 @@ abstract class PrepareSnowflakeRuntimeTask : DefaultTask() {
             .orEmpty()
         check(dexFiles.isNotEmpty()) { "D8 did not produce any Snowflake runtime DEX files" }
         dexFiles.forEach { dex -> dex.copyTo(File(snowflakeAssetDirectory, dex.name), overwrite = true) }
+    }
+}
+
+/**
+ * Builds Endpoint Scanner for Android as part of the normal Android Gradle build.
+ * Go is downloaded into Gradle's user cache on first use and checked against
+ * the official go.dev SHA-256 values. The Android NDK remains the project's
+ * pinned side-by-side NDK installation.
+ */
+abstract class BuildEndpointScannerTask : DefaultTask() {
+    @get:InputDirectory
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val scannerSourceDirectory: DirectoryProperty
+
+    @get:OutputDirectory
+    abstract val jniLibsDirectory: DirectoryProperty
+
+    @get:Input
+    abstract val ndkDirectory: Property<String>
+
+    @get:Input
+    abstract val ndkVersion: Property<String>
+
+    @get:Input
+    abstract val goVersion: Property<String>
+
+    @get:Input
+    abstract val androidApiLevel: Property<Int>
+
+    @get:Input
+    abstract val hostIdentifier: Property<String>
+
+    private data class Host(val os: String, val arch: String, val ndkTags: List<String>) {
+        val key: String get() = "$os-$arch"
+    }
+
+    private data class AndroidTarget(
+        val abi: String,
+        val goArch: String,
+        val goArm: String?,
+        val clangTriple: String,
+        val elfClass: Int,
+        val elfMachine: Int,
+    )
+
+    @TaskAction
+    fun buildScanner() {
+        val source = scannerSourceDirectory.get().asFile
+        check(File(source, "go.mod").isFile && File(source, "go.sum").isFile) {
+            "Endpoint Scanner Go source is incomplete: $source"
+        }
+
+        val host = currentHost()
+        val go = resolveGo(host)
+        val ndkRoot = File(ndkDirectory.get())
+        check(ndkRoot.isDirectory) {
+            "Android NDK ${ndkVersion.get()} is missing from $ndkRoot. Android Gradle Plugin should install the pinned NDK after its SDK licenses are accepted."
+        }
+        val prebuiltRoot = File(ndkRoot, "toolchains/llvm/prebuilt")
+        val ndkHost = host.ndkTags.firstOrNull { File(prebuiltRoot, it).isDirectory }
+            ?: error("No Android NDK host toolchain found under $prebuiltRoot for ${host.os}/${host.arch}")
+        val toolchainBin = File(prebuiltRoot, "$ndkHost/bin")
+        val clangName = if (host.os == "windows") "clang.exe" else "clang"
+        val clang = File(toolchainBin, clangName)
+        check(clang.isFile) { "Android NDK Clang compiler is missing: $clang" }
+
+        val outputRoot = jniLibsDirectory.get().asFile
+        outputRoot.deleteRecursively()
+        check(outputRoot.mkdirs() || outputRoot.isDirectory) {
+            "Could not create generated endpoint scanner directory: $outputRoot"
+        }
+
+        val gradleCache = project.gradle.gradleUserHomeDir
+        val goModCache = File(gradleCache, "caches/pingng/gomodcache")
+        val goBuildCache = File(gradleCache, "caches/pingng/gobuildcache")
+        goModCache.mkdirs()
+        goBuildCache.mkdirs()
+
+        val targets = listOf(
+            AndroidTarget("arm64-v8a", "arm64", null, "aarch64-linux-android", 2, 183),
+            AndroidTarget("armeabi-v7a", "arm", "7", "armv7a-linux-androideabi", 1, 40),
+            AndroidTarget("x86_64", "amd64", null, "x86_64-linux-android", 2, 62),
+            AndroidTarget("x86", "386", null, "i686-linux-android", 1, 3),
+        )
+
+        targets.forEach { target ->
+            val targetOutput = File(outputRoot, "${target.abi}/libendpointscanner.so")
+            check(targetOutput.parentFile.mkdirs() || targetOutput.parentFile.isDirectory)
+            // Go's CC parser understands quoted command paths. Normalize Windows
+            // separators first so paths with spaces work the same on every host.
+            val normalizedCompilerCommand =
+                "\"${clang.absolutePath.replace('\\', '/')}\" --target=${target.clangTriple}${androidApiLevel.get()}"
+            val command = listOf(
+                go.absolutePath,
+                "build",
+                "-trimpath",
+                "-buildvcs=false",
+                "-buildmode=pie",
+                "-ldflags=-X main.version=0.16.0-pingng",
+                "-o",
+                targetOutput.absolutePath,
+                ".",
+            )
+            val processBuilder = ProcessBuilder(command)
+                .directory(source)
+                .redirectErrorStream(true)
+            val env = processBuilder.environment()
+            env["GOOS"] = "android"
+            env["GOARCH"] = target.goArch
+            env["CGO_ENABLED"] = "1"
+            env["CC"] = normalizedCompilerCommand
+            env["CGO_LDFLAGS"] = "-Wl,-z,max-page-size=16384"
+            env["GOFLAGS"] = "-mod=readonly"
+            env["GOTOOLCHAIN"] = "local"
+            env["GOMODCACHE"] = goModCache.absolutePath
+            env["GOCACHE"] = goBuildCache.absolutePath
+            // Retry public module mirrors after any proxy error, including HTTP 403.
+            env["GOPROXY"] = System.getenv("GOPROXY")?.takeIf { it.isNotBlank() }
+                ?: "https://proxy.golang.org|https://goproxy.io|direct"
+            target.goArm?.let { env["GOARM"] = it } ?: env.remove("GOARM")
+            val pathKey = env.keys.firstOrNull { it.equals("PATH", ignoreCase = true) } ?: "PATH"
+            env[pathKey] = toolchainBin.absolutePath + File.pathSeparator + env[pathKey].orEmpty()
+
+            logger.lifecycle("Building Endpoint Scanner ${goVersion.get()} for ${target.abi} using Android NDK ${ndkVersion.get()}...")
+            val process = processBuilder.start()
+            val buildOutput = process.inputStream.bufferedReader().use { it.readText() }
+            val exitCode = process.waitFor()
+            check(exitCode == 0) {
+                "Endpoint Scanner build failed for ${target.abi} (exit $exitCode):\n$buildOutput"
+            }
+            validateScannerBinary(targetOutput, target)
+        }
+    }
+
+    private fun currentHost(): Host {
+        val osName = System.getProperty("os.name").lowercase()
+        val archName = System.getProperty("os.arch").lowercase()
+        val arch = when (archName) {
+            "amd64", "x86_64", "x64" -> "amd64"
+            "aarch64", "arm64" -> "arm64"
+            else -> error("Automatic Go toolchain setup does not support host CPU '$archName'")
+        }
+        return when {
+            osName.startsWith("windows") -> Host("windows", arch, listOf("windows-x86_64", "windows-arm64"))
+            osName.startsWith("mac") || osName.startsWith("darwin") ->
+                Host("darwin", arch, listOf("darwin-x86_64", "darwin-arm64"))
+            osName.startsWith("linux") -> Host("linux", arch, listOf("linux-x86_64", "linux-aarch64", "linux-arm64"))
+            else -> error("Automatic Go toolchain setup does not support host OS '${System.getProperty("os.name")}'")
+        }
+    }
+
+    private fun resolveGo(host: Host): File {
+        val version = goVersion.get()
+        check(version == "1.26.3") { "No verified Go archive is configured for Go $version" }
+        val packageHashes = mapOf(
+            "windows-amd64" to "20d2ceafb4ed41b96b879010927b28bc92a5be57a7c1801ce365a9ca51d3224a",
+            "windows-arm64" to "95cd63bc6b0da77409ba819215afea9ddf5702c55a3b20af3dd90ea95c7b130c",
+            "darwin-amd64" to "278d580b32e299fe4a9c990fcf2d02acfe538c7e551a6ee18f9c7164573d2c63",
+            "darwin-arm64" to "875cf54a15311eee2c99b9dd67c68c4a49351d489ab622bf2cfd28c8f2078d3c",
+            "linux-amd64" to "2b2cfc7148493da5e73981bffbf3353af381d5f93e789c82c79aff64962eb556",
+            "linux-arm64" to "9d89a3ea57d141c2b22d70083f2c8459ba3890f2d9e818e7e933b75614936565",
+        )
+        val expectedHash = packageHashes[host.key]
+            ?: error("No verified Go $version distribution is configured for ${host.key}")
+        val archiveName = "go$version.${host.os}-${host.arch}." + if (host.os == "windows") "zip" else "tar.gz"
+        val cacheRoot = File(project.gradle.gradleUserHomeDir, "caches/pingng/toolchains/go-$version")
+        val installDirectory = File(cacheRoot, host.key)
+        val goExecutable = File(installDirectory, "go/bin/go" + if (host.os == "windows") ".exe" else "")
+        if (isExpectedGo(goExecutable, version)) return goExecutable
+
+        cacheRoot.mkdirs()
+        val archive = File(cacheRoot, archiveName)
+        val partialArchive = File(cacheRoot, "$archiveName.download")
+        if (!archive.isFile || sha256(archive) != expectedHash) {
+            archive.delete()
+            partialArchive.delete()
+            logger.lifecycle("Downloading the verified Go $version toolchain from go.dev (first build only)...")
+            val connection = URI("https://go.dev/dl/$archiveName").toURL().openConnection() as HttpURLConnection
+            connection.connectTimeout = 30_000
+            connection.readTimeout = 600_000
+            connection.instanceFollowRedirects = true
+            try {
+                connection.inputStream.use { input -> partialArchive.outputStream().use { output -> input.copyTo(output) } }
+            } finally {
+                connection.disconnect()
+            }
+            check(sha256(partialArchive) == expectedHash) {
+                partialArchive.delete()
+                "SHA-256 verification failed for the official Go archive $archiveName"
+            }
+            check(partialArchive.renameTo(archive)) { "Could not cache Go archive at $archive" }
+        }
+
+        val stagingDirectory = File(cacheRoot, "${host.key}.extracting")
+        stagingDirectory.deleteRecursively()
+        stagingDirectory.mkdirs()
+        val archiveTree = if (archive.extension.equals("zip", ignoreCase = true)) {
+            project.zipTree(archive)
+        } else {
+            project.tarTree(project.resources.gzip(archive))
+        }
+        project.copy {
+            from(archiveTree)
+            into(stagingDirectory)
+        }
+        val stagedGoRoot = File(stagingDirectory, "go")
+        val stagedGoExecutable = File(stagedGoRoot, "bin/go" + if (host.os == "windows") ".exe" else "")
+        check(stagedGoExecutable.isFile) { "Go archive did not extract a valid toolchain to $stagedGoExecutable" }
+        if (host.os != "windows") {
+            listOf(File(stagedGoRoot, "bin"), File(stagedGoRoot, "pkg/tool")).forEach { toolDirectory ->
+                toolDirectory.walkTopDown().filter { it.isFile }.forEach { it.setExecutable(true, true) }
+            }
+        }
+        installDirectory.deleteRecursively()
+        check(stagingDirectory.renameTo(installDirectory)) {
+            "Could not install the Go toolchain under $installDirectory"
+        }
+        archive.delete()
+        check(isExpectedGo(goExecutable, version)) { "Installed Go toolchain is not Go $version: $goExecutable" }
+        return goExecutable
+    }
+
+    private fun isExpectedGo(executable: File, version: String): Boolean {
+        return try {
+            if (!executable.isFile) {
+                false
+            } else {
+                val process = ProcessBuilder(executable.absolutePath, "version").redirectErrorStream(true).start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                process.waitFor() == 0 && output.contains("go$version")
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        return digest.digest().joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    private fun validateScannerBinary(file: File, target: AndroidTarget) {
+        check(file.isFile && file.length() >= 1024) { "Endpoint Scanner produced no executable for ${target.abi}: $file" }
+        val header = file.inputStream().use { it.readNBytes(20) }
+        check(header.size == 20 && header[0] == 0x7f.toByte() &&
+            header[1] == 'E'.code.toByte() && header[2] == 'L'.code.toByte() &&
+            header[3] == 'F'.code.toByte() && (header[4].toInt() and 0xff) == target.elfClass &&
+            header[5] == 1.toByte() && header[16] == 3.toByte() && header[17] == 0.toByte() &&
+            (header[18].toInt() and 0xff) == target.elfMachine && header[19] == 0.toByte()) {
+            "Endpoint Scanner output has an invalid Android PIE ELF header for ${target.abi}: $file"
+        }
+        val contents = file.readBytes().toString(Charsets.ISO_8859_1)
+        check(contents.contains("/system/bin/linker")) {
+            "Endpoint Scanner output for ${target.abi} is not linked for Android"
+        }
+        check(!contents.contains("serve one endpoint as a local SOCKS5 proxy")) {
+            "The obsolete local SOCKS5 server is still present in the ${target.abi} scanner binary"
+        }
     }
 }
 
@@ -273,36 +541,11 @@ warpMasqueBinaries.forEach { (abi, binary) ->
     }
 }
 
-// Bundle the endpoint scanner for each Android ABI supported by this project.
-// Keeping the executables in source prevents builds from silently omitting
-// endpoint scanning when release downloads are unavailable.
-val endpointScannerAbis = mapOf(
-    "arm64-v8a" to (2 to 183),
-    "armeabi-v7a" to (1 to 40),
-    "x86_64" to (2 to 62),
-    "x86" to (1 to 3),
-)
-fun isValidEndpointScannerExecutable(file: java.io.File, elfClass: Int, machine: Int): Boolean = try {
-    if (!file.isFile || file.length() < 1024) {
-        false
-    } else {
-        val header = file.inputStream().use { it.readNBytes(20) }
-        header.size == 20 &&
-            header[0] == 0x7f.toByte() && header[1] == 'E'.code.toByte() &&
-            header[2] == 'L'.code.toByte() && header[3] == 'F'.code.toByte() &&
-            (header[4].toInt() and 0xff) == elfClass && header[5] == 1.toByte() &&
-            header[16] == 3.toByte() && header[17] == 0.toByte() &&
-            (header[18].toInt() and 0xff) == machine && (header[19].toInt() and 0xff) == 0
-    }
-} catch (_: Exception) {
-    false
-}
-endpointScannerAbis.forEach { (abi, elf) ->
-    val executable = layout.projectDirectory.file("libs/$abi/libendpointscanner.so").asFile
-    check(isValidEndpointScannerExecutable(executable, elf.first, elf.second)) {
-        "Android $abi endpoint scanner is missing or invalid: app/libs/$abi/libendpointscanner.so"
-    }
-}
+// Endpoint Scanner is rebuilt from the bundled source during Android packaging. This
+// keeps stale scanner executables out of app/libs and the resulting APK.
+val endpointScannerNdkVersion = "30.0.14904198"
+val endpointScannerSourceDirectory = rootProject.layout.projectDirectory.dir("native/endpointscanner/engine")
+val endpointScannerJniLibsDirectory = layout.buildDirectory.dir("generated/endpointScanner/jniLibs")
 
 if (!isValidAar(libV2rayFile)) {
     check(downloadValidAar(
@@ -316,16 +559,16 @@ ensureAmneziaWgNativeLibraries()
 android {
     namespace = "com.v2ray.ang"
     compileSdk = 37
-    ndkVersion = "30.0.14904198"
+    ndkVersion = endpointScannerNdkVersion
 
     defaultConfig {
         applicationId = "com.pingng.android"
         minSdk = 24
         targetSdk = 37
-        // Keep versionCode monotonic for Pi43 while preserving ABI-specific APK codes.
-        versionCode = 764
-        // PingNG Pi43 is synchronized with official v2rayNG 2.3.11.
-        versionName = "v2.3.11-Pi43"
+        // Keep versionCode monotonic for Pi44 while preserving ABI-specific APK codes.
+        versionCode = 765
+        // PingNG Pi44 is synchronized with official v2rayNG 2.3.11.
+        versionName = "v2.3.11-Pi44"
         // Keep the bundled native engine version observable without calling a
         // native diagnostic entry point during tunnel startup. Some older
         // extracted libwg-go.so builds can panic from awgVersion() itself.
@@ -528,6 +771,16 @@ val prepareSnowflakeRuntime = tasks.register<PrepareSnowflakeRuntimeTask>("prepa
     windowsHost.set(isWindowsHost)
 }
 
+val buildEndpointScannerAndroid = tasks.register<BuildEndpointScannerTask>("buildEndpointScannerAndroid") {
+    scannerSourceDirectory.set(endpointScannerSourceDirectory)
+    jniLibsDirectory.set(endpointScannerJniLibsDirectory)
+    ndkDirectory.set(androidComponents.sdkComponents.ndkDirectory.map { it.asFile.absolutePath })
+    ndkVersion.set(endpointScannerNdkVersion)
+    goVersion.set("1.26.3")
+    androidApiLevel.set(24)
+    hostIdentifier.set("${System.getProperty("os.name")}-${System.getProperty("os.arch")}")
+}
+
 androidComponents {
     onVariants { variant ->
         variant.sources.assets?.addGeneratedSourceDirectory(
@@ -538,6 +791,10 @@ androidComponents {
             prepareSnowflakeRuntime,
             PrepareSnowflakeRuntimeTask::jniLibsDirectory,
         )
+        variant.sources.jniLibs?.addGeneratedSourceDirectory(
+            buildEndpointScannerAndroid,
+            BuildEndpointScannerTask::jniLibsDirectory,
+        )
     }
 }
 
@@ -545,11 +802,17 @@ tasks.configureEach {
     if (name.startsWith("merge") && (name.endsWith("Assets") || name.endsWith("JniLibFolders"))) {
         dependsOn(prepareSnowflakeRuntime)
     }
+    // Explicit task edges keep AGP 9 from reporting generated JNI libraries
+    // as an implicit dependency during merge or lint tasks.
+    if (name.startsWith("merge") && (name.endsWith("JniLibFolders") || name.endsWith("NativeLibs"))) {
+        dependsOn(buildEndpointScannerAndroid)
+    }
 
     // Keep an explicit edge for LintVital analyzers as an AGP 9 safeguard.
     // The generated-source API above is the primary wiring for assets and JNI libs.
     if (name.startsWith("lintVitalAnalyze", ignoreCase = true)) {
         dependsOn(prepareSnowflakeRuntime)
+        dependsOn(buildEndpointScannerAndroid)
     }
 }
 
@@ -606,6 +869,9 @@ dependencies {
 
     // Reorderable list
     implementation(libs.reorderable)
+
+    // Lightweight primitives for WireGuard discovery on Android API 24+.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
 
     // Testing Libraries
     testImplementation(platform(libs.junit.bom))

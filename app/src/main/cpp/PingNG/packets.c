@@ -15,14 +15,16 @@
 #endif
 
 #define ANTOHS(data, i) \
-    (uint16_t)((data[i] << 8) + (uint8_t)data[i + 1])
-    
-#define SHTONA(data, i, x) \
-    data[i] = (uint8_t)((x) >> 8); \
-    data[i + 1] = ((x) & 0xff)
+    (uint16_t)(((uint16_t)(uint8_t)(data)[i] << 8) | (uint8_t)(data)[i + 1])
+
+#define SHTONA(data, i, x) do { \
+    uint16_t shtona_value = (uint16_t)(x); \
+    ((uint8_t *)(data))[i] = (uint8_t)(shtona_value >> 8); \
+    ((uint8_t *)(data))[i + 1] = (uint8_t)(shtona_value & 0xff); \
+} while (0)
 
 
-char tls_data[517] = {
+char tls_data[TLS_DATA_CAPACITY] = {
     "\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\x03\x5f"
     "\x6f\x2c\xed\x13\x22\xf8\xdc\xb2\xf2\x60\x48\x2d\x72"
     "\x66\x6f\x57\xdd\x13\x9d\x1b\x37\xdc\xfa\x36\x2e\xba"
@@ -86,16 +88,20 @@ size_t find_tls_ext_offset(uint16_t type,
     }
     uint16_t ext_len = ANTOHS(data, skip);
     skip += 2;
-    
-    if (ext_len < (size - skip)) {
-        size = ext_len + skip;
+
+    if (ext_len > size - skip) {
+        return 0;
     }
-    while ((skip + 4) < size) {
+    size = ext_len + skip;
+    while ((skip + 4) <= size) {
         uint16_t epyt = ANTOHS(data, skip);
         if (type == epyt) {
             return skip;
         }
         uint16_t len = ANTOHS(data, skip + 2);
+        if (len > size - skip - 4) {
+            return 0;
+        }
         skip += (len + 4);
     }
     return 0;
@@ -108,7 +114,7 @@ size_t chello_ext_offset(uint16_t type, char *data, size_t size)
         return 0;
     }
     uint8_t sid_len = data[43];
-    if (size < 44 + sid_len + 2) {
+    if (size < (size_t)44 + sid_len + 2) {
         return 0;
     }
     uint16_t cip_len = ANTOHS(data, 44 + sid_len);
@@ -118,39 +124,143 @@ size_t chello_ext_offset(uint16_t type, char *data, size_t size)
 }
 
 
-int change_tls_sni(const char *host, char *buffer, size_t bsize)
+static size_t chello_extensions_length_offset(const char *buffer, size_t size)
 {
-    size_t sni_offs, pad_offs;
-    
-    if (!(sni_offs = chello_ext_offset(0x00, buffer, bsize))) {
+    if (size < 45) {
+        return 0;
+    }
+
+    size_t sid_length_offset = 43;
+    size_t cipher_length_offset = 44 + (uint8_t)buffer[sid_length_offset];
+    if (cipher_length_offset + 2 > size) {
+        return 0;
+    }
+
+    uint16_t cipher_length = ANTOHS(buffer, cipher_length_offset);
+    size_t compression_length_offset = cipher_length_offset + 2 + cipher_length;
+    if (compression_length_offset >= size) {
+        return 0;
+    }
+
+    size_t extensions_length_offset = compression_length_offset + 1 +
+        (uint8_t)buffer[compression_length_offset];
+    if (extensions_length_offset + 2 > size) {
+        return 0;
+    }
+    return extensions_length_offset;
+}
+
+int change_tls_sni(const char *host, char *buffer, size_t capacity, size_t *packet_size)
+{
+    if (!host || !buffer || !packet_size) {
         return -1;
     }
-    if (!(pad_offs = chello_ext_offset(0x15, buffer, bsize))) {
+
+    size_t bsize = *packet_size;
+    size_t new_sz = strlen(host);
+    if (new_sz == 0 || new_sz > TLS_MAX_SNI_LENGTH || bsize > capacity || bsize < 9 ||
+            (uint8_t)buffer[0] != 0x16 || (uint8_t)buffer[5] != 0x01 ||
+            (size_t)ANTOHS(buffer, 3) + 5 != bsize) {
         return -1;
     }
-    char *sni = &buffer[sni_offs];
-    char *pad = &buffer[pad_offs];
-    
-    uint16_t old_sz = ANTOHS(buffer, sni_offs + 2) - 5;
-    uint16_t free_sz = ANTOHS(buffer, pad_offs + 2);
-    uint16_t new_sz = strlen(host);
-    
-    ssize_t diff = new_sz - old_sz;
-  
-    if ((free_sz != (bsize - pad_offs - 4)) 
-            || free_sz < diff) {
+
+    size_t handshake_size = ((size_t)(uint8_t)buffer[6] << 16) |
+        ((size_t)(uint8_t)buffer[7] << 8) | (uint8_t)buffer[8];
+    if (handshake_size + 9 != bsize) {
         return -1;
     }
-    SHTONA(sni, 2, old_sz + diff + 5);
-    SHTONA(sni, 4, old_sz + diff + 3);
-    SHTONA(sni, 7, old_sz + diff);
-    SHTONA(pad, 2, free_sz - diff);
-    
-    char *host_end = sni + 9 + old_sz;
-    int oth_sz = bsize - (sni_offs + 9 + old_sz);
-    
-    memmove(host_end + diff, host_end, oth_sz);
-    memcpy(sni + 9, host, new_sz);
+
+    size_t sni_offs = chello_ext_offset(0x00, buffer, bsize);
+    size_t pad_offs = chello_ext_offset(0x15, buffer, bsize);
+    size_t extensions_length_offset =
+        chello_extensions_length_offset(buffer, bsize);
+    if (!sni_offs || !pad_offs || !extensions_length_offset ||
+            sni_offs + 9 > bsize || pad_offs + 4 > bsize) {
+        return -1;
+    }
+
+    size_t sni_extension_length = ANTOHS(buffer, sni_offs + 2);
+    if (sni_extension_length < 5 || sni_offs + 4 + sni_extension_length > bsize) {
+        return -1;
+    }
+    size_t old_sz = sni_extension_length - 5;
+    if (old_sz == 0 || ANTOHS(buffer, sni_offs + 4) != old_sz + 3 ||
+            (uint8_t)buffer[sni_offs + 6] != 0 ||
+            ANTOHS(buffer, sni_offs + 7) != old_sz) {
+        return -1;
+    }
+
+    size_t free_sz = ANTOHS(buffer, pad_offs + 2);
+    if (pad_offs <= sni_offs || pad_offs + 4 + free_sz != bsize) {
+        return -1;
+    }
+
+    ssize_t diff = (ssize_t)new_sz - (ssize_t)old_sz;
+    size_t host_end_offset = sni_offs + 9 + old_sz;
+    if (pad_offs < host_end_offset) {
+        return -1;
+    }
+
+    size_t new_padding_length;
+    size_t new_packet_size = bsize;
+    if ((size_t)(diff > 0 ? diff : 0) > free_sz) {
+        new_padding_length = 0;
+        new_packet_size += (size_t)diff - free_sz;
+    } else {
+        new_padding_length = (size_t)((ssize_t)free_sz - diff);
+    }
+    if (new_packet_size > capacity || new_padding_length > UINT16_MAX) {
+        return -1;
+    }
+
+    size_t new_sni_extension_length = (size_t)((ssize_t)sni_extension_length + diff);
+    size_t new_sni_list_length = (size_t)((ssize_t)(old_sz + 3) + diff);
+    if (new_sni_extension_length > UINT16_MAX || new_sni_list_length > UINT16_MAX) {
+        return -1;
+    }
+
+    /* The padding extension is last, so its existing padding absorbs SNI
+     * growth first. If it runs out, the output grows by the remainder. */
+    uint16_t tls_record_length = ANTOHS(buffer, 3);
+    uint16_t extensions_length = ANTOHS(buffer, extensions_length_offset);
+    ssize_t net_growth = (ssize_t)new_packet_size - (ssize_t)bsize;
+    if (net_growth > 0 &&
+            ((size_t)tls_record_length + (size_t)net_growth > UINT16_MAX ||
+             (size_t)extensions_length + (size_t)net_growth > UINT16_MAX ||
+             handshake_size + (size_t)net_growth > 0xFFFFFFU)) {
+        return -1;
+    }
+
+    size_t new_host_end_offset = sni_offs + 9 + new_sz;
+    size_t middle_size = pad_offs - host_end_offset;
+    size_t new_pad_offs = new_host_end_offset + middle_size;
+    if (new_pad_offs + 4 + new_padding_length != new_packet_size) {
+        return -1;
+    }
+
+    /* Move only the extensions between SNI and padding. The padding is the
+     * final extension, so rebuild it in place instead of shifting its old
+     * contents through a potentially larger temporary buffer. */
+    memmove(buffer + new_host_end_offset, buffer + host_end_offset, middle_size);
+    memmove(buffer + sni_offs + 9, host, new_sz);
+
+    SHTONA(buffer, new_pad_offs, 0x15);
+    SHTONA(buffer, sni_offs + 2, new_sni_extension_length);
+    SHTONA(buffer, sni_offs + 4, new_sni_list_length);
+    SHTONA(buffer, sni_offs + 7, new_sz);
+    SHTONA(buffer, new_pad_offs + 2, new_padding_length);
+    memset(buffer + new_pad_offs + 4, 0, new_padding_length);
+    if (net_growth > 0) {
+        SHTONA(buffer, 3, tls_record_length + net_growth);
+        SHTONA(buffer, extensions_length_offset,
+            extensions_length + net_growth);
+        handshake_size += (size_t)net_growth;
+        buffer[6] = (char)(handshake_size >> 16);
+        buffer[7] = (char)(handshake_size >> 8);
+        buffer[8] = (char)handshake_size;
+    }
+
+    *packet_size = new_packet_size;
     return 0;
 }
 

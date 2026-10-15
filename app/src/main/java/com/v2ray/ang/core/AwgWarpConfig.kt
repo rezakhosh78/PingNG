@@ -9,7 +9,6 @@ object AwgWarpConfig {
     const val DEFAULT_REMARK = "WARP AWG"
     const val DEFAULT_ENDPOINT = "8.6.112.31:500"
     const val DEFAULT_AUTO_SCAN_ENDPOINT = true
-    const val ENDPOINT_SCAN_VERSION = "0.16.0"
     const val JUNK_PACKET_COUNT = 5
     const val JUNK_PACKET_MIN = 10
     const val JUNK_PACKET_MAX = 40

@@ -43,6 +43,7 @@ object WarpEndpointTester {
             innerAccount,
             scanGuid = parentGuid,
             progressLabel = "Inner WARP",
+            scanOptions = EndpointScanSettings.load(parentGuid),
         ) { progress ->
             onProgress("WARP Plus inner: $progress")
         }

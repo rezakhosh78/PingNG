@@ -453,6 +453,7 @@ class MainActivity : HelperBaseComponentActivity() {
                             applicationContext,
                             guid,
                             WarpMasqueConfig.normalizeSni(selected.warpMasqueSni),
+                            com.v2ray.ang.core.EndpointScanSettings.load(guid),
                         )
                     }
                     val endpoint = candidates.first().endpoint

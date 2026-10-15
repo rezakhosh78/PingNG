@@ -24,6 +24,9 @@ object SocksFmt : FmtBase() {
         config.remarks = Utils.decodeURIComponent(uri.fragment.orEmpty()).let { it.ifEmpty { "none" } }
         config.server = uri.idnHost
         config.serverPort = uri.port.toString()
+        if (!uri.rawQuery.isNullOrEmpty()) {
+            getDesyncFromQuery(config, getQueryParam(uri))
+        }
 
         if (uri.userInfo?.isEmpty() == false) {
             val result = if (uri.userInfo.contains(":")) {
@@ -53,6 +56,7 @@ object SocksFmt : FmtBase() {
             else
                 ":"
 
-        return toUri(config, Utils.encode(pw, true), null)
+        val query = getDesyncQueryDic(config).takeIf { it.isNotEmpty() }
+        return toUri(config, Utils.encode(pw, true), query)
     }
 }

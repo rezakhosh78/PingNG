@@ -164,12 +164,12 @@ class ServerWireguardActivity : BaseServerActivity() {
         var awgWarpGenerating by remember { mutableStateOf(false) }
         var awgWarpProgress by remember { mutableStateOf("") }
         var awgWarpSelectedEndpoint by rememberSaveable { mutableStateOf("") }
-        var awgScanGuid by rememberSaveable { mutableStateOf(editGuid) }
+        var awgScanGuid by rememberSaveable { mutableStateOf(editGuid.ifBlank { java.util.UUID.randomUUID().toString() }) }
         val awgScanState by AwgEndpointScanState.state.collectAsStateWithLifecycle()
         val awgCandidates = remember(uiState.awgEndpointCandidates) {
             EndpointScannerCli.decodeCandidates(uiState.awgEndpointCandidates)
         }
-        var wgScanGuid by rememberSaveable(editGuid) { mutableStateOf(editGuid) }
+        var wgScanGuid by rememberSaveable(editGuid) { mutableStateOf(editGuid.ifBlank { java.util.UUID.randomUUID().toString() }) }
         var wgScanJob by remember { mutableStateOf<Job?>(null) }
 
         fun recordAwgWarpProgress(line: String) {
@@ -286,7 +286,7 @@ class ServerWireguardActivity : BaseServerActivity() {
             }
         }
 
-        fun scanAwgWarpConfig() {
+        fun scanAwgWarpConfig(scanOptions: com.v2ray.ang.core.EndpointScanOptions) {
             if (awgWarpGenerating || AwgEndpointScanManager.isRunning) return
             if (accountFromAwgConfig() == null) {
                 toast("Create a WARP AWG config before scanning")
@@ -294,8 +294,10 @@ class ServerWireguardActivity : BaseServerActivity() {
             }
             val guid = saveDraftForDesyncSearch(uiState) ?: return
             val profile = MmkvManager.decodeServerConfig(guid) ?: return
+            com.v2ray.ang.core.EndpointScanSettings.transfer(awgScanGuid, guid)
+            com.v2ray.ang.core.EndpointScanSettings.save(guid, scanOptions)
             awgScanGuid = guid
-            AwgEndpointScanManager.start(this@ServerWireguardActivity, guid, profile, true)
+            AwgEndpointScanManager.start(this@ServerWireguardActivity, guid, profile, true, scanOptions)
         }
 
         LaunchedEffect(awgScanState.running, awgScanState.selectedEndpoint, awgScanGuid) {
@@ -376,7 +378,7 @@ class ServerWireguardActivity : BaseServerActivity() {
                         }
                         uiState.finalMask = finalMaskFields.toJsonOrNull().orEmpty()
                     }
-                    saveServer(uiState)
+                    saveServer(uiState, if (isAwgWarp) awgScanGuid else if (isWarpWireGuard) wgScanGuid else null)
                 }
             }
         ) {
@@ -391,7 +393,7 @@ class ServerWireguardActivity : BaseServerActivity() {
                     scanInProgress = generating || wgScanJob?.isActive == true,
                     candidateGroups = listOf("WARP WireGuard" to awgCandidates),
                     selectedEndpoints = mapOf("WARP WireGuard" to "${uiState.address}:${uiState.port}"),
-                    onScan = {
+                    onScan = { scanOptions ->
                         val account = EndpointScannerCli.accountFromProfile(initialConfig.copy(
                             secretKey = uiState.secretKey,
                             publicKey = uiState.publicKey,
@@ -415,6 +417,8 @@ class ServerWireguardActivity : BaseServerActivity() {
                             if (scanGuid.isNullOrBlank()) {
                                 toast("Could not prepare WARP WireGuard endpoint scan")
                             } else {
+                                com.v2ray.ang.core.EndpointScanSettings.transfer(wgScanGuid, scanGuid)
+                                com.v2ray.ang.core.EndpointScanSettings.save(scanGuid, scanOptions)
                                 wgScanGuid = scanGuid
                                 wgScanJob = scope.launch {
                                     try {
@@ -423,6 +427,7 @@ class ServerWireguardActivity : BaseServerActivity() {
                                             account,
                                             scanGuid = scanGuid,
                                             progressLabel = "WARP WireGuard",
+                                            scanOptions = scanOptions,
                                         )
                                         uiState.awgEndpointCandidates = EndpointScannerCli.encodeCandidates(candidates)
                                     } catch (cancelled: CancellationException) {
@@ -455,69 +460,21 @@ class ServerWireguardActivity : BaseServerActivity() {
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Auto Scan Endpoint", style = MaterialTheme.typography.bodyLarge)
-                                Text("Scan on every connect", style = MaterialTheme.typography.bodySmall)
-                            }
-                            Switch(
-                                checked = uiState.autoScanEndpoint,
-                                onCheckedChange = { uiState.autoScanEndpoint = it },
-                            )
-                        }
-                        Button(
-                            enabled = !awgWarpGenerating && !AwgEndpointScanManager.isRunning,
-                            onClick = { scanAwgWarpConfig() },
-                        ) {
-                            Text("Scan Endpoint")
-                        }
-                        if (awgScanState.guid == awgScanGuid && awgScanState.running) {
-                            Text(
-                                if (awgScanState.totalCount > 0) "Scanning endpoints…" else awgScanState.message,
-                                fontSize = 12.sp,
-                                maxLines = 2,
-                            )
-                            if (awgScanState.totalCount > 0) {
-                                Text("Scanned: ${awgScanState.scannedCount}/${awgScanState.totalCount}", fontSize = 12.sp)
-                            }
-                            Text("Found: ${awgScanState.endpoints.size}", fontSize = 12.sp)
-                            Column(Modifier.fillMaxWidth().height(72.dp).verticalScroll(rememberScrollState())) {
-                                awgScanState.endpoints.forEach { Text(it, fontSize = 12.sp) }
-                            }
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            OutlinedButton(onClick = { AwgEndpointScanManager.cancel() }) { Text("Cancel Scan") }
-                        }
-                        if (awgCandidates.isNotEmpty()) {
-                            Text("Reachable endpoints · lowest ping first", style = MaterialTheme.typography.titleSmall)
-                            Column(Modifier.fillMaxWidth().height(192.dp).verticalScroll(rememberScrollState())) {
-                            awgCandidates.forEachIndexed { index, candidate ->
-                                OutlinedButton(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    onClick = { selectAwgEndpoint(candidate) },
-                                    enabled = !awgWarpGenerating && !AwgEndpointScanManager.isRunning,
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically,
-                                    ) {
-                                        Text(
-                                            "${index + 1}. ${candidate.endpoint}" +
-                                                if (AmneziaWgFmt.value(uiState.amneziawgConfig, "Peer", "Endpoint") == candidate.endpoint) " ✓" else "",
-                                            modifier = Modifier.weight(1f),
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                        )
-                                        Text(if (candidate.latencyMs >= 0) "${candidate.latencyMs} ms" else "—")
-                                    }
-                                }
-                            }
-                            }
-                        }
+                        AutoScanEndpointSwitch(
+                            checked = uiState.autoScanEndpoint,
+                            onCheckedChange = { uiState.autoScanEndpoint = it },
+                        )
+                        EndpointScanPanel(
+                            guid = awgScanGuid,
+                            state = awgScanState,
+                            scanInProgress = awgWarpGenerating || AwgEndpointScanManager.isRunning,
+                            candidateGroups = listOf("WARP AWG" to awgCandidates),
+                            selectedEndpoints = mapOf("WARP AWG" to
+                                AmneziaWgFmt.value(uiState.amneziawgConfig, "Peer", "Endpoint")),
+                            onScan = { options -> scanAwgWarpConfig(options) },
+                            onCancel = { AwgEndpointScanManager.cancel() },
+                            onSelect = { _, candidate -> selectAwgEndpoint(candidate) },
+                        )
                         Button(
                             enabled = !awgWarpGenerating && !AwgEndpointScanManager.isRunning,
                             onClick = {

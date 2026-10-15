@@ -1,5 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="endpoint_scan_options_title">تنظیمات اسکن نقطه اتصال</string>
+    <string name="endpoint_scan_timeout_seconds">مهلت پاسخ، ثانیه</string>
+    <string name="endpoint_scan_parallel_jobs">تعداد اسکن‌های هم‌زمان</string>
+    <string name="endpoint_scan_ip_family">نسخه IP</string>
+    <string name="endpoint_scan_ipv4">IPv4</string>
+    <string name="endpoint_scan_ipv6">IPv6</string>
+    <string name="endpoint_scan_port_mode">حالت اسکن پورت</string>
+    <string name="endpoint_scan_first_reachable">اولین مورد در دسترس</string>
+    <string name="endpoint_scan_all_open_ports">همه پورت‌های باز</string>
+    <string name="endpoint_scan_all_known_ports">همه پورت‌های شناخته‌شده</string>
+    <string name="endpoint_scan_all_open_ports_hint">هر پورتی را که در مرحلهٔ اول پیدا شده بررسی می‌کند.</string>
+    <string name="endpoint_scan_all_known_ports_hint">همهٔ پورت‌های شناخته‌شدهٔ WARP را بررسی می‌کند و ممکن است بیشتر طول بکشد.</string>
+    <string name="endpoint_scan_action">اسکن نقطه اتصال</string>
     <string name="app_name" translatable="false">PingNG</string>
     <string name="app_widget_name">تعویض</string>
     <string name="app_tile_name">PingNG</string>
@@ -156,6 +169,15 @@
     <string name="pingng_custom_args">آرگومان‌های سفارشی PingNG</string>
     <string name="pingng_custom_args_required">آرگومان‌های Desync سفارشی را وارد کنید.</string>
     <string name="pingng_desync_for_profile">Desync — %1$s</string>
+    <string name="pingng_desync_badge_light">Desync ● Light</string>
+    <string name="pingng_desync_badge_balanced">Desync ● Balanced</string>
+    <string name="pingng_desync_badge_severe">Desync ● Severe</string>
+    <string name="pingng_desync_badge_adaptive">Desync ● Adaptive</string>
+    <string name="pingng_desync_badge_split">Desync ● Split</string>
+    <string name="pingng_desync_badge_disorder">Desync ● Disorder</string>
+    <string name="pingng_desync_badge_fake_sni">Desync ● Fake SNI</string>
+    <string name="pingng_desync_badge_out_of_band">Desync ● Out of Band</string>
+    <string name="pingng_desync_badge_disorder_out_of_band">Desync ● Disorder + Out of Band</string>
     <string name="pingng_desync_unsupported">این نوع تونل از موتور Desync مخصوص TCP/TLS پشتیبانی نمی‌کند.</string>
     <string name="pingng_profile_off_hint">Desync خاموش است</string>
     <string name="pingng_profile_light_hint">تأخیر کم و مناسب استفادهٔ روزمره</string>
@@ -497,6 +519,7 @@
     <string name="warp_desync_masque_note">Desync به اتصال TLS بیرونی MASQUE/H2 هدایت می‌شود. برای ذخیره‌ی یکی از حالت‌ها در این پروفایل، آن را انتخاب کنید.</string>
     <string name="server_test_delay_value">%1$d میلی‌ثانیه</string>
     <string name="connection_test_error">آزمایش اتصال ناموفق بود: %s</string>
+    <string name="dns_tunnel_connection_not_ready">تونل MasterDNS/DNSTT برای بررسی اتصال آماده نیست.</string>
     <string name="connection_test_fail">اینترنت در دسترس نیست</string>
     <string name="connection_test_error_status_code">کد خطا: #%d</string>
     <string name="connection_connected">متصل است.\nبرای بررسی اتصال ضربه بزنید.</string>

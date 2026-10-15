@@ -36,8 +36,54 @@ class PingNgCompatTest {
         val command = requireNotNull(PingNgCompat.buildCommandLine(profile, 18191))
 
         assertEquals("ciadpi", command.first())
-        assertTrue(command.containsAll(listOf("--disorder", "1", "--tlsrec", "1+s")))
+        assertTrue(command.containsAll(listOf("--split-range", "1-3+s", "--tlsrec", "1-3+s")))
+        assertFalse(command.contains("--disorder"))
         assertEquals(listOf("--ip", "127.0.0.1", "--port", "18191"), command.takeLast(4))
+    }
+
+    @Test
+    fun websocketTlsProfilesAvoidTlsRecordRewritingThatTruncatesTheHandshake() {
+        val profile = ProfileItem.create(EConfigType.VLESS).apply {
+            network = "ws"
+            security = "tls"
+            pingNgProfile = PingNgCompat.PROFILE_LIGHT
+        }
+
+        val command = requireNotNull(PingNgCompat.buildCommandLine(profile, 18195))
+
+        assertTrue(command.containsAll(listOf("--split", "1")))
+        assertFalse(command.contains("1+s"))
+        assertFalse(command.contains("--tlsrec"))
+    }
+
+    @Test
+    fun websocketTlsCustomSniSplitUsesByteOneWithoutChangingOtherFlags() {
+        val profile = ProfileItem.create(EConfigType.VLESS).apply {
+            network = "ws"
+            security = "tls"
+            pingNgProfile = PingNgCompat.PROFILE_CUSTOM
+            pingNgDesyncArgs = "--proto=tls --split 1+s --timeout 3"
+        }
+
+        val command = requireNotNull(PingNgCompat.buildCommandLine(profile, 18197))
+
+        assertTrue(command.containsAll(listOf("--split", "1", "--timeout", "3")))
+        assertFalse(command.contains("1+s"))
+    }
+
+    @Test
+    fun customWebsocketTlsArgumentsKeepDesyncButRemoveTlsRecordRewrites() {
+        val profile = ProfileItem.create(EConfigType.VLESS).apply {
+            network = "ws"
+            security = "tls"
+            pingNgProfile = PingNgCompat.PROFILE_CUSTOM
+            pingNgDesyncArgs = "--proto=tls --fake -1 --tls-sni cover.example --tlsrec 1+s"
+        }
+
+        val command = requireNotNull(PingNgCompat.buildCommandLine(profile, 18196))
+
+        assertTrue(command.containsAll(listOf("--fake", "-1", "--tls-sni", "cover.example")))
+        assertFalse(command.contains("--tlsrec"))
     }
 
     @Test
@@ -66,6 +112,56 @@ class PingNgCompatTest {
 
         assertTrue(command.contains("cover.example"))
         assertEquals(listOf("--ip", "127.0.0.1", "--port", "18192"), command.takeLast(4))
+    }
+
+    @Test
+    fun customFakeSniSupportsNamesLongerThanTheOriginalCamouflagePadding() {
+        val tooLong = listOf("a".repeat(63), "b".repeat(63), "c".repeat(63), "dddd").joinToString(".")
+        val profile = ProfileItem.create(EConfigType.VLESS).apply {
+            pingNgProfile = PingNgCompat.PROFILE_CUSTOM
+            pingNgDesyncArgs = "--fake -1 --tls-sni $tooLong --delay 1"
+        }
+
+        val command = requireNotNull(PingNgCompat.buildCommandLine(profile, 18197))
+
+        assertTrue(command.contains("--tls-sni"))
+        assertTrue(command.contains(tooLong))
+        assertTrue(command.contains("--fake"))
+    }
+
+    @Test
+    fun customFakeSniDoesNotApplyAnAppLengthCutoff() {
+        val longSni = "cover".repeat(80)
+        val profile = ProfileItem.create(EConfigType.VLESS).apply {
+            pingNgProfile = PingNgCompat.PROFILE_CUSTOM
+            pingNgDesyncArgs = "--fake -1 --tls-sni $longSni"
+        }
+
+        val command = requireNotNull(PingNgCompat.buildCommandLine(profile, 18199))
+
+        assertTrue(command.contains(longSni))
+    }
+
+    @Test
+    fun customMethodIsRecognizedFromEqualsSyntaxAndFakeTakesPriorityOverOtherModes() {
+        val profile = ProfileItem.create(EConfigType.VLESS).apply {
+            pingNgProfile = PingNgCompat.PROFILE_CUSTOM
+            pingNgDesyncArgs = "--disorder 3+s --fake=-1 --tls-sni=cover.example"
+        }
+
+        assertEquals(PingNgCompat.METHOD_FAKE_SNI, PingNgCompat.displayMethod(profile))
+        assertTrue(requireNotNull(PingNgCompat.buildCommandLine(profile, 18198)).contains("cover.example"))
+    }
+
+    @Test
+    fun emptyImportedCustomProfileDoesNotStartAnEmptyDesyncCommand() {
+        val profile = ProfileItem.create(EConfigType.VLESS).apply {
+            pingNgProfile = PingNgCompat.PROFILE_CUSTOM
+            pingNgDesyncArgs = ""
+        }
+
+        assertFalse(PingNgCompat.isNativeDesyncEnabled(profile))
+        assertEquals(null, PingNgCompat.buildCommandLine(profile, 18199))
     }
 
     @Test

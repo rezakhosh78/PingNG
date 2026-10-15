@@ -28,7 +28,7 @@
 char ip_option[1] = "\0";
 
 struct packet fake_tls = { 
-    sizeof(tls_data), tls_data 
+    TLS_DATA_INITIAL_SIZE, tls_data 
 },
 fake_http = { 
     sizeof(http_data), http_data
@@ -809,11 +809,14 @@ int main(int argc, char **argv)
             break;
             
         case 'n': {
-            if (change_tls_sni(optarg, fake_tls.data, fake_tls.size)) {
+            size_t packet_size = fake_tls.size;
+            if (change_tls_sni(optarg, fake_tls.data, TLS_DATA_CAPACITY,
+                    &packet_size)) {
                 fprintf(stderr, "error chsni\n");
                 clear_params();
                 return -1;
             }
+            fake_tls.size = packet_size;
             char **sni_slot = add(
                 (void **)&dp->sni_list,
                 &dp->sni_count,

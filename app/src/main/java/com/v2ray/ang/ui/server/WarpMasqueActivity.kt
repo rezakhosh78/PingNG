@@ -184,14 +184,16 @@ class WarpMasqueActivity : BaseServerActivity() {
                         state = scanState,
                         scanInProgress = scanJob?.isActive == true,
                         candidateGroups = listOf("MASQUE/H2" to candidateList),
-                        selectedEndpoints = mapOf("MASQUE/H2" to "$primaryEndpoint:$endpointPort"),
-                        onScan = {
+                        selectedEndpoints = mapOf("MASQUE/H2" to "${com.v2ray.ang.util.Utils.getIpv6Address(primaryEndpoint)}:$endpointPort"),
+                        showPortScanMode = false,
+                        onScan = { scanOptions ->
                             scanJob = scope.launch {
                                 try {
                                     val found = EndpointScannerCli.scanMasqueH2Endpoints(
                                         this@WarpMasqueActivity,
                                         scanGuid,
                                         WarpMasqueConfig.normalizeSni(sni),
+                                        scanOptions = scanOptions,
                                     )
                                     scannedCandidates = EndpointScannerCli.encodeCandidates(found)
                                     AwgEndpointScanState.complete(
@@ -489,7 +491,7 @@ class WarpMasqueActivity : BaseServerActivity() {
             this.autoScanEndpoint = autoScanEndpoint
             this.warpMasqueScanPreparedOnce = false
             if (!autoScanEndpoint) {
-                this.warpMasqueSelectedEndpoint = "${primaryEndpoint.trim()}:$parsedEndpointPort"
+                this.warpMasqueSelectedEndpoint = "${com.v2ray.ang.util.Utils.getIpv6Address(primaryEndpoint.trim())}:$parsedEndpointPort"
             }
             this.awgEndpointCandidates = scannedCandidates.ifBlank { null }
             this.warpMasqueDeviceName = deviceName.trim().ifBlank { WarpMasqueConfig.randomDeviceName() }
@@ -517,6 +519,7 @@ class WarpMasqueActivity : BaseServerActivity() {
         if (guid.isNotBlank() && old != null && old.subscriptionId.isNotBlank()) {
             SubscriptionProfileOverrides.save(guid, old, config)
         }
+        com.v2ray.ang.core.EndpointScanSettings.transfer(warpSearchDraftGuid ?: editGuid, guid)
         val saved = MmkvManager.encodeServerConfig(guid, config)
         toastSuccess(R.string.toast_success)
         ProfileEditorResult.run {

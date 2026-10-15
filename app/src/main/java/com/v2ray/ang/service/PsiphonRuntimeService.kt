@@ -48,9 +48,8 @@ class PsiphonRuntimeService : Service() {
         const val ENTRIES_ASSET = "pingng_psiphon_server_entries.txt"
         const val NATIVE_NAME = "libpingng_psiphon.so"
 
-        // Psiphon is always chained through PingNG's local HTTP upstream.
-        // QUIC and in-proxy transports cannot be used through that hop, so
-        // this is the same protocol set used by the reference chained mode.
+        // Chained mode uses the local HTTP upstream; CDN mode connects to
+        // edges directly on the underlying network.
         val CHAINED_TUNNEL_PROTOCOLS = listOf(
             "SSH",
             "OSSH",
@@ -172,8 +171,8 @@ class PsiphonRuntimeService : Service() {
         // callback is being entered and the bundled gomobile runtime crashes
         // (the log shows _cgoexp_*NetworkChanged followed by
         // `fatal error: unknown caller pc`). Keep this process on the real
-        // Wi-Fi/cellular network for its lifetime; its upstream is still the
-        // local Xray HTTP listener on 127.0.0.1.
+        // Wi-Fi/cellular network for its lifetime. CDN fronting can bootstrap
+        // directly even when the selected Xray outbound cannot connect.
         bindToUnderlyingNetwork()
         // Android associates a loaded native library with both its absolute
         // path and its ClassLoader. Reusing the old libgojni.so path after a
@@ -277,7 +276,27 @@ class PsiphonRuntimeService : Service() {
                         null
                     }
                     "onDiagnosticMessage" -> {
-                        LogUtil.d(TAG, args?.firstOrNull()?.toString().orEmpty())
+                        val message = args?.firstOrNull()?.toString().orEmpty()
+                        LogUtil.d(TAG, message)
+                        // Record the active protocol and bounded failure
+                        // notices so a listening SOCKS socket is never
+                        // mistaken for a working CDN tunnel.
+                        val separator = message.indexOf(':')
+                        val noticeType = if (separator > 0) message.substring(0, separator).trim() else ""
+                        if (noticeType == "ActiveTunnel") {
+                            val protocol = runCatching {
+                                JsonParser.parseString(message.substring(separator + 1).trim())
+                                    .asJsonObject.get("protocol")?.takeIf { !it.isJsonNull }?.asString
+                            }.getOrNull()?.takeIf(String::isNotBlank)
+                            if (protocol != null) {
+                                val fronted = protocol.startsWith("FRONTED-MEEK", ignoreCase = true)
+                                val evidence = "Psiphon active tunnel: protocol=$protocol; cdnFronted=$fronted"
+                                LogUtil.i(TAG, evidence)
+                                PingNgDiagnostics.record(evidence)
+                            }
+                        } else if (noticeType.endsWith("Error") || noticeType in setOf("CandidateServers", "ConnectingServer", "EstablishTunnelTimeout", "Alert")) {
+                            PingNgDiagnostics.record("Psiphon ${message.take(350)}")
+                        }
                         null
                     }
                     else -> defaultValue(method)
@@ -402,13 +421,20 @@ class PsiphonRuntimeService : Service() {
         root.addProperty("EgressRegion", normalizedEgressRegion(region))
         root.addProperty("TunnelWholeDevice", 0)
         if (requestedSocksPort in 1..65535) root.addProperty("LocalSocksProxyPort", requestedSocksPort)
-        val configuredProxy = if (forceLocalUpstream) null else SettingsManager.getConnectHttpProxy()
-        val upstreamProxyUrl = configuredProxy?.asHttpUrl() ?: "http://127.0.0.1:$upstreamPort"
-        root.addProperty("UpstreamProxyUrl", upstreamProxyUrl)
-        if (configuredProxy != null) {
-            PingNgDiagnostics.record(
-                "Connect through HTTP proxy: Psiphon upstream set to ${configuredProxy.host}:${configuredProxy.port}",
-            )
+        if (mode.equals("cdn", ignoreCase = true)) {
+            // This mode establishes its fronted tunnel over the underlying
+            // network. A failed Xray first hop must not block CDN bootstrap.
+            root.remove("UpstreamProxyUrl")
+            PingNgDiagnostics.record("Psiphon CDN fronting: direct edge bootstrap on underlying network")
+        } else {
+            val configuredProxy = if (forceLocalUpstream) null else SettingsManager.getConnectHttpProxy()
+            val upstreamProxyUrl = configuredProxy?.asHttpUrl() ?: "http://127.0.0.1:$upstreamPort"
+            root.addProperty("UpstreamProxyUrl", upstreamProxyUrl)
+            if (configuredProxy != null) {
+                PingNgDiagnostics.record(
+                    "Connect through HTTP proxy: Psiphon upstream set to ${configuredProxy.host}:${configuredProxy.port}",
+                )
+            }
         }
         root.addProperty("DataRootDirectory", dataRoot.absolutePath)
         root.addProperty("DataStoreDirectory", dataStore.absolutePath)
@@ -425,7 +451,20 @@ class PsiphonRuntimeService : Service() {
         // proxy unless this switch is enabled.
         root.addProperty("UpstreamProxyAllowAllServerEntrySources", true)
         applyTunnelProtocolMode(root, mode)
-        addCdnFrontingConfig(root, mode, cdnIps, cdnSni, cdnSets)
+        com.v2ray.ang.core.PsiphonCdnFrontingConfig.apply(root, this, mode, cdnIps, cdnSni, cdnSets)
+        if (mode.equals("cdn", ignoreCase = true)) {
+            val scanSpec = root.getAsJsonObject("FrontedMeekCDNScanSpec")
+            val scanIpCount = scanSpec?.getAsJsonArray("IPCandidates")?.size() ?: 0
+            val scanSniCount = scanSpec?.getAsJsonArray("SNIServerNames")?.size() ?: 0
+            val protocols = root.getAsJsonArray("LimitTunnelProtocols")
+                ?.joinToString(",") { it.asString }.orEmpty()
+            val builtIn = root.get("FrontedMeekCDNScanUseBuiltInSpec")
+                ?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+            val evidence = "Psiphon CDN config: upstreamProxy=${root.has("UpstreamProxyUrl")}, " +
+                "protocols=$protocols, scanIPs=$scanIpCount, scanSNIs=$scanSniCount, builtIn=$builtIn"
+            LogUtil.i(TAG, evidence)
+            PingNgDiagnostics.record(evidence)
+        }
         root.addProperty("DeviceRegion", Locale.getDefault().country)
         root.addProperty("ClientPlatform", "Android_${Build.VERSION.RELEASE}_${packageName}".replace(Regex("[^\\w\\-.]"), "_"))
         root.addProperty("ClientAPILevel", Build.VERSION.SDK_INT)
@@ -441,46 +480,9 @@ class PsiphonRuntimeService : Service() {
             else -> CHAINED_TUNNEL_PROTOCOLS
         }
         root.add("LimitTunnelProtocols", JsonArray().also { values -> protocols.forEach(values::add) })
-        if (normalized == "cdn" || normalized == "direct") {
+        if (normalized == "direct" || normalized == "cdn") {
             root.addProperty("DisableTactics", true)
         }
-    }
-
-    /** Mirrors PingNG's Psiphon fronting configuration using tunnel-core JSON. */
-    private fun addCdnFrontingConfig(
-        root: com.google.gson.JsonObject,
-        mode: String,
-        cdnIps: String,
-        cdnSni: String,
-        cdnSets: String,
-    ) {
-        if (mode.trim().equals("direct", ignoreCase = true)) return
-        fun candidates(raw: String): List<String> = raw.split(',', ';', ' ', '\t', '\n', '\r')
-            .map(String::trim).filter(String::isNotBlank)
-        val addresses = candidates(cdnIps)
-        val names = candidates(cdnSni)
-        val sets = candidates(cdnSets)
-        if (!mode.trim().equals("cdn", ignoreCase = true) && addresses.isEmpty() && names.isEmpty() && sets.isEmpty()) return
-        if (addresses.isNotEmpty()) {
-            val spec = com.google.gson.JsonObject().apply {
-                add("IPCandidates", com.google.gson.JsonArray().also { values -> addresses.forEach(values::add) })
-                if (names.isNotEmpty()) {
-                    add("SNIServerNames", com.google.gson.JsonArray().also { values -> names.forEach(values::add) })
-                }
-            }
-            root.add("FrontedMeekCDNScanSpec", spec)
-        }
-        // No custom edges means use all built-in lists. Named lists restrict the
-        // built-in scan and are appended after custom edges, matching PingNG's reference behavior.
-        if (addresses.isEmpty() || sets.isNotEmpty()) {
-            root.addProperty("FrontedMeekCDNScanUseBuiltInSpec", true)
-        }
-        if (sets.isNotEmpty()) {
-            root.add("FrontedMeekCDNScanBuiltInSets", com.google.gson.JsonArray().also { values -> sets.forEach(values::add) })
-        }
-        PingNgDiagnostics.record(
-            "Psiphon CDN fronting enabled: customEdges=${addresses.size}, builtInSets=${sets.size}",
-        )
     }
 
     private fun normalizedEgressRegion(region: String): String =

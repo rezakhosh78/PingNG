@@ -19,6 +19,7 @@ object WarpWireGuardEndpointTester {
             account,
             scanGuid = guid,
             progressLabel = "WARP WireGuard",
+            scanOptions = EndpointScanSettings.load(guid),
         ) { progress ->
             onProgress("WARP WireGuard: $progress")
         }
@@ -27,6 +28,17 @@ object WarpWireGuardEndpointTester {
         persist(guid, original.copy(
             awgEndpointCandidates = EndpointScannerCli.encodeCandidates(candidates),
         ), endpoint)
+        val persisted = MmkvManager.decodeServerConfig(guid)
+        check(
+            persisted != null && persisted.server == endpoint.host &&
+                persisted.serverPort == endpoint.port.toString()
+        ) {
+            "Verified WARP WireGuard endpoint was not saved"
+        }
+        PingNgDiagnostics.record(
+            "WARP WireGuard durable endpoint selected and saved: ${endpoint.host}:${endpoint.port}; " +
+                "candidates=${candidates.size}"
+        )
         AwgEndpointScanState.complete(guid, "Endpoint selected: ${selected.endpoint}", selected.endpoint)
         return true
     }

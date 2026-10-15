@@ -747,7 +747,7 @@ abstract class BaseServerActivity : BaseComponentActivity() {
         }
     }
 
-    protected fun saveServer(state: ServerUiState): Boolean {
+    protected fun saveServer(state: ServerUiState, scanSettingsGuid: String? = null): Boolean {
         if (!validateBasicConfig(state)) return false
         val config = state.toProfileItem(initialConfig)
         if (!validateCommonConfig(config)) return false
@@ -773,6 +773,9 @@ abstract class BaseServerActivity : BaseComponentActivity() {
             SubscriptionProfileOverrides.save(editGuid, initialConfig, config)
         }
         val savedGuid = MmkvManager.encodeServerConfig(targetGuid, config)
+        if (!scanSettingsGuid.isNullOrBlank() && savedGuid.isNotBlank()) {
+            com.v2ray.ang.core.EndpointScanSettings.transfer(scanSettingsGuid, savedGuid)
+        }
         draftGuidForDesyncSearch = null
         toastSuccess(R.string.toast_success)
         ProfileEditorResult.run {

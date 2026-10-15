@@ -17,11 +17,17 @@
 #define MH_SPACE 2
 #define MH_DMIX 4
 
-extern char tls_data[517];
+/* A TLS record has a 16-bit payload length. Keep enough storage for its full
+ * maximum wire size so Fake SNI is not restricted by the default padding. */
+#define TLS_DATA_INITIAL_SIZE 517
+#define TLS_DATA_CAPACITY 65540U
+#define TLS_MAX_SNI_LENGTH 65212U
+
+extern char tls_data[TLS_DATA_CAPACITY];
 extern char http_data[43];
 extern char udp_data[64];
 
-int change_tls_sni(const char *host, char *buffer, size_t bsize);
+int change_tls_sni(const char *host, char *buffer, size_t capacity, size_t *packet_size);
 
 /* Randomise only the existing TLS padding bytes. The ClientHello layout stays valid. */
 int randomize_tls_padding(char *buffer, size_t bsize);

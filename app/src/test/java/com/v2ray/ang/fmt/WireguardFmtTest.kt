@@ -46,4 +46,20 @@ class WireguardFmtTest {
         assertEquals(AppConfig.WIREGUARD_LOCAL_REMOTE_DNS, legacyProfile.remoteDNS)
         assertTrue(legacyProfile.remoteDNS.orEmpty().contains("1.1.1.1"))
     }
+    @Test
+    fun readsBracketedIpv6EndpointFromWarpConf() {
+        val conf = """
+            [Interface]
+            PrivateKey = test-private-key
+            Address = 172.16.0.2/32
+
+            [Peer]
+            PublicKey = test-public-key
+            Endpoint = [2606:4700:d0::a29f:c001]:2408
+        """.trimIndent()
+        val parsed = WireguardFmt.parseWireguardConfFile(conf)
+        assertEquals("2606:4700:d0::a29f:c001", parsed.server)
+        assertEquals("2408", parsed.serverPort)
+    }
+
 }

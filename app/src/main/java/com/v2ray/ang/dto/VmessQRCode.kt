@@ -19,5 +19,8 @@ data class VmessQRCode(
     var cs: String = "",
     var insecure: String = "",
     var vcn: String = "",
-    var pcs: String = ""
+    var pcs: String = "",
+    /** PingNG extension fields; older V2RayNG clients safely ignore them. */
+    var png: String? = null,
+    var pngargs: String? = null,
 )

@@ -14,6 +14,7 @@ import android.system.OsConstants
 import androidx.core.content.ContextCompat
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.BuildConfig
+import com.v2ray.ang.R
 import com.v2ray.ang.contracts.IDialerService
 import com.v2ray.ang.contracts.ServiceControl
 import com.v2ray.ang.dto.ConnectionTestResult
@@ -252,6 +253,11 @@ object CoreServiceManager {
 
         LogUtil.i(AppConfig.TAG, "StartCore-Manager: Starting core loop for ${config.remarks}")
         PingNgDiagnostics.record("Start requested for ${config.remarks} (${config.configType})")
+        if (WarpWireGuardConfig.isProfile(config)) {
+            PingNgDiagnostics.record(
+                "WARP WireGuard runtime endpoint: ${config.server.orEmpty()}:${config.serverPort.orEmpty()}"
+            )
+        }
         if (config.configType == EConfigType.AMNEZIAWG) {
             startAmneziaWg(service, guid, config, vpnInterface, isReload)
             return
@@ -968,7 +974,8 @@ object CoreServiceManager {
         return scope.launch {
             val service = getService() ?: return@launch
             if (!isProbeCurrent(generation)) return@launch
-            if (!isProfilePingable(currentConfig)) {
+            val dnsTunnelSocksPort = dnsTunnelConnectionProbePort(currentConfig)
+            if (!isProfilePingable(currentConfig) && dnsTunnelSocksPort == null) {
                 PingNgDiagnostics.record("Skipped delay check for MasterDNS profile")
                 return@launch
             }
@@ -1007,6 +1014,35 @@ object CoreServiceManager {
                 PingNgDiagnostics.record("Connection test postponed while the second layer is reconnecting")
                 return@launch
             }
+
+            if (dnsTunnelSocksPort != null) {
+                if (!MasterDnsBridge.isActive()) {
+                    val result = ConnectionTestResult(
+                        delayMillis = -1L,
+                        errorMessage = service.getString(R.string.dns_tunnel_connection_not_ready),
+                    )
+                    MessageHelper.sendMsg2UI(service, AppConfig.MSG_MEASURE_DELAY_RESULT, result)
+                    return@launch
+                }
+
+                val liveSocksPort = secondLayerSocksPort ?: dnsTunnelSocksPort
+                val time = if (secondLayerSocksPort != null) {
+                    measureLiveProxyDelay(5_000, secondLayerSocksPort)
+                } else {
+                    measureDnsTunnelDelay(5_000, dnsTunnelSocksPort)
+                }
+                if (!isProbeCurrent(generation)) return@launch
+                val result = ConnectionTestResult(delayMillis = time)
+                MessageHelper.sendMsg2UI(service, AppConfig.MSG_MEASURE_DELAY_RESULT, result)
+                fetchAndPublishExitIp(
+                    service = service,
+                    result = result,
+                    forceLiveProxyProbe = secondLayerSocksPort != null,
+                    socksPortOverride = liveSocksPort.takeIf { secondLayerSocksPort == null },
+                )
+                return@launch
+            }
+
             // Use the ready second-layer SOCKS listener for probes so the result
             // reports the actual egress and never falls back to the upstream proxy.
             val forceLiveProxyProbe = service is CoreProxyOnlyService || secondLayerSocksPort != null ||
@@ -1140,6 +1176,26 @@ object CoreServiceManager {
         try {
             val results = probes.awaitAll()
             results.firstOrNull { it >= 0L } ?: -1L
+        } finally {
+            probes.forEach { it.cancel() }
+        }
+    }
+
+    /** Tests the selected MasterDNS/DNSTT SOCKS route against independent endpoints. */
+    private suspend fun measureDnsTunnelDelay(timeoutMs: Int, socksPort: Int): Long = coroutineScope {
+        val urls = listOf(
+            SettingsManager.getDelayTestUrl(),
+            SettingsManager.getDelayTestUrl(true),
+            SpeedtestManager.getRemoteIpInfoUrl(),
+            "https://cp.cloudflare.com/generate_204",
+        ).distinct()
+        val probes = urls.map { url ->
+            async(Dispatchers.IO) {
+                SpeedtestManager.liveTunnelDelay(url, timeoutMs, socksPort)
+            }
+        }
+        try {
+            probes.awaitAll().firstOrNull { it >= 0L } ?: -1L
         } finally {
             probes.forEach { it.cancel() }
         }
@@ -1297,6 +1353,7 @@ object CoreServiceManager {
         result: ConnectionTestResult,
         forceLiveProxyProbe: Boolean,
         publishResult: Boolean = true,
+        socksPortOverride: Int? = null,
     ): Boolean {
         val psiphonProfile = currentConfig?.psiphonEnabled == true
         val torProfile = currentConfig?.torEnabled == true
@@ -1321,8 +1378,13 @@ object CoreServiceManager {
             psiphonProfile -> PsiphonBridge.activeSocksPort()
             else -> 0
         }
+        val explicitSocksPort = socksPortOverride?.takeIf { it in 1..65535 }
         val isAmneziaWgProfile = currentConfig?.configType == EConfigType.AMNEZIAWG
         val remoteIpInfo = when {
+            explicitSocksPort != null -> {
+                PingNgDiagnostics.record("Exit IP probe through DNS tunnel SOCKS 127.0.0.1:$explicitSocksPort")
+                SpeedtestManager.getRemoteIPInfoThroughSocks(explicitSocksPort)
+            }
             secondLayerSocksPort in 1..65535 -> {
                 PingNgDiagnostics.record("Exit IP probe through second-layer SOCKS 127.0.0.1:$secondLayerSocksPort")
                 SpeedtestManager.getRemoteIPInfoThroughSocks(secondLayerSocksPort)
@@ -1338,7 +1400,7 @@ object CoreServiceManager {
             if (publishResult && (!secondLayerProfile || (if (torProfile) TorBridge.isConnected() else PsiphonBridge.isConnected()))) {
                 val profile = currentConfig
                 val cachedIp = profile?.lastExitIpAddress?.takeIf { it.isNotBlank() }
-                if (cachedIp != null && secondLayerSocksPort !in 1..65535 &&
+                if (cachedIp != null && secondLayerSocksPort !in 1..65535 && explicitSocksPort == null &&
                     profile?.let { WarpPlusConfig.isDescription(it.description) } != true) {
                     MessageHelper.sendMsg2UI(
                         service,

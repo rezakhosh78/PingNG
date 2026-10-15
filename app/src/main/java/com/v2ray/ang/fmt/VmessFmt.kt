@@ -90,6 +90,9 @@ object VmessFmt : FmtBase() {
         }
         config.verifyPeerCertByName = vmessQRCode.vcn
         config.pinnedCA256 = vmessQRCode.pcs
+        config.pingNgProfile = vmessQRCode.png?.takeIf { it.isNotBlank() }
+            ?: if (!vmessQRCode.pngargs.isNullOrBlank()) "Custom" else config.pingNgProfile
+        config.pingNgDesyncArgs = vmessQRCode.pngargs?.takeIf { it.isNotBlank() }
 
         return config
     }
@@ -147,6 +150,8 @@ object VmessFmt : FmtBase() {
         }
         vmessQRCode.vcn = config.verifyPeerCertByName.orEmpty()
         vmessQRCode.pcs = config.pinnedCA256.orEmpty()
+        vmessQRCode.png = config.pingNgProfile?.takeIf { it.isNotBlank() }
+        vmessQRCode.pngargs = config.pingNgDesyncArgs?.takeIf { it.isNotBlank() }
 
         val json = JsonUtil.toJson(vmessQRCode)
         return Utils.encode(json)

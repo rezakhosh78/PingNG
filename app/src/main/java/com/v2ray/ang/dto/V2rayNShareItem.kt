@@ -39,6 +39,9 @@ data class V2rayNShareItem(
     val Finalmask: String?,
     val ProtoExtraObj: V2rayNProtocolExtraShareItem?,
     val TransportExtraObj: V2rayNTransportExtraShareItem?,
+    /** PingNG extension fields for share payloads that preserve app-only settings. */
+    val PingNgProfile: String? = null,
+    val PingNgDesyncArgs: String? = null,
 ) {
     data class V2rayNProtocolExtraShareItem(
         val AlterId: Int?,
@@ -104,6 +107,9 @@ data class V2rayNShareItem(
             remarks = Remarks.orEmpty(),
             server = Address.orEmpty(),
             serverPort = Port.toString(),
+            pingNgProfile = PingNgProfile?.takeIf { it.isNotBlank() }
+                ?: if (!PingNgDesyncArgs.isNullOrBlank()) "Custom" else "Off",
+            pingNgDesyncArgs = PingNgDesyncArgs?.takeIf { it.isNotBlank() },
             warpMasqueEndpointCandidates = if (configType == EConfigType.WARP) {
                 com.v2ray.ang.core.WarpMasqueConfig.DEFAULT_ENDPOINTS
             } else null,

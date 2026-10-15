@@ -53,6 +53,7 @@ Java_com_v2ray_ang_core_PingNGProxy_jniCreateSocketWithCommandLine(
     // candidate from the immutable defaults instead of inheriting the previous
     // method's desync_params/tlsrec arrays.
     memcpy(tls_data, base_tls_data, sizeof(tls_data));
+    fake_tls.size = TLS_DATA_INITIAL_SIZE;
     reset_params();
     int argc = (*env)->GetArrayLength(env, args);
     char *argv[argc];
@@ -111,6 +112,11 @@ Java_com_v2ray_ang_core_PingNGProxy_jniCreateSocket(
         jint udp_fake_count,
         jboolean drop_sack,
         jint fake_offset) {
+    // Restore the canonical template and size for every newly created proxy;
+    // a previous profile may have expanded the process-global ClientHello.
+    memcpy(tls_data, base_tls_data, sizeof(tls_data));
+    fake_tls.size = TLS_DATA_INITIAL_SIZE;
+
     struct sockaddr_ina s;
 
     const char *address = (*env)->GetStringUTFChars(env, ip, 0);
@@ -240,7 +246,12 @@ Java_com_v2ray_ang_core_PingNGProxy_jniCreateSocket(
 
         const char *sni = (*env)->GetStringUTFChars(env, fake_sni, 0);
         LOG(LOG_S, "fake_sni: %s", sni);
-        res = change_tls_sni(sni, fake_tls.data, fake_tls.size);
+        size_t packet_size = fake_tls.size;
+        res = change_tls_sni(sni, fake_tls.data, TLS_DATA_CAPACITY,
+                &packet_size);
+        if (!res) {
+            fake_tls.size = packet_size;
+        }
         (*env)->ReleaseStringUTFChars(env, fake_sni, sni);
         if (res) {
             fprintf(stderr, "error chsni\n");

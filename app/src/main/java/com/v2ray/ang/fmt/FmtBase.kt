@@ -2,7 +2,6 @@ package com.v2ray.ang.fmt
 
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.dto.entities.ProfileItem
-import com.v2ray.ang.enums.EConfigType
 import com.v2ray.ang.enums.NetworkType
 import com.v2ray.ang.extension.nullIfBlank
 import com.v2ray.ang.util.HttpUtil
@@ -69,8 +68,7 @@ open class FmtBase {
         config.xhttpMode = queryParam["mode"]
         config.xhttpExtra = queryParam["extra"]
         config.finalMask = queryParam["fm"]
-        config.pingNgProfile = queryParam["png"] ?: config.pingNgProfile
-        config.pingNgDesyncArgs = queryParam["pngargs"]
+        getDesyncFromQuery(config, queryParam)
 
         config.security = queryParam["security"]
         if (config.security != AppConfig.TLS && config.security != AppConfig.REALITY) {
@@ -119,10 +117,7 @@ open class FmtBase {
         config.mldsa65Verify?.nullIfBlank()?.let { dicQuery["pqv"] = it }
         config.flow?.nullIfBlank()?.let { dicQuery["flow"] = it }
         config.finalMask?.nullIfBlank()?.let { dicQuery["fm"] = it }
-        if (config.configType == EConfigType.VLESS) {
-        config.pingNgProfile?.nullIfBlank()?.let { dicQuery["png"] = it }
-        config.pingNgDesyncArgs?.nullIfBlank()?.let { dicQuery["pngargs"] = it }
-        }
+        dicQuery.putAll(getDesyncQueryDic(config))
         config.kcpMtu?.let { dicQuery["mtu"] = it.toString() }
         config.kcpTti?.let { dicQuery["tti"] = it.toString() }
         // Add two keys for compatibility: "insecure" and "allowInsecure"
@@ -180,5 +175,20 @@ open class FmtBase {
         }
 
         return dicQuery
+    }
+
+    /** App-specific Desync options shared by all URI formats that support query parameters. */
+    fun getDesyncQueryDic(config: ProfileItem): HashMap<String, String> = HashMap<String, String>().apply {
+        config.pingNgProfile?.nullIfBlank()?.let { this["png"] = it }
+        config.pingNgDesyncArgs?.nullIfBlank()?.let { this["pngargs"] = it }
+    }
+
+    /** Imports Desync fields, inferring Custom when only raw arguments were provided. */
+    fun getDesyncFromQuery(config: ProfileItem, queryParam: Map<String, String>) {
+        queryParam["png"]?.takeIf { it.isNotBlank() }?.let { config.pingNgProfile = it }
+        queryParam["pngargs"]?.let { config.pingNgDesyncArgs = it.takeIf(String::isNotBlank) }
+        if (queryParam["png"].isNullOrBlank() && !queryParam["pngargs"].isNullOrBlank()) {
+            config.pingNgProfile = "Custom"
+        }
     }
 }

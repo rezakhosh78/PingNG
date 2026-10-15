@@ -57,7 +57,7 @@ fun AboutScreen(
 
     val libVersion = CoreNativeManager.getLibVersion()
     val versionText = "${BuildConfig.VERSION_NAME} ($libVersion)"
-    val appIdText = "Powered By ReZa Kh"
+    val appIdText = "Powered By ReZa Khoshandam"
     var developerTapCount by remember { mutableStateOf(0) }
     var lastDeveloperTapAt by remember { mutableStateOf(0L) }
 

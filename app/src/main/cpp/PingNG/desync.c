@@ -197,14 +197,6 @@ ssize_t send_fake(int sfd, char *buffer,
     else {
         pkt = cnt != IS_HTTP ? fake_tls : fake_http;
     }
-    if (opt->fake_offset) {
-        if (pkt.size > opt->fake_offset) { 
-            pkt.size -= opt->fake_offset;
-            pkt.data += opt->fake_offset;
-        }
-        else pkt.size = 0;
-    }
-    
     int ffd = memfd_create("name", 0);
     if (ffd < 0) {
         uniperror("memfd_create");
@@ -229,23 +221,42 @@ ssize_t send_fake(int sfd, char *buffer,
         }
 
         char *payload_data = pkt.data;
-        char temp_tls[sizeof(tls_data)];
+        size_t payload_size = pkt.size > 0 ? (size_t)pkt.size : 0;
+        char temp_tls[TLS_DATA_CAPACITY];
+        size_t temp_tls_size = fake_tls.size > 0 ? (size_t)fake_tls.size : 0;
         if (cnt != IS_HTTP && selected_sni && !opt->fake_data.data) {
-            memcpy(temp_tls, fake_tls.data, fake_tls.size);
-            change_tls_sni(selected_sni, temp_tls, fake_tls.size);
+            memcpy(temp_tls, fake_tls.data, temp_tls_size);
+            if (change_tls_sni(selected_sni, temp_tls, sizeof(temp_tls),
+                    &temp_tls_size) < 0) {
+                // Keep the connection alive if a stale/imported option cannot
+                // fit the camouflage template; Kotlin validates current input.
+                LOG(LOG_E, "fake SNI rewrite failed; using default camouflage SNI\n");
+            }
             if (opt->fake_jitter) {
-                randomize_tls_padding(temp_tls, fake_tls.size);
+                randomize_tls_padding(temp_tls, temp_tls_size);
             }
             payload_data = temp_tls;
+            payload_size = temp_tls_size;
         }
 
         if (cnt != IS_HTTP && !selected_sni && opt->fake_jitter && !opt->fake_data.data) {
-            memcpy(temp_tls, fake_tls.data, fake_tls.size);
-            randomize_tls_padding(temp_tls, fake_tls.size);
+            memcpy(temp_tls, fake_tls.data, temp_tls_size);
+            randomize_tls_padding(temp_tls, temp_tls_size);
             payload_data = temp_tls;
+            payload_size = temp_tls_size;
         }
 
-        memcpy(p, payload_data, pkt.size < pos ? pkt.size : pos);
+        if (opt->fake_offset > 0) {
+            size_t offset = (size_t)opt->fake_offset;
+            if (offset < payload_size) {
+                payload_data += offset;
+                payload_size -= offset;
+            } else {
+                payload_size = 0;
+            }
+        }
+
+        memcpy(p, payload_data, payload_size < (size_t)pos ? payload_size : (size_t)pos);
         
         if (setttl(sfd, fake_ttl, fa) < 0) {
             break;
@@ -542,6 +553,12 @@ ssize_t desync(int sfd, char *buffer, size_t bfsize,
                 break;
             }
             LOG(LOG_S, "tlsrec: pos=%ld, n=%zd\n", pos, n);
+            // part_tls inserts five bytes before the split position. Keep the
+            // parsed SNI pointer aligned so following +s offsets target the
+            // same hostname bytes in the updated ClientHello.
+            if (host && host >= buffer + pos) {
+                host += 5;
+            }
             n += 5;
             lp = pos + 5;
         }

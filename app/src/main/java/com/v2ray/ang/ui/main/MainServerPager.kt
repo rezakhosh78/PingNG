@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -690,8 +691,7 @@ private fun ServerItemRow(
         isSelected = isSelected,
         subscriptionRemarks = subRemarks,
         doubleColumnDisplay = false,
-        isDesyncEnabled = PingNgCompat.isNativeDesyncEnabled(profile),
-        isDesyncCustom = profile.pingNgProfile == PingNgCompat.PROFILE_CUSTOM,
+        desyncLabelRes = desyncBadgeResource(profile),
         isFinalMaskEnabled = !profile.finalMask.isNullOrBlank(),
         isPsiphonEnabled = profile.psiphonEnabled,
         isTorEnabled = profile.torEnabled,
@@ -748,8 +748,7 @@ private fun ServerItemColumn(
             isSelected = isSelected,
             subscriptionRemarks = subRemarks,
             doubleColumnDisplay = doubleColumnDisplay,
-            isDesyncEnabled = PingNgCompat.isNativeDesyncEnabled(profile),
-            isDesyncCustom = profile.pingNgProfile == PingNgCompat.PROFILE_CUSTOM,
+            desyncLabelRes = desyncBadgeResource(profile),
             isFinalMaskEnabled = !profile.finalMask.isNullOrBlank(),
             isPsiphonEnabled = profile.psiphonEnabled,
             isTorEnabled = profile.torEnabled,
@@ -778,8 +777,7 @@ fun ServerListItem(
     isSelected: Boolean,
     subscriptionRemarks: String,
     doubleColumnDisplay: Boolean,
-    isDesyncEnabled: Boolean,
-    isDesyncCustom: Boolean,
+    desyncLabelRes: Int?,
     isFinalMaskEnabled: Boolean,
     isPsiphonEnabled: Boolean,
     isTorEnabled: Boolean,
@@ -909,80 +907,38 @@ fun ServerListItem(
                 )
             }
             Spacer(modifier = Modifier.height(6.dp))
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                if (typeDescription == "WARP AWG") {
-                    val badgeBlue = Color(0xFF2196F3)
-                    Text(
-                        text = typeDescription,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = badgeBlue,
-                    )
-                } else {
-                    Text(
-                        modifier = Modifier.weight(1f, fill = false),
-                        text = buildAnnotatedString {
-                            typeDescription.split(" / ").forEachIndexed { index, part ->
-                                if (index > 0) {
-                                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                                        append(" / ")
+            // Keep the ping and protocol/badge rows on the same physical edge
+            // in both LTR and RTL layouts.
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    if (typeDescription == "WARP AWG") {
+                        val badgeBlue = Color(0xFF2196F3)
+                        Text(
+                            text = typeDescription,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = badgeBlue,
+                        )
+                    } else {
+                        Text(
+                            modifier = Modifier.weight(1f, fill = false),
+                            text = buildAnnotatedString {
+                                typeDescription.split(" / ").forEachIndexed { index, part ->
+                                    if (index > 0) {
+                                        withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                                            append(" / ")
+                                        }
+                                    }
+                                    withStyle(SpanStyle(color = protocolPartColor(part))) {
+                                        append(part)
                                     }
                                 }
-                                withStyle(SpanStyle(color = protocolPartColor(part))) {
-                                    append(part)
-                                }
-                            }
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isPsiphonEnabled) {
-                        ProxyLayerStatusBadge(
-                            label = stringResource(R.string.pingng_psiphon_status),
-                            isConnected = psiphonState == PsiphonStatus.CONNECTED,
-                            isConnecting = psiphonState == PsiphonStatus.CONNECTING,
-                        )
-                    }
-                    if (isTorEnabled) {
-                        val torConnected = isSelected &&
-                            torState == TorStatus.CONNECTED
-                        val torConnecting = isSelected &&
-                            torState == TorStatus.CONNECTING
-                        ProxyLayerStatusBadge(
-                            label = "Tor",
-                            isConnected = torConnected,
-                            isConnecting = torConnecting,
-                        )
-                    }
-                    if (isDesyncEnabled) {
-                        Text(
-                            text = if (isDesyncCustom) "Desync • Custom" else "Desync",
-                            modifier = Modifier
-                                .clip(MaterialTheme.shapes.small)
-                                .background(MaterialTheme.colorScheme.secondaryContainer)
-                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    if (isFinalMaskEnabled) {
-                        val finalMaskColor = Color(0xFFEF6C00)
-                        Text(
-                            text = "FinalMask",
-                            modifier = Modifier
-                                .clip(MaterialTheme.shapes.small)
-                                .background(finalMaskColor.copy(alpha = 0.14f))
-                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = finalMaskColor,
+                            },
+                            style = MaterialTheme.typography.bodySmall,
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
-                        Spacer(Modifier.width(8.dp))
                     }
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         testResult,
                         modifier = Modifier.weight(1f, fill = false),
@@ -994,8 +950,74 @@ fun ServerListItem(
                     )
                 }
             }
+            if (desyncLabelRes != null || isPsiphonEnabled || isTorEnabled || isFinalMaskEnabled) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        if (desyncLabelRes != null) {
+                            Text(
+                                text = stringResource(desyncLabelRes),
+                                modifier = Modifier
+                                    .clip(MaterialTheme.shapes.small)
+                                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                maxLines = 1,
+                            )
+                        }
+                        if (isPsiphonEnabled) {
+                            ProxyLayerStatusBadge(
+                                label = stringResource(R.string.pingng_psiphon_status),
+                                isConnected = psiphonState == PsiphonStatus.CONNECTED,
+                                isConnecting = psiphonState == PsiphonStatus.CONNECTING,
+                            )
+                        }
+                        if (isTorEnabled) {
+                            val torConnected = isSelected &&
+                                torState == TorStatus.CONNECTED
+                            val torConnecting = isSelected &&
+                                torState == TorStatus.CONNECTING
+                            ProxyLayerStatusBadge(
+                                label = "Tor",
+                                isConnected = torConnected,
+                                isConnecting = torConnecting,
+                            )
+                        }
+                        if (isFinalMaskEnabled) {
+                            val finalMaskColor = Color(0xFFEF6C00)
+                            Text(
+                                text = "FinalMask",
+                                modifier = Modifier
+                                    .clip(MaterialTheme.shapes.small)
+                                    .background(finalMaskColor.copy(alpha = 0.14f))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = finalMaskColor,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
+}
+
+private fun desyncBadgeResource(profile: ProfileItem): Int? = when (PingNgCompat.displayMethod(profile)) {
+    PingNgCompat.PROFILE_LIGHT -> R.string.pingng_desync_badge_light
+    PingNgCompat.PROFILE_BALANCED -> R.string.pingng_desync_badge_balanced
+    PingNgCompat.PROFILE_SEVERE -> R.string.pingng_desync_badge_severe
+    PingNgCompat.PROFILE_ADAPTIVE -> R.string.pingng_desync_badge_adaptive
+    PingNgCompat.METHOD_SPLIT -> R.string.pingng_desync_badge_split
+    PingNgCompat.METHOD_DISORDER -> R.string.pingng_desync_badge_disorder
+    PingNgCompat.METHOD_FAKE_SNI -> R.string.pingng_desync_badge_fake_sni
+    PingNgCompat.METHOD_OUT_OF_BAND -> R.string.pingng_desync_badge_out_of_band
+    PingNgCompat.METHOD_DISORDER_OUT_OF_BAND -> R.string.pingng_desync_badge_disorder_out_of_band
+    else -> null
 }
 
 private fun displayProfileRemark(profile: ProfileItem): String = when {
@@ -1036,7 +1058,7 @@ private fun serverStatistics(profile: ProfileItem): String = when {
         profile.warpWireGuardSelectedEndpoint?.takeIf { it.isNotBlank() }
             ?: listOfNotNull(profile.server?.takeIf { it.isNotBlank() }, profile.serverPort).joinToString(":")
     WarpPlusConfig.isDescription(profile.description) ->
-        profile.warpSelectedEndpoint?.takeIf { it.isNotBlank() }?.let(::formatWarpEndpointDisplay).orEmpty()
+        warpPlusCurrentEndpoints(profile)
     WarpMasqueConfig.isDescription(profile.description) ->
         profile.warpMasqueSelectedEndpoint?.takeIf { it.isNotBlank() }
             ?: listOfNotNull(profile.server?.takeIf { it.isNotBlank() }, profile.serverPort)
@@ -1054,6 +1076,32 @@ private fun formatWarpEndpointDisplay(value: String): String = value
     .map { it.trim().removePrefix("inner").removePrefix("outer").trim() }
     .filter(String::isNotBlank)
     .joinToString(" • ")
+
+private fun warpPlusCurrentEndpoints(parent: ProfileItem): String {
+    val remarks = parent.proxyChainProfiles.orEmpty().split(',')
+        .map(String::trim).filter(String::isNotBlank)
+    if (remarks.size >= 2) {
+        val children = remarks.take(2).map { remark ->
+            com.v2ray.ang.handler.SettingsManager.getServerViaRemarks(remark)
+        }
+        val legacyOuterFirst = parent.description == WarpPlusConfig.LEGACY_DESCRIPTION
+        val inner = children.getOrNull(if (legacyOuterFirst) 1 else 0)
+        val outer = children.getOrNull(if (legacyOuterFirst) 0 else 1)
+        fun endpoint(profile: ProfileItem?): String? {
+            val host = profile?.server?.trim()?.removePrefix("[")?.removeSuffix("]")
+                ?.takeIf(String::isNotBlank) ?: return null
+            val port = profile?.serverPort?.toIntOrNull()?.takeIf { it in 1..65535 } ?: return null
+            return "${if (host.contains(':')) "[$host]" else host}:$port"
+        }
+        val innerEndpoint = endpoint(inner)
+        val outerEndpoint = endpoint(outer)
+        if (innerEndpoint != null && outerEndpoint != null) {
+            return "$innerEndpoint • $outerEndpoint"
+        }
+    }
+    return parent.warpSelectedEndpoint?.takeIf(String::isNotBlank)
+        ?.let(::formatWarpEndpointDisplay).orEmpty()
+}
 
 private fun dnsttDisplayMode(profile: ProfileItem): String =
     if (profile.dnsTunnelMode.equals("SSH", ignoreCase = true)) "DNSTT SSH" else "DNSTT SOCKS5"
@@ -1133,5 +1181,4 @@ private fun ProxyLayerStatusBadge(
         style = MaterialTheme.typography.labelSmall,
         color = statusColor,
     )
-    Spacer(Modifier.width(8.dp))
 }

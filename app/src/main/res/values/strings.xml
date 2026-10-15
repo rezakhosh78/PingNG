@@ -1,5 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="endpoint_scan_options_title">Endpoint scan options</string>
+    <string name="endpoint_scan_timeout_seconds">Timeout, seconds</string>
+    <string name="endpoint_scan_parallel_jobs">Scan Speed</string>
+    <string name="endpoint_scan_ip_family">IP family</string>
+    <string name="endpoint_scan_ipv4">IPv4</string>
+    <string name="endpoint_scan_ipv6">IPv6</string>
+    <string name="endpoint_scan_port_mode">Port scan mode</string>
+    <string name="endpoint_scan_first_reachable">Quick Scan</string>
+    <string name="endpoint_scan_all_open_ports">Standard Scan</string>
+    <string name="endpoint_scan_all_known_ports">Full Scan</string>
+    <string name="endpoint_scan_all_open_ports_hint">Tests each port discovered in the first scan phase.</string>
+    <string name="endpoint_scan_all_known_ports_hint">Tests every known WARP port; this can take longer.</string>
+    <string name="endpoint_scan_action">Scan Endpoint</string>
     <string name="app_name" translatable="false">PingNG</string>
     <string name="app_widget_name">Switch</string>
     <string name="app_tile_name">PingNG</string>
@@ -173,6 +186,15 @@
     <string name="pingng_custom_args">Custom PingNG arguments</string>
     <string name="pingng_custom_args_required">Enter the custom Desync arguments.</string>
     <string name="pingng_desync_for_profile">Desync — %1$s</string>
+    <string name="pingng_desync_badge_light">Desync ● Light</string>
+    <string name="pingng_desync_badge_balanced">Desync ● Balanced</string>
+    <string name="pingng_desync_badge_severe">Desync ● Severe</string>
+    <string name="pingng_desync_badge_adaptive">Desync ● Adaptive</string>
+    <string name="pingng_desync_badge_split">Desync ● Split</string>
+    <string name="pingng_desync_badge_disorder">Desync ● Disorder</string>
+    <string name="pingng_desync_badge_fake_sni">Desync ● Fake SNI</string>
+    <string name="pingng_desync_badge_out_of_band">Desync ● Out of Band</string>
+    <string name="pingng_desync_badge_disorder_out_of_band">Desync ● Disorder + Out of Band</string>
     <string name="pingng_desync_unsupported">This tunnel type cannot use the TCP/TLS Desync engine.</string>
     <string name="pingng_profile_off_hint">Native Desync is disabled</string>
     <string name="pingng_profile_light_hint">Low latency and suitable for everyday use</string>
@@ -524,6 +546,7 @@
     <string name="warp_desync_masque_note">Desync is routed to the outer MASQUE/H2 TLS connection. Choose a preset to save it to this profile.</string>
     <string name="server_test_delay_value">%1$d ms</string>
     <string name="connection_test_error">Connection test failed: %s</string>
+    <string name="dns_tunnel_connection_not_ready">The MasterDNS/DNSTT tunnel is not ready for a connection check.</string>
     <string name="connection_test_fail">Internet unavailable</string>
     <string name="connection_test_error_status_code">Error code: #%d</string>
     <string name="connection_connected">Connected. Tap to check connection.</string>

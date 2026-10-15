@@ -28,6 +28,19 @@ class PingTargetPolicyTest {
         assertFalse(isInvalidPingResult(profile("VLESS"), 42L))
     }
 
+    @Test
+    fun manualConnectionCheckUsesTheDnsBridgeSocksPortWithoutChangingBatchPolicy() {
+        assertEquals(MasterDnsBridge.PORT, dnsTunnelConnectionProbePort(profile("MasterDNS")))
+        assertEquals(MasterDnsBridge.PORT, dnsTunnelConnectionProbePort(profile("StormDNS")))
+        assertEquals(MasterDnsBridge.PORT, dnsTunnelConnectionProbePort(profile("DNSTT")))
+        assertEquals(
+            MasterDnsBridge.SSH_SOCKS_PORT,
+            dnsTunnelConnectionProbePort(profile("DNSTT").apply { dnsTunnelMode = "SSH" }),
+        )
+        assertEquals(null, dnsTunnelConnectionProbePort(profile("VLESS")))
+        assertFalse(isProfilePingable(profile("MasterDNS")))
+    }
+
     private fun profile(description: String) = ProfileItem(
         configType = EConfigType.SOCKS,
         description = description,

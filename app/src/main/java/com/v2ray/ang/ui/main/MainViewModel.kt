@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.v2ray.ang.AppConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.core.isProfilePingable
+import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.dto.ConnectionTestResult
 import com.v2ray.ang.dto.GroupMapItem
 import com.v2ray.ang.dto.LocateTarget
@@ -959,7 +960,7 @@ class MainViewModel(
     fun testCurrentServerRealPing() {
         val selectedGuid = uiState.value.selectedGuid ?: return
         val profile = dataSource.decodeServerConfig(selectedGuid) ?: return
-        if (!isProfilePingable(profile)) return
+        if (!isProfilePingable(profile) && !MasterDnsBridge.isProfile(profile)) return
         _uiState.update { it.copy(status = MainStatus.Testing) }
         dataSource.testCurrentServerRealPing()
     }

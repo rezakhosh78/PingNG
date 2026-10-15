@@ -343,7 +343,9 @@ class WarpInWarpActivity : BaseComponentActivity() {
             editGuid.takeIf { it.isNotBlank() }?.let(MmkvManager::decodeServerConfig)
                 ?.awgEndpointCandidates.orEmpty(),
         ) }
-        var innerCandidates by remember { mutableStateOf("") }
+        // Both hops use the same scanned pool. Restore it when reopening the
+        // editor so a previous scan stays visible and selectable.
+        var innerCandidates by remember { mutableStateOf(outerCandidates) }
         var registrationProxyGuid by remember { mutableStateOf(initialRegistrationProxyGuid) }
         var proxyChoices by remember(editGuid) { mutableStateOf(WarpRegistrationProxy.choices(editGuid)) }
         val proxyLabel = if (registrationProxyGuid == WarpRegistrationProxy.AUTO) {
@@ -465,8 +467,10 @@ class WarpInWarpActivity : BaseComponentActivity() {
                         state = scanState,
                         scanInProgress = generating || scanJob?.isActive == true,
                         candidateGroups = listOf("WARP Plus" to EndpointScannerCli.decodeCandidates(innerCandidates)),
-                        selectedEndpoints = mapOf("WARP Plus" to "${inner.server}:${inner.port}"),
-                        onScan = {
+                        selectedEndpoints = mapOf(
+                            "WARP Plus" to "${inner.server.trim().let { if (it.contains(':') && !it.startsWith('[')) "[$it]" else it }}:${inner.port}",
+                        ),
+                        onScan = { scanOptions ->
                             fun account(layer: WarpLayerState) = EndpointScannerCli.accountFromProfile(
                                 ProfileItem.create(EConfigType.WIREGUARD).copy(
                                     server = layer.server,
@@ -489,6 +493,7 @@ class WarpInWarpActivity : BaseComponentActivity() {
                                             innerAccount,
                                             scanGuid = scanGuid,
                                             progressLabel = "Inner WARP",
+                                            scanOptions = scanOptions,
                                         )
                                         innerCandidates = EndpointScannerCli.encodeCandidates(foundInner)
                                         outerCandidates = innerCandidates
@@ -759,6 +764,7 @@ class WarpInWarpActivity : BaseComponentActivity() {
         )
         val outerProfile = layerProfile(outer, outerRemark, true)
         val innerProfile = layerProfile(inner, innerRemark, false)
+        com.v2ray.ang.core.EndpointScanSettings.transfer(warpPlusDraftGuid ?: editGuid, parentGuid)
         MmkvManager.encodeServerConfig(outerGuid, outerProfile)
         MmkvManager.encodeServerConfig(innerGuid, innerProfile)
         val parent = ProfileItem.create(EConfigType.PROXYCHAIN).apply {

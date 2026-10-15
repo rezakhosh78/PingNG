@@ -50,6 +50,7 @@ object ShadowsocksFmt : FmtBase() {
 
         if (!uri.rawQuery.isNullOrEmpty()) {
             val queryParam = getQueryParam(uri)
+            getDesyncFromQuery(config, queryParam)
             if (queryParam["plugin"]?.contains("obfs=http") == true) {
                 val queryPairs = HashMap<String, String>()
                 for (pair in queryParam["plugin"]?.split(";") ?: listOf()) {
@@ -120,6 +121,7 @@ object ShadowsocksFmt : FmtBase() {
     fun toUri(config: ProfileItem): String {
         val pw = "${config.method}:${config.password}"
 
-        return toUri(config, Utils.encode(pw, true), null)
+        val query = getDesyncQueryDic(config).takeIf { it.isNotEmpty() }
+        return toUri(config, Utils.encode(pw, true), query)
     }
 }

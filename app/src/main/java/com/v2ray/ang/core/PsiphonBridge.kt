@@ -631,7 +631,7 @@ object PsiphonBridge {
         root.addProperty("EstablishTunnelTimeoutSeconds", 0)
         root.addProperty("UpstreamProxyAllowAllServerEntrySources", true)
         applyTunnelProtocolMode(root, profile.psiphonMode.orEmpty())
-        addCdnFrontingConfig(root, profile)
+        PsiphonCdnFrontingConfig.apply(root, service, profile.psiphonMode.orEmpty(), profile.psiphonCdnIps.orEmpty(), profile.psiphonCdnSni.orEmpty(), profile.psiphonCdnSets.orEmpty())
         return root.toString()
     }
 
@@ -644,28 +644,9 @@ object PsiphonBridge {
             else -> CHAINED_TUNNEL_PROTOCOLS
         }
         root.add("LimitTunnelProtocols", JsonArray().also { values -> protocols.forEach(values::add) })
-        if (normalized == "cdn" || normalized == "direct") {
+        if (normalized == "direct" || normalized == "cdn") {
             root.addProperty("DisableTactics", true)
         }
-    }
-
-    /** Applies the same CDN fronting fields to the in-process fallback path. */
-    private fun addCdnFrontingConfig(root: JsonObject, profile: ProfileItem) {
-        if (profile.psiphonMode.orEmpty().equals("direct", ignoreCase = true)) return
-        fun candidates(raw: String): List<String> = raw.split(',', ';', ' ', '\t', '\n', '\r')
-            .map(String::trim).filter(String::isNotBlank)
-        val ips = candidates(profile.psiphonCdnIps.orEmpty())
-        val sni = candidates(profile.psiphonCdnSni.orEmpty())
-        val sets = candidates(profile.psiphonCdnSets.orEmpty())
-        if (!profile.psiphonMode.orEmpty().equals("cdn", ignoreCase = true) && ips.isEmpty() && sni.isEmpty() && sets.isEmpty()) return
-        if (ips.isNotEmpty()) {
-            root.add("FrontedMeekCDNScanSpec", JsonObject().apply {
-                add("IPCandidates", JsonArray().also { values -> ips.forEach(values::add) })
-                if (sni.isNotEmpty()) add("SNIServerNames", JsonArray().also { values -> sni.forEach(values::add) })
-            })
-        }
-        if (ips.isEmpty() || sets.isNotEmpty()) root.addProperty("FrontedMeekCDNScanUseBuiltInSpec", true)
-        if (sets.isNotEmpty()) root.add("FrontedMeekCDNScanBuiltInSets", JsonArray().also { values -> sets.forEach(values::add) })
     }
 
     private fun isUsableOutbound(tag: String): Boolean = tag !in setOf(

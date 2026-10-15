@@ -3,6 +3,7 @@ package com.v2ray.ang.core
 import com.v2ray.ang.dto.V2rayConfig
 import com.v2ray.ang.dto.entities.ProfileItem
 import com.v2ray.ang.enums.EConfigType
+import com.v2ray.ang.enums.NetworkType
 
 /** Pure configuration helpers for PingNG's embedded Android Desync engine. */
 object PingNgCompat {
@@ -30,9 +31,14 @@ object PingNgCompat {
         else -> false
     }
 
-    fun isNativeDesyncEnabled(profileItem: ProfileItem): Boolean =
-        supportsNativeDesync(profileItem) &&
-            normalizeProfile(profileItem.pingNgProfile) != PROFILE_OFF
+    fun isNativeDesyncEnabled(profileItem: ProfileItem): Boolean {
+        if (!supportsNativeDesync(profileItem)) return false
+        return when (normalizeProfile(profileItem.pingNgProfile)) {
+            PROFILE_OFF -> false
+            PROFILE_CUSTOM -> sanitizeCustomArguments(shellSplit(profileItem.pingNgDesyncArgs.orEmpty())).isNotEmpty()
+            else -> true
+        }
+    }
 
     fun getPresetArguments(profile: String): String {
         return when (normalizeProfile(profile)) {
@@ -65,17 +71,107 @@ object PingNgCompat {
                 "--fake-jitter", "--cache-ttl", "3600", "--delay-range", "1-5",
                 "--timeout", "3"
             )
-            PROFILE_CUSTOM -> shellSplit(profileItem.pingNgDesyncArgs.orEmpty())
+            PROFILE_CUSTOM -> sanitizeCustomArguments(shellSplit(profileItem.pingNgDesyncArgs.orEmpty()))
                 .takeIf { it.isNotEmpty() }
                 ?: return null
             else -> return null
         }
+        val compatibleStrategy = if (usesWebSocketTls(profileItem)) {
+            // The native engine inserts TLS-record headers before applying
+            // later SNI-relative split offsets. On WS/TLS fronts this can shift
+            // those offsets and truncate the ClientHello (reported as EOF).
+            // Keep TCP segmentation, but preserve the original TLS record.
+            // Cloudflare WS/TLS fronts may close the socket when a ClientHello
+            // is segmented inside the SNI. A byte-one TCP split still applies
+            // Desync without changing the TLS record or cutting the hostname.
+            avoidWebSocketSniSplit(removeTlsRecordOptions(strategy))
+        } else {
+            strategy
+        }
         return buildList {
             add("ciadpi")
-            addAll(strategy)
+            addAll(compatibleStrategy)
             addAll(listOf("--ip", "127.0.0.1", "--port", port.toString()))
         }
     }
+
+    /** Descriptive method used for the profile badge; null means Desync is off. */
+    fun displayMethod(profileItem: ProfileItem): String? {
+        if (!isNativeDesyncEnabled(profileItem)) return null
+        return when (normalizeProfile(profileItem.pingNgProfile)) {
+            PROFILE_LIGHT -> PROFILE_LIGHT
+            PROFILE_BALANCED -> PROFILE_BALANCED
+            PROFILE_SEVERE -> PROFILE_SEVERE
+            PROFILE_ADAPTIVE -> PROFILE_ADAPTIVE
+            PROFILE_CUSTOM -> parseCustomOptions(profileItem.pingNgDesyncArgs.orEmpty()).method
+            else -> null
+        }
+    }
+
+    private fun usesWebSocketTls(profileItem: ProfileItem): Boolean =
+        profileItem.network.equals(NetworkType.WS.type, ignoreCase = true) &&
+            profileItem.security.equals("tls", ignoreCase = true)
+
+    private fun removeTlsRecordOptions(arguments: List<String>): List<String> = buildList {
+        var index = 0
+        while (index < arguments.size) {
+            val argument = arguments[index]
+            when {
+                argument == "--tlsrec" -> index += if (index + 1 < arguments.size) 2 else 1
+                argument.startsWith("--tlsrec=") -> index++
+                else -> {
+                    add(argument)
+                    index++
+                }
+            }
+        }
+    }
+
+    private fun avoidWebSocketSniSplit(arguments: List<String>): List<String> = buildList {
+        var index = 0
+        while (index < arguments.size) {
+            val option = arguments[index]
+            if ((option == "--split" || option == "--split-range") && index + 1 < arguments.size &&
+                arguments[index + 1].contains("+s")) {
+                add("--split")
+                add("1")
+                index += 2
+            } else if ((option.startsWith("--split=") || option.startsWith("--split-range=")) &&
+                option.substringAfter('=').contains("+s")) {
+                add("--split=1")
+                index++
+            } else {
+                add(option)
+                index++
+            }
+        }
+    }
+
+    private fun sanitizeCustomArguments(arguments: List<String>): List<String> = buildList {
+        var index = 0
+        while (index < arguments.size) {
+            val argument = arguments[index]
+            when {
+                argument == "--tls-sni" -> {
+                    val value = arguments.getOrNull(index + 1)
+                    if (value != null && isUsableFakeSni(value)) addAll(listOf(argument, value))
+                    index += if (value != null) 2 else 1
+                }
+                argument.startsWith("--tls-sni=") -> {
+                    val value = argument.substringAfter('=')
+                    if (isUsableFakeSni(value)) add(argument)
+                    index++
+                }
+                else -> {
+                    add(argument)
+                    index++
+                }
+            }
+        }
+    }
+
+    private fun isUsableFakeSni(value: String): Boolean =
+        isValidFakeSni(value)
 
     data class CustomOptions(
         val method: String = METHOD_SPLIT,
@@ -112,7 +208,7 @@ object PingNgCompat {
         val values = input
             .split(Regex("[,;|\\s]+"))
             .map(String::trim)
-            .filter { it.isNotEmpty() && isValidFakeSni(it) }
+            .filter { it.isNotEmpty() && isUsableFakeSni(it) }
             .distinct()
         if (values.isEmpty()) return ""
         return values.joinToString(", ") + if (hasTrailingSeparator) ", " else ""
@@ -147,9 +243,9 @@ object PingNgCompat {
     }
 
     private fun isValidFakeSni(value: String): Boolean =
-        value.length <= 253 &&
+        value.isNotEmpty() &&
             value.split('.').all { label ->
-                label.isNotEmpty() && label.length <= 63 &&
+                label.isNotEmpty() &&
                     label.first().isLetterOrDigit() &&
                     label.last().isLetterOrDigit() &&
                     label.all { it.isLetterOrDigit() || it == '-' }
@@ -157,15 +253,25 @@ object PingNgCompat {
 
     fun parseCustomOptions(arguments: String): CustomOptions {
         val tokens = shellSplit(arguments)
-        fun valueAfter(flag: String): String? = tokens.indexOf(flag)
-            .takeIf { it >= 0 && it + 1 < tokens.size }
-            ?.let { tokens[it + 1] }
+        fun valueAfter(flag: String): String? {
+            val equalsValue = tokens.firstOrNull { it.startsWith("$flag=") }
+                ?.substringAfter('=')
+            if (equalsValue != null) return equalsValue
+            return tokens.indexOf(flag)
+                .takeIf { it >= 0 && it + 1 < tokens.size }
+                ?.let { tokens[it + 1] }
+        }
+
+        fun hasFlag(flag: String): Boolean =
+            tokens.any { it == flag || it.startsWith("$flag=") }
             
         // این تابع تمام مقادیر یک فلگ (مثل --tls-sni) را استخراج می‌کند
         fun valuesAfter(flag: String): List<String> {
             val results = mutableListOf<String>()
-            for (i in 0 until tokens.size - 1) {
-                if (tokens[i] == flag) {
+            for (i in tokens.indices) {
+                if (tokens[i].startsWith("$flag=") && tokens[i].length > flag.length + 1) {
+                    results.add(tokens[i].substringAfter('='))
+                } else if (tokens[i] == flag && i + 1 < tokens.size) {
                     results.add(tokens[i + 1])
                 }
             }
@@ -173,10 +279,11 @@ object PingNgCompat {
         }
 
         val (method, flag) = when {
-            "--disorder" in tokens -> METHOD_DISORDER to "--disorder"
-            "--fake" in tokens -> METHOD_FAKE_SNI to "--fake"
-            "--oob" in tokens -> METHOD_OUT_OF_BAND to "--oob"
-            "--disoob" in tokens -> METHOD_DISORDER_OUT_OF_BAND to "--disoob"
+            hasFlag("--disoob") || (hasFlag("--disorder") && hasFlag("--oob")) ->
+                METHOD_DISORDER_OUT_OF_BAND to "--disoob"
+            hasFlag("--fake") -> METHOD_FAKE_SNI to "--fake"
+            hasFlag("--disorder") -> METHOD_DISORDER to "--disorder"
+            hasFlag("--oob") -> METHOD_OUT_OF_BAND to "--oob"
             else -> METHOD_SPLIT to "--split"
         }
         val rawPosition = valueAfter(flag)
@@ -199,12 +306,12 @@ object PingNgCompat {
                 .ifBlank { "1" },
             timeoutSeconds = valueAfter("--timeout") ?: "3",
             fakeSni = valuesAfter("--tls-sni").distinct().joinToString(", "),
-            fakeJitter = "--fake-jitter" in tokens,
+            fakeJitter = hasFlag("--fake-jitter"),
             automaticFallback = tokens.any { it.startsWith("--auto") },
             cacheTtlSeconds = valueAfter("--cache-ttl") ?: "3600",
             delayMilliseconds = valueAfter("--delay") ?: "1",
-            waitForSend = "--not-wait-send" !in tokens,
-            modifyHttpHeaders = "--mod-http" in tokens,
+            waitForSend = !hasFlag("--not-wait-send"),
+            modifyHttpHeaders = hasFlag("--mod-http"),
             udpFakeCount = valueAfter("--udp-fake") ?: "0",
             fakeOffset = valueAfter("--fake-offset") ?: "0",
             splitRange = valueAfter("--split-range")?.removeSuffix("+s") ?: "",
@@ -212,8 +319,8 @@ object PingNgCompat {
             delayRange = valueAfter("--delay-range") ?: "1-5",
             fakeData = valueAfter("--fake-data") ?: "",
             oobData = valueAfter("--oob-data") ?: "",
-            dropSack = "--drop-sack" in tokens,
-            tcpFastOpen = "--tfo" in tokens,
+            dropSack = hasFlag("--drop-sack"),
+            tcpFastOpen = hasFlag("--tfo"),
             hosts = valueAfter("--hosts")?.removePrefix(":") ?: "",
             portFilter = valueAfter("--pf") ?: ""
         )
@@ -254,7 +361,7 @@ object PingNgCompat {
             val snis = normalizeFakeSniTyping(options.fakeSni)
                 .split(',', ';', '|')
                 .map(String::trim)
-                .filter { it.isNotEmpty() && isValidFakeSni(it) }
+                .filter { it.isNotEmpty() && isUsableFakeSni(it) }
                 .distinct()
             if (snis.isNotEmpty()) {
                 snis.forEach { sni ->
