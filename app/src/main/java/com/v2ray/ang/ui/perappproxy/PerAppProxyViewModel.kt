@@ -76,17 +76,27 @@ class PerAppProxyViewModel(application: Application) : BaseViewModel(application
 
     // Per‑app proxy switch
     fun setPerAppProxyEnabled(enabled: Boolean) {
-        if (_perAppProxyEnabled.value != enabled) {
-            _perAppProxyEnabled.value = enabled
-            MmkvManager.encodeSettings(AppConfig.PREF_PER_APP_PROXY, enabled)
-        }
+        updatePerAppProxyPreference(
+            currentValue = _perAppProxyEnabled.value,
+            newValue = enabled,
+            persist = {
+                _perAppProxyEnabled.value = enabled
+                MmkvManager.encodeSettings(AppConfig.PREF_PER_APP_PROXY, enabled)
+            },
+            requestRestart = { SettingsChangeManager.makeRestartService() },
+        )
     }
 
     fun setBypassAppsEnabled(enabled: Boolean) {
-        if (_bypassApps.value != enabled) {
-            _bypassApps.value = enabled
-            MmkvManager.encodeSettings(AppConfig.PREF_BYPASS_APPS, enabled)
-        }
+        updatePerAppProxyPreference(
+            currentValue = _bypassApps.value,
+            newValue = enabled,
+            persist = {
+                _bypassApps.value = enabled
+                MmkvManager.encodeSettings(AppConfig.PREF_BYPASS_APPS, enabled)
+            },
+            requestRestart = { SettingsChangeManager.makeRestartService() },
+        )
     }
 
     // Load and filter apps

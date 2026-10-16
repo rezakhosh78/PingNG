@@ -24,6 +24,7 @@ import com.v2ray.ang.handler.AppLocaleManager
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.handler.SubscriptionUpdater
+import com.v2ray.ang.handler.belongsToSubscriptionGroup
 import com.v2ray.ang.helper.MessageHelper
 import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.Utils
@@ -182,7 +183,9 @@ class MainRepository(
             }
         } else {
             MmkvManager.decodeServerList(groupId).filter { guid ->
-                MmkvManager.decodeServerConfig(guid)?.managedBy.isNullOrBlank()
+                MmkvManager.decodeServerConfig(guid)?.let { profile ->
+                    belongsToSubscriptionGroup(profile, groupId)
+                } == true
             }
         }
 

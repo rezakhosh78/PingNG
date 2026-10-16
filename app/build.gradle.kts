@@ -565,10 +565,10 @@ android {
         applicationId = "com.pingng.android"
         minSdk = 24
         targetSdk = 37
-        // Keep versionCode monotonic for Pi44 while preserving ABI-specific APK codes.
-        versionCode = 765
-        // PingNG Pi44 is synchronized with official v2rayNG 2.3.11.
-        versionName = "v2.3.11-Pi44"
+        // Keep versionCode monotonic for Pi45 while preserving ABI-specific APK codes.
+        versionCode = 766
+        // PingNG Pi45 is synchronized with official v2rayNG 2.3.11.
+        versionName = "v2.3.11-Pi45"
         // Keep the bundled native engine version observable without calling a
         // native diagnostic entry point during tunnel startup. Some older
         // extracted libwg-go.so builds can panic from awgVersion() itself.

@@ -395,9 +395,9 @@ object MmkvManager {
             val profilesToPersist = linkedMapOf<String, ProfileItem>()
             val rawConfigsByPersistedGuid = mutableMapOf<String, String>()
             profiles.forEach { (generatedGuid, rawIncoming) ->
-                val incoming = rawIncoming.copy(
-                    subscriptionId = rawIncoming.subscriptionId.ifBlank { subscriptionId }
-                )
+                // The group being updated is authoritative. A parsed payload or a
+                // locally reused profile must never publish under a different group.
+                val incoming = rawIncoming.copy(subscriptionId = subscriptionId)
                 profilesToPersist[generatedGuid] = incoming
                 rawConfigs[generatedGuid]?.let { raw ->
                     rawConfigsByPersistedGuid[generatedGuid] = raw
