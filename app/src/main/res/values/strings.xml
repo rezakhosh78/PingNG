@@ -580,7 +580,13 @@
     <string name="update_checking_for_update">Checking for update…</string>
     <string name="update_downloading">Downloading update…</string>
     <string name="update_download_failed">Failed to download the update</string>
-    <string name="update_install_permission">Allow PingNG to install updates, then tap Update again</string>
+    <string name="update_incompatible_apk">This update is not compatible with this app installation.</string>
+    <string name="update_install_permission">For your security, allow PingNG to install apps in Android settings. The installer will open after you allow it.</string>
+    <string name="update_release_notes_empty">No release notes are available for this version.</string>
+    <string name="update_install">Install</string>
+    <string name="update_download_progress">%1$d%% downloaded · %2$s / %3$s</string>
+    <string name="update_downloaded_bytes">%1$s downloaded</string>
+    <string name="update_download_complete">Download complete. Tap Install to continue.</string>
 
     <string name="title_policy_group_type">Policy group type</string>
     <string name="title_policy_group_subscription_id">From subscription group</string>

@@ -410,8 +410,8 @@ class WarpInWarpActivity : BaseComponentActivity() {
             }
         }
 
-        LaunchedEffect(Unit) {
-            if (editGuid.isBlank() && outer.privateKey.isBlank() && inner.privateKey.isBlank()) {
+        LaunchedEffect(editGuid) {
+            if (outer.privateKey.isBlank() || inner.privateKey.isBlank()) {
                 startWarpGeneration(registrationProxyGuid, regenerateBoth = true)
             }
         }

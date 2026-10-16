@@ -9,6 +9,7 @@ import com.v2ray.ang.R
 import com.v2ray.ang.core.isProfilePingable
 import com.v2ray.ang.core.MasterDnsBridge
 import com.v2ray.ang.dto.ConnectionTestResult
+import com.v2ray.ang.dto.CheckUpdateResult
 import com.v2ray.ang.dto.GroupMapItem
 import com.v2ray.ang.dto.LocateTarget
 import com.v2ray.ang.dto.PsiphonStatus
@@ -20,6 +21,8 @@ import com.v2ray.ang.dto.entities.SubscriptionCache
 import com.v2ray.ang.extension.isComplexType
 import com.v2ray.ang.extension.matchesPattern
 import com.v2ray.ang.extension.moveItem
+import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.UpdateCheckerManager
 import com.v2ray.ang.ui.base.BaseViewModel
 import com.v2ray.ang.util.LogUtil
 import com.v2ray.ang.util.SubscriptionNoticeParser
@@ -39,11 +42,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import java.util.regex.PatternSyntaxException
 
 internal fun ConnectionTestResult.isTunnelReachableWithoutDelay(): Boolean =
     delayMillis < 0 && !ipAddress.isNullOrBlank()
+
+data class AppUpdateDownloadState(
+    val isDownloading: Boolean = false,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long = -1L,
+    val downloadedFile: File? = null,
+) {
+    val progress: Float?
+        get() = totalBytes.takeIf { it > 0L }
+            ?.let { (downloadedBytes.toFloat() / it).coerceIn(0f, 1f) }
+
+    val progressPercent: Int?
+        get() = progress?.let { (it * 100).toInt() }
+}
 
 class MainViewModel(
     application: Application,
@@ -64,6 +82,14 @@ class MainViewModel(
         )
     )
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    private val _appUpdate = MutableStateFlow<CheckUpdateResult?>(null)
+    val appUpdate: StateFlow<CheckUpdateResult?> = _appUpdate.asStateFlow()
+    private var appUpdateCheckJob: Job? = null
+
+    private val _appUpdateDownload = MutableStateFlow(AppUpdateDownloadState())
+    val appUpdateDownload: StateFlow<AppUpdateDownloadState> = _appUpdateDownload.asStateFlow()
+    private var appUpdateDownloadJob: Job? = null
 
     // ---------- Keyword filtering ----------
     @Volatile
@@ -88,6 +114,86 @@ class MainViewModel(
     private var testingGroupId: String? = null
 
     private val initialPageReady = CompletableDeferred<Unit>()
+
+    /** Silently checks the stable GitHub release so offline startup remains unaffected. */
+    fun checkForAppUpdate() {
+        if (_appUpdate.value != null || appUpdateCheckJob?.isActive == true) return
+        appUpdateCheckJob = viewModelScope.launch(ioDispatcher) {
+            val result = try {
+                UpdateCheckerManager.checkForUpdate(includePreRelease = false)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                // Update checks are optional: an offline or blocked connection must not
+                // surface an error or interfere with opening the main screen.
+                LogUtil.d(AppConfig.TAG, "Automatic update check skipped: ${error.message.orEmpty()}")
+                return@launch
+            }
+
+            val version = result.latestVersion ?: return@launch
+            val dismissedVersion = MmkvManager.decodeSettingsString(
+                AppConfig.PREF_DISMISSED_APP_UPDATE_VERSION
+            )
+            if (result.hasUpdate && version != dismissedVersion) {
+                _appUpdate.value = result
+            }
+        }
+    }
+
+    fun dismissAppUpdate() {
+        cancelAppUpdateDownload()
+        _appUpdate.value?.latestVersion?.let { version ->
+            MmkvManager.encodeSettings(AppConfig.PREF_DISMISSED_APP_UPDATE_VERSION, version)
+        }
+        _appUpdate.value = null
+    }
+
+    fun downloadAppUpdate(result: CheckUpdateResult) {
+        val downloadUrl = result.downloadUrl ?: return
+        if (appUpdateDownloadJob?.isActive == true ||
+            _appUpdateDownload.value.downloadedFile != null
+        ) return
+
+        _appUpdateDownload.value = AppUpdateDownloadState(
+            isDownloading = true,
+            totalBytes = result.downloadSizeBytes?.takeIf { it > 0L } ?: -1L,
+        )
+        appUpdateDownloadJob = viewModelScope.launch(ioDispatcher) {
+            try {
+                val file = UpdateCheckerManager.downloadApk(
+                    context = app,
+                    downloadUrl = downloadUrl,
+                    version = result.latestVersion.orEmpty(),
+                    expectedSizeBytes = result.downloadSizeBytes,
+                ) { downloadedBytes, totalBytes ->
+                    _appUpdateDownload.value = AppUpdateDownloadState(
+                        isDownloading = true,
+                        downloadedBytes = downloadedBytes,
+                        totalBytes = totalBytes,
+                    )
+                }
+                val fileLength = file.length()
+                _appUpdateDownload.value = AppUpdateDownloadState(
+                    downloadedBytes = fileLength,
+                    totalBytes = fileLength,
+                    downloadedFile = file,
+                )
+            } catch (error: CancellationException) {
+                _appUpdateDownload.value = AppUpdateDownloadState()
+                throw error
+            } catch (error: Exception) {
+                _appUpdateDownload.value = AppUpdateDownloadState()
+                LogUtil.w(AppConfig.TAG, "App update download failed: ${error.message.orEmpty()}")
+                toastError(R.string.update_download_failed)
+            }
+        }
+    }
+
+    private fun cancelAppUpdateDownload() {
+        appUpdateDownloadJob?.cancel()
+        appUpdateDownloadJob = null
+        _appUpdateDownload.value = AppUpdateDownloadState()
+    }
 
     // ---------- Service events ----------
     init {

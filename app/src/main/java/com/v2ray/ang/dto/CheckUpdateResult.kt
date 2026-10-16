@@ -5,6 +5,7 @@ data class CheckUpdateResult(
     val latestVersion: String? = null,
     val releaseNotes: String? = null,
     val downloadUrl: String? = null,
+    val downloadSizeBytes: Long? = null,
     val error: String? = null,
     val isPreRelease: Boolean = false
 )

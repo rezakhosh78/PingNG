@@ -553,7 +553,13 @@
     <string name="update_checking_for_update">در حال بررسی برای به‌روزرسانی…</string>
     <string name="update_downloading">در حال دریافت به‌روزرسانی…</string>
     <string name="update_download_failed">دریافت به‌روزرسانی ناموفق بود</string>
-    <string name="update_install_permission">اجازهٔ نصب به‌روزرسانی را فعال کنید و دوباره Update را بزنید</string>
+    <string name="update_incompatible_apk">این بسته با نسخهٔ نصب‌شدهٔ برنامه سازگار نیست.</string>
+    <string name="update_install_permission">برای امنیت، در تنظیمات اندروید اجازهٔ نصب برنامه برای PingNG را بدهید. پس از تأیید، صفحهٔ نصب باز می‌شود.</string>
+    <string name="update_release_notes_empty">برای این نسخه یادداشت تغییری ثبت نشده است.</string>
+    <string name="update_install">نصب</string>
+    <string name="update_download_progress">%1$d%% دانلود شده · %2$s از %3$s</string>
+    <string name="update_downloaded_bytes">%1$s دانلود شده</string>
+    <string name="update_download_complete">دانلود کامل شد. برای ادامه، نصب را بزنید.</string>
 
     <string name="title_policy_group_type">نوع گروه خط مشی</string>
     <string name="title_policy_group_subscription_id">از گروه اشتراک</string>

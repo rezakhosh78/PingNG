@@ -8,8 +8,11 @@ import com.v2ray.ang.dto.UrlContentResponse
 import com.v2ray.ang.handler.HttpProxyClient
 import com.v2ray.ang.handler.SettingsManager
 import okhttp3.Credentials
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.File
 import java.io.IOException
 import java.net.IDN
@@ -20,7 +23,10 @@ import java.net.MalformedURLException
 import java.net.Proxy
 import java.net.URI
 import java.net.URL
+import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 object HttpUtil {
 
@@ -421,7 +427,8 @@ object HttpUtil {
 
     fun downloadToFile(
         request: UrlContentRequest,
-        targetFile: File
+        targetFile: File,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
     ): Boolean {
         val url = request.url ?: return false
         val client = buildOkHttpClient(request.timeout, request.httpPort, request.proxyUsername, request.proxyPassword, followRedirects = true)
@@ -441,15 +448,128 @@ object HttpUtil {
                 }
                 val body = response.body ?: return false
                 body.byteStream().use { input ->
-                    targetFile.outputStream().use { output ->
-                        input.copyTo(output)
+                    targetFile.outputStream().buffered().use { output ->
+                        val totalBytes = body.contentLength()
+                        var downloadedBytes = 0L
+                        var lastProgressAtNanos = 0L
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        onProgress(0L, totalBytes)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                            downloadedBytes += count
+                            val now = System.nanoTime()
+                            if (downloadedBytes == totalBytes ||
+                                now - lastProgressAtNanos >= 100_000_000L
+                            ) {
+                                onProgress(downloadedBytes, totalBytes)
+                                lastProgressAtNanos = now
+                            }
+                        }
+                        output.flush()
+                        onProgress(downloadedBytes, totalBytes)
                     }
                 }
                 true
             }
+        } catch (e: CancellationException) {
+            targetFile.delete()
+            throw e
         } catch (e: Exception) {
             LogUtil.e(AppConfig.TAG, "Failed to download file: $url", e)
             false
         }
+    }
+
+    /** Cancellable update download that reports bytes received while streaming to disk. */
+    suspend fun downloadToFileCancellable(
+        request: UrlContentRequest,
+        targetFile: File,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit,
+    ): Boolean = suspendCancellableCoroutine { continuation ->
+        val url = request.url
+        if (url.isNullOrBlank()) {
+            continuation.resume(false)
+            return@suspendCancellableCoroutine
+        }
+
+        val client = buildOkHttpClient(
+            request.timeout,
+            request.httpPort,
+            request.proxyUsername,
+            request.proxyPassword,
+            followRedirects = true,
+        )
+        val requestBuilder = Request.Builder()
+            .url(url)
+            .get()
+            .header("Connection", "close")
+        if (request.httpPort != 0 && !request.proxyUsername.isNullOrBlank() &&
+            !request.proxyPassword.isNullOrBlank()
+        ) {
+            requestBuilder.header("Proxy-Authorization", Credentials.basic(request.proxyUsername, request.proxyPassword))
+        }
+
+        val call = client.newCall(requestBuilder.build())
+        continuation.invokeOnCancellation {
+            call.cancel()
+            targetFile.delete()
+        }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                LogUtil.w(AppConfig.TAG, "Failed to download file: ${e.message.orEmpty()}")
+                if (continuation.isActive) continuation.resume(false)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                var downloadedSuccessfully = false
+                try {
+                    response.use { received ->
+                        if (!received.isSuccessful) {
+                            LogUtil.w(
+                                AppConfig.TAG,
+                                "Failed to download file, code=${received.code}, url=$url",
+                            )
+                            return@use
+                        }
+                        val body = received.body ?: return@use
+                        body.byteStream().use { input ->
+                            targetFile.outputStream().buffered().use { output ->
+                                val totalBytes = body.contentLength()
+                                var downloadedBytes = 0L
+                                var lastProgressAtNanos = 0L
+                                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                                onProgress(0L, totalBytes)
+                                while (true) {
+                                    val count = input.read(buffer)
+                                    if (count < 0) break
+                                    output.write(buffer, 0, count)
+                                    downloadedBytes += count
+                                    val now = System.nanoTime()
+                                    if (downloadedBytes == totalBytes ||
+                                        now - lastProgressAtNanos >= 100_000_000L
+                                    ) {
+                                        onProgress(downloadedBytes, totalBytes)
+                                        lastProgressAtNanos = now
+                                    }
+                                }
+                                output.flush()
+                                onProgress(downloadedBytes, totalBytes)
+                            }
+                        }
+                        downloadedSuccessfully = targetFile.isFile && targetFile.length() > 0L
+                    }
+                    if (continuation.isActive) continuation.resume(downloadedSuccessfully)
+                } catch (e: CancellationException) {
+                    targetFile.delete()
+                    continuation.cancel(e)
+                } catch (e: Exception) {
+                    targetFile.delete()
+                    LogUtil.e(AppConfig.TAG, "Failed to download file: $url", e)
+                    if (continuation.isActive) continuation.resume(false)
+                }
+            }
+        })
     }
 }

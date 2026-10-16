@@ -37,10 +37,12 @@ import com.v2ray.ang.ui.compose.QRCodeDialog
 import com.v2ray.ang.extension.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import java.io.File
 
 @Composable
 fun MainScreen(
     mainViewModel: MainViewModel,
+    onInstallAppUpdate: (File) -> Unit,
     onAction: (MainAction) -> Unit,
     onNavigate: (MainDestination) -> Unit,
 ) {
@@ -58,6 +60,8 @@ fun MainScreen(
     val doubleColumnDisplay = uiState.doubleColumnDisplay
     val confirmRemove = uiState.confirmRemove
     val shareQRCodeBitmap = uiState.shareQRCodeBitmap
+    val appUpdate by mainViewModel.appUpdate.collectAsStateWithLifecycle()
+    val appUpdateDownload by mainViewModel.appUpdateDownload.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -201,6 +205,13 @@ fun MainScreen(
     if (shareQRCodeBitmap != null) {
         QRCodeDialog(bitmap = shareQRCodeBitmap, onDismiss = { onAction(MainAction.DismissQRCodeDialog) })
     }
+    AppUpdateDialog(
+        result = appUpdate,
+        downloadState = appUpdateDownload,
+        onDismiss = { mainViewModel.dismissAppUpdate() },
+        onDownload = { result -> mainViewModel.downloadAppUpdate(result) },
+        onInstall = onInstallAppUpdate,
+    )
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {

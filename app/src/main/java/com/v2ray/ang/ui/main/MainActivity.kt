@@ -4,18 +4,23 @@ import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.KeyEvent
 import androidx.activity.compose.BackHandler
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.lifecycleScope
 import com.v2ray.ang.AngApplication
 import com.v2ray.ang.AppConfig
+import com.v2ray.ang.BuildConfig
 import com.v2ray.ang.R
 import com.v2ray.ang.core.LauncherManager
 import com.v2ray.ang.core.PingNgCompat
@@ -41,6 +46,7 @@ import com.v2ray.ang.extension.toastError
 import com.v2ray.ang.extension.toastSuccess
 import com.v2ray.ang.fmt.AmneziaWgFmt
 import com.v2ray.ang.handler.AngConfigManager
+import com.v2ray.ang.handler.DefaultConfigurationSeeder
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsChangeManager
 import com.v2ray.ang.handler.SettingsManager
@@ -86,11 +92,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 
 class MainActivity : HelperBaseComponentActivity() {
 
     private var desyncTunerJob: Job? = null
     private var warpEndpointTestJob: Job? = null
+    private var pendingInstallFile: File? = null
     private var pendingMasqueRegistrationGuid: String? = null
     private val masqueRegistrationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -162,8 +170,36 @@ class MainActivity : HelperBaseComponentActivity() {
         ContextCompat.registerReceiver(this, masqueRegistrationReceiver,
             IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY), Utils.receiverFlags())
         mainViewModel.onAction(MainAction.Initialize)
+        mainViewModel.checkForAppUpdate()
+        seedDefaultConfigurations()
 
         checkAndRequestPermission(PermissionType.POST_NOTIFICATIONS) {}
+    }
+
+    private fun seedDefaultConfigurations() {
+        lifecycleScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    DefaultConfigurationSeeder.seedIfNeeded()
+                }
+            }.getOrElse { error ->
+                LogUtil.e(AppConfig.TAG, "Failed to seed default configurations", error)
+                return@launch
+            }
+
+            if (result.groupsChanged) {
+                mainViewModel.onAction(MainAction.RefreshGroups)
+            }
+
+            result.serverlessSubscriptionToFetch?.let { subscription ->
+                lifecycleScope.launch(Dispatchers.IO) {
+                    DefaultConfigurationSeeder.updateServerless(subscription)
+                    withContext(Dispatchers.Main) {
+                        mainViewModel.onAction(MainAction.RefreshGroups)
+                    }
+                }
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -176,6 +212,7 @@ class MainActivity : HelperBaseComponentActivity() {
         BackHandler { moveTaskToBack(false) }
         MainScreen(
             mainViewModel = mainViewModel,
+            onInstallAppUpdate = ::requestInstallAppUpdate,
             onAction = { action ->
                 when (action) {
                     MainAction.ToggleService -> handleFabAction()
@@ -241,7 +278,70 @@ class MainActivity : HelperBaseComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        pendingInstallFile?.let { file ->
+            pendingInstallFile = null
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                installApk(file)
+            }
+        }
         mainViewModel.reloadServerList()
+    }
+
+    private fun requestInstallAppUpdate(file: File) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            pendingInstallFile = file
+            toast(R.string.update_install_permission)
+            runCatching {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+            }.onFailure {
+                pendingInstallFile = null
+                toastError(R.string.update_download_failed)
+            }
+        } else {
+            installApk(file)
+        }
+    }
+
+    private fun installApk(file: File) {
+        val apkPackageName = getApkPackageName(file)
+        if (apkPackageName != packageName) {
+            LogUtil.w(AppConfig.TAG, "Downloaded update package does not match the installed app")
+            toastError(R.string.update_incompatible_apk)
+            return
+        }
+
+        runCatching {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "${BuildConfig.APPLICATION_ID}.cache",
+                file,
+            )
+            val intent = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(uri, "application/vnd.android.package-archive")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(intent)
+        }
+            .onFailure { toastError(R.string.update_download_failed) }
+    }
+
+    private fun getApkPackageName(file: File): String? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getPackageArchiveInfo(
+                file.absolutePath,
+                PackageManager.PackageInfoFlags.of(0L),
+            )?.packageName
+        } else {
+            @Suppress("DEPRECATION")
+            val packageInfo = packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+            packageInfo?.packageName
+        }
     }
 
     private fun stopServiceFromButton() {

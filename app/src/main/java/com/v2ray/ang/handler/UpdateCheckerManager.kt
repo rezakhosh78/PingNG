@@ -12,6 +12,10 @@ import com.v2ray.ang.util.HttpUtil
 import com.v2ray.ang.util.JsonUtil
 import com.v2ray.ang.util.LogUtil
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -64,12 +68,13 @@ object UpdateCheckerManager {
         )
 
         return@withContext if (compareVersions(latestVersion, BuildConfig.VERSION_NAME) > 0) {
-            val downloadUrl = getDownloadUrl(latestRelease, Build.SUPPORTED_ABIS[0])
+            val downloadAsset = getDownloadAsset(latestRelease, Build.SUPPORTED_ABIS.toList())
             CheckUpdateResult(
                 hasUpdate = true,
                 latestVersion = latestVersion,
                 releaseNotes = latestRelease.body,
-                downloadUrl = downloadUrl,
+                downloadUrl = downloadAsset.browserDownloadUrl,
+                downloadSizeBytes = downloadAsset.size.takeIf { it > 0L },
                 isPreRelease = latestRelease.prerelease
             )
         } else {
@@ -96,62 +101,74 @@ object UpdateCheckerManager {
         return pi1.compareTo(pi2)
     }
 
-    private fun getDownloadUrl(release: GitHubRelease, abi: String): String {
-        val fDroid = BuildConfig.APPLICATION_ID.contains("fdroid", ignoreCase = true)
-        val apkAssets = release.assets.filter { it.name.endsWith(".apk", ignoreCase = true) }
-        val abiTokens = when (abi.lowercase()) {
-            "arm64-v8a" -> listOf("arm64-v8a", "arm64", "aarch64")
-            "armeabi-v7a" -> listOf("armeabi-v7a", "armv7", "armeabi")
-            "x86_64" -> listOf("x86_64", "x8664")
-            "x86" -> listOf("x86")
-            else -> listOf(abi)
+    private fun getDownloadAsset(
+        release: GitHubRelease,
+        supportedAbis: List<String>,
+    ): GitHubRelease.Asset {
+        if (!isReleaseCompatibleWithApplication(release.body.orEmpty(), BuildConfig.APPLICATION_ID)) {
+            throw IllegalStateException("The latest release targets a different app variant")
         }
-        fun isFlavorMatch(asset: GitHubRelease.Asset): Boolean =
-            asset.name.contains("fdroid", ignoreCase = true) == fDroid
-        fun isAbiMatch(asset: GitHubRelease.Asset): Boolean =
-            abiTokens.any { token -> asset.name.contains(token, ignoreCase = true) }
-        fun isUniversal(asset: GitHubRelease.Asset): Boolean =
-            listOf("universal", "all", "noarch", "release.apk").any {
-                asset.name.contains(it, ignoreCase = true)
-            }
+        val asset = selectCompatibleUpdateApk(
+            assets = release.assets,
+            supportedAbis = supportedAbis,
+            isFdroid = BuildConfig.APPLICATION_ID.contains("fdroid", ignoreCase = true),
+        )
 
-        val asset = apkAssets.firstOrNull { isFlavorMatch(it) && isAbiMatch(it) }
-            ?: apkAssets.firstOrNull { isFlavorMatch(it) && isUniversal(it) }
-            ?: apkAssets.firstOrNull { isAbiMatch(it) }
-            ?: apkAssets.firstOrNull { isUniversal(it) }
-            ?: apkAssets.firstOrNull { isFlavorMatch(it) }
-            ?: apkAssets.firstOrNull()
-
-        return asset?.browserDownloadUrl
-            ?: throw IllegalStateException("No compatible APK found")
+        return asset ?: throw IllegalStateException("No APK matches the supported device ABIs")
     }
 
     /** Downloads the selected release APK into the app-private cache. */
-    suspend fun downloadApk(context: Context, downloadUrl: String, version: String): File =
+    suspend fun downloadApk(
+        context: Context,
+        downloadUrl: String,
+        version: String,
+        expectedSizeBytes: Long? = null,
+        onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+    ): File =
         withContext(Dispatchers.IO) {
+            val downloadJob: Job? = currentCoroutineContext()[Job]
             val safeVersion = version.replace(Regex("[^A-Za-z0-9._-]"), "_")
             val target = File(context.cacheDir, "PingNG-$safeVersion.apk")
+            target.delete()
+            var lastReportedAtNanos = 0L
+            val progress: (Long, Long) -> Unit = { downloadedBytes, totalBytes ->
+                downloadJob?.ensureActive()
+                val progressTotalBytes = totalBytes.takeIf { it > 0L }
+                    ?: expectedSizeBytes?.takeIf { it > 0L }
+                    ?: totalBytes
+                val now = System.nanoTime()
+                if (downloadedBytes == 0L || downloadedBytes == progressTotalBytes ||
+                    now - lastReportedAtNanos >= 100_000_000L
+                ) {
+                    onProgress(downloadedBytes, progressTotalBytes)
+                    lastReportedAtNanos = now
+                }
+            }
             try {
                 val request = UrlContentRequest(
                     url = downloadUrl,
                     timeout = 60000,
                     userAgent = "PingNG/${BuildConfig.VERSION_NAME}",
                 )
-                var downloaded = HttpUtil.downloadToFile(request, target)
+                var downloaded = HttpUtil.downloadToFileCancellable(request, target, progress)
                 if (!downloaded) {
-                    downloaded = HttpUtil.downloadToFile(
+                    downloaded = HttpUtil.downloadToFileCancellable(
                         request.copy(
                             httpPort = SettingsManager.getHttpPort(),
                             proxyUsername = SettingsManager.getSocksUsername(),
                             proxyPassword = SettingsManager.getSocksPassword(),
                         ),
                         target,
+                        progress,
                     )
                 }
                 if (!downloaded || !target.isFile || target.length() == 0L) {
                     throw IllegalStateException("Downloaded update is empty")
                 }
                 target
+            } catch (error: CancellationException) {
+                target.delete()
+                throw error
             } catch (error: Throwable) {
                 target.delete()
                 throw error
