@@ -1,0 +1,164 @@
+{
+  "upstream": "https://github.com/2dust/v2rayNG.git",
+  "base_tag": "2.3.10",
+  "base_commit": "a4dd3d08de80958701247b00a8a979131192d1b4",
+  "target_tag": "2.3.11",
+  "target_commit": "e1b73f2fa8487dfc303da52d109719c1e32386b4",
+  "pingng_version": "v2.3.11-Pi43",
+  "pingng_version_code": 764,
+  "AndroidLibXrayLite": {
+    "commit": "1f3e2c5df1c248ed42630cee2bf747643d303ecc",
+    "release": "v26.10.10",
+    "binary_bundled": false
+  },
+  "AmneziaWG": {
+    "android_release": "v3.1.20260814",
+    "android_commit": "5c16489",
+    "engine_source": "https://github.com/amnezia-vpn/amneziawg-go",
+    "engine_license": "MIT",
+    "native_asset_source": "https://github.com/amnezia-vpn/amneziawg-android/releases",
+    "binary_bundled": true,
+    "build_action": "Bundled patched native libraries; rebuild with native/amneziawg/build-android.sh",
+    "engine_tag": "v3.1.20260828",
+    "native_build_id": "PingNG-AWG-FIX14-SYMBOL-ISOLATION-20261004",
+    "process": ":AmneziaWG",
+    "abis": {
+      "arm64-v8a": {
+        "sha256": "eeaa049fb1fcee2d87538dfa1d2e411ae0dc8a72d3a425e5e0328558ad69dfb7",
+        "built_with": "Go 1.25.0, Android NDK r26c, API 21, c-shared, private cgo symbols"
+      },
+      "armeabi-v7a": {
+        "sha256": "23519119aeab40644fe4bd30a1f0cb98f5fcc90e75c97150184b5ea7a9a3a614",
+        "built_with": "Go 1.25.0, Android NDK r26c, API 21, c-shared, private cgo symbols"
+      },
+      "x86": {
+        "sha256": "9acf3f35a8247a3d44f5b2ff318eb2db5f4a09ef76ea14b237ad56261e887147",
+        "built_with": "Go 1.25.0, Android NDK r26c, API 21, c-shared, private cgo symbols"
+      },
+      "x86_64": {
+        "sha256": "d76d3e79e5fc292cfaced8ea9a853b42de8c05abb9f204dcb1132bfdc5b79763",
+        "built_with": "Go 1.25.0, Android NDK r26c, API 21, c-shared, private cgo symbols"
+      }
+    },
+    "android_wrapper_base_release": "v3.1.20260814"
+  },
+  "hev_socks5_tunnel": {
+    "commit": "d9dca26c7ad0e494492244f0309e80ee583e739e",
+    "integration": "upstream delta merged into PingNG vendored sources"
+  },
+  "lwip": {
+    "commit": "e22c9d2873cd5a8aade9deb2e518b75dab05170e"
+  },
+  "gradle": "9.8.1",
+  "ndk": "30.0.14904198",
+  "android_validation": "not_run; Gradle distribution download is blocked by the sandbox network",
+  "ndk_upstream": "30.0.16248370",
+  "ndk_override_reason": "User requested NDK version 30.0.14904198",
+  "agp": "9.2.1",
+  "agp_override_reason": "Set to 9.2.1, the latest AGP version supported by the user’s Android Studio",
+  "DNSTT": {
+    "source": "https://github.com/Mygod/dnstt",
+    "commit": "17aa1fed864cd5493e3d09a14df1b8b5cc1df123",
+    "upstream": "https://www.bamsoftware.com/software/dnstt/",
+    "binary_bundled": true,
+    "abis": {
+      "arm64-v8a": {
+        "sha256": "4d97556cfd21e3655deae09582530d9d88006d517a888c31aeff28d77c406356",
+        "built_with": "Go 1.25.0 and Android NDK 30.0.14904198"
+      },
+      "armeabi-v7a": {
+        "sha256": "fec070555a3687185f31dd66848d54cb2e5b91b62930505238afc1ba6dbea83a",
+        "built_with": "Go 1.25.0 and Android NDK 30.0.14904198"
+      },
+      "x86_64": {
+        "sha256": "a3a0879e44ba9668505253ce2a08c0999acc4ae3ab9764b7788a6dddaf910514",
+        "built_with": "Go 1.25.0 and Android NDK 30.0.14904198"
+      },
+      "x86": {
+        "sha256": "2e55fc04aab4566b2b7da58a6961af633a14c8c038668af61ddfb22c8736cccd",
+        "built_with": "Go 1.25.0 and Android NDK 30.0.14904198"
+      }
+    },
+    "update_note": "Rebuilt from newer Mygod/dnstt source (2025-12-30), including Android socket handling and send-loop fixes; SSH handshake timeout increased to 60 s."
+  },
+  "MasterDnsVPN": {
+    "release": "v2026.06.13.234407-7de2476",
+    "commit": "7de2476",
+    "binary_bundled": true,
+    "abis": {
+      "arm64-v8a": {
+        "sha256": "0385a48f850175fd438e4487d106fa9e088b939d4ab26507cbe2afb4d7f69497",
+        "release_asset": "MasterDnsVPN_Client_Termux_ARM64.tar.gz",
+        "built_from_commit": "7de2476 + PingNG Fast cache patch",
+        "built_with": "Go 1.25.0 and Android NDK r30 beta 1 clang, API 21"
+      },
+      "armeabi-v7a": {
+        "sha256": "a27ea570fa2ad821c18edd526d9152ff8362d8e8d9bd0d1ac20d1dec89671acf",
+        "release_asset": "MasterDnsVPN_Client_Termux_ARMV7.tar.gz",
+        "built_from_commit": "7de2476 + PingNG Fast cache patch",
+        "built_with": "Go 1.25.0 and Android NDK r30 beta 1 clang, API 21"
+      },
+      "x86_64": {
+        "sha256": "10a3a6073266efc80ae3f312f58af7eb5c7c796e97b8bac5d3ac0df8bdf91d3e",
+        "built_from_commit": "7de2476 + PingNG Fast cache patch",
+        "source": "https://github.com/masterking32/MasterDnsVPN",
+        "target": "android/amd64",
+        "cgo_enabled": true,
+        "built_with": "Go 1.25.0 and Android NDK r30 beta 1 clang, API 21"
+      },
+      "x86": {
+        "sha256": "ff48942e305f0b6fc4dad6f48878043caf5eff88c5aaaa209759384221c8f900",
+        "built_from_commit": "7de2476 + PingNG Fast cache patch",
+        "source": "https://github.com/masterking32/MasterDnsVPN",
+        "target": "android/386",
+        "cgo_enabled": true,
+        "built_with": "Go 1.25.0 and Android NDK r30 beta 1 clang, API 21"
+      }
+    },
+    "custom_patch": "patches/masterdns-fast-cache.patch",
+    "custom_patch_test": "patches/masterdns-fast-cache-test.go",
+    "update_note": "PingNG Fast mode restores saved per-resolver MTUs and skips the initial MTU scan; default full scan remains when Fast is disabled."
+  },
+  "usque_masque_core": {
+    "source": "https://github.com/Diniboy1123/usque",
+    "source_commit": "6aa03fc97d12848dce34eedbd187fb1077b5d1ea",
+    "upstream_release": "v4.2.1",
+    "binary_bundled": true,
+    "purpose": "WARP MASQUE over HTTP/2",
+    "abis": {
+      "arm64-v8a": {
+        "sha256": "6c6c47ca3a0dcc5f0d6df75c703476fa9aa18e692015d3236dd11751a6ad16ce",
+        "built_with": "Go 1.26.3, Android, ARM64, CGO_ENABLED=0",
+        "source_revision_verified_from_binary": "6aa03fc97d12848dce34eedbd187fb1077b5d1ea"
+      },
+      "armeabi-v7a": {
+        "sha256": "254e0c0a2f9f0b5c364e006d507c49653cede1702bd3e6acfda0beb927cfe59a",
+        "built_with": "Go 1.26.3, Android NDK r26c, Android API 24, GOARCH=arm GOARM=7 CGO_ENABLED=1",
+        "elf": "32-bit ARMv7 Android PIE executable"
+      }
+    },
+    "update_note": "Added the official v4.2.1 usque MASQUE/HTTP2 core for armeabi-v7a; this source archive matches the ARM64 core revision and is built for the Android system linker.",
+    "source_archive": "https://github.com/Diniboy1123/usque/archive/refs/tags/v4.2.1.tar.gz"
+  },
+  "upstream_changes": [
+    "WireGuard remoteDNS support and remote DNS selection",
+    "Root proxy DNS DNAT handling",
+    "Balancer must-probe fallback handling",
+    "JSON integer precision preservation and tests",
+    "Azerbaijani language resources and v2.3.11 dependency updates"
+  ],
+  "pingng_endpoint_scanner": {
+    "implementation": "Endpoint Scanner CLI v0.16.0 as a separate Android process; original PingNG progress-event adapter retained",
+    "upstream": "Third-party MIT scanner by Nikita S.; adapted for PingNG",
+    "license": "MIT; app/src/main/assets/ENDPOINT_SCANNER_LICENSE.txt",
+    "source": "native/endpointscanner/engine",
+    "standalone_binary_bundled": true,
+    "abis": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "x86",
+      "x86_64"
+    ],
+    "binary_origin": "restored byte-for-byte from the uploaded BuildFix7 source archive; not rebuilt or modified"
+  }
+}
