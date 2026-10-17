@@ -193,8 +193,16 @@ abstract class PrepareBepassRuntimeTask : DefaultTask() {
             "ANDROID_NDK_HOME" to toolchain.absolutePath,
             "ANDROID_NDK_ROOT" to toolchain.absolutePath,
             "CGO_LDFLAGS" to "-Wl,-z,max-page-size=16384",
-            pathKey to (goBin.absolutePath + File.pathSeparator + System.getenv().entries
-                .firstOrNull { it.key.equals("PATH", ignoreCase = true) }?.value.orEmpty()),
+            // gomobile init invokes `go install .../gobind@latest` internally. Put
+            // the verified Go toolchain on PATH as well as invoking it by its
+            // absolute path above, so gomobile cannot fall back to the runner's
+            // older system Go version.
+            pathKey to listOf(
+                goBin.absolutePath,
+                go.absoluteFile.parentFile.absolutePath,
+                System.getenv().entries.firstOrNull { it.key.equals("PATH", ignoreCase = true) }
+                    ?.value.orEmpty(),
+            ).joinToString(File.pathSeparator),
         )
         run(listOf(gomobile.absolutePath, "init"), source, androidEnv)
         run(
