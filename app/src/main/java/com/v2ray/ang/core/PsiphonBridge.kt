@@ -1,0 +1,882 @@
+package com.v2ray.ang.core
+
+import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import dalvik.system.DexClassLoader
+import androidx.core.content.ContextCompat
+import com.v2ray.ang.AppConfig
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.v2ray.ang.dto.entities.ProfileItem
+import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.enums.EConfigType
+import com.v2ray.ang.helper.MessageHelper
+import com.v2ray.ang.handler.SettingsManager
+import com.v2ray.ang.util.LogUtil
+import java.io.File
+import java.lang.reflect.InvocationHandler
+import java.lang.reflect.Method
+import java.lang.reflect.Proxy
+import java.lang.reflect.InvocationTargetException
+import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * Small PingNG adapter around the Shir o Khorshid Psiphon runtime.
+ *
+ * Psiphon is loaded from a private DEX because its generated gomobile API is not
+ * an Android dependency of v2rayNG. The first Xray stage exposes a loopback HTTP
+ * inbound; Psiphon uses that as its upstream proxy. After Psiphon reports
+ * Connected, the Xray TUN route is reloaded through Psiphon's local SOCKS port.
+ */
+object PsiphonBridge {
+    private const val TAG = "PingNG-Psiphon"
+    private const val RUNTIME_DEX_ASSET = "pingng_psiphon_runtime.dex"
+    // Android rejects a DEX that is still writable when DexClassLoader opens it.
+    // Use a versioned filename so installs made with the old bridge cannot reuse
+    // the writable copy already present in code_cache.
+    private const val RUNTIME_DEX_FILE = "pingng_psiphon_runtime_ro_v2.dex"
+    private const val CONFIG_ASSET = "pingng_psiphon_config.json"
+    private const val ENTRIES_ASSET = "pingng_psiphon_server_entries.txt"
+    private const val NATIVE_NAME = "libpingng_psiphon.so"
+    private const val UPSTREAM_TAG = "pingng-psiphon-upstream"
+    private const val EGRESS_TAG = "pingng-psiphon-egress"
+
+    // Psiphon is always chained through PingNG's local HTTP upstream. Keep
+    // the fallback path's protocol selection identical to the isolated
+    // runtime service and the reference chained Psiphon mode.
+    private val CHAINED_TUNNEL_PROTOCOLS = listOf(
+        "SSH",
+        "OSSH",
+        "TLS-OSSH",
+        "UNFRONTED-MEEK-OSSH",
+        "UNFRONTED-MEEK-HTTPS-OSSH",
+        "UNFRONTED-MEEK-SESSION-TICKET-OSSH",
+        "SHADOWSOCKS-OSSH",
+        "FRONTED-MEEK-OSSH",
+        "FRONTED-MEEK-CDN-OSSH",
+        "FRONTED-MEEK-HTTP-OSSH",
+        "FRONTED-MEEK-CDN-HTTP-OSSH",
+    )
+    private val CDN_TUNNEL_PROTOCOLS = listOf(
+        "FRONTED-MEEK-CDN-OSSH",
+        "FRONTED-MEEK-CDN-HTTP-OSSH",
+    )
+
+    @Volatile private var tunnel: Any? = null
+    @Volatile private var loader: DexClassLoader? = null
+    @Volatile private var upstreamHttpPort = 0
+    @Volatile private var plannedSocksPort = 0
+    @Volatile private var socksPort = 0
+    @Volatile private var connected = false
+    @Volatile private var activeGuid: String? = null
+    @Volatile private var statusContext: Context? = null
+    @Volatile private var runtimeRunning = false
+    @Volatile private var runtimeStartAtMs = 0L
+    @Volatile private var egressVerified = false
+    private val startWatchdogHandler = Handler(Looper.getMainLooper())
+    private var startWatchdogRunnable: Runnable? = null
+    private val starting = AtomicBoolean(false)
+    private val egressFailureHandled = AtomicBoolean(false)
+    private val routeApplied = AtomicBoolean(false)
+    private var receiverRegistered = false
+
+    private val runtimeReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != AppConfig.ACTION_PSIPHON_RUNTIME) return
+            handleRuntimeEvent(intent)
+        }
+    }
+
+    fun isRunning(): Boolean = runtimeRunning || tunnel != null
+    fun isConnected(): Boolean = connected
+    /** Port of the Psiphon SOCKS listener in the isolated runtime process. */
+    // A listening socket can remain open while Psiphon is replacing its
+    // upstream tunnel. Treat it as usable only while the runtime reports an
+    // established tunnel; otherwise delay and exit-IP checks race reconnects.
+    fun activeSocksPort(): Int = socksPort.takeIf { connected && it in 1..65535 } ?: 0
+    fun hasPreparedEgress(profile: ProfileItem?): Boolean = profile?.let {
+        it.psiphonEnabled && plannedSocksPort in 1..65535
+    } == true
+
+    fun usesStableEgress(profile: ProfileItem?): Boolean = profile?.let {
+        // HEV and the AmneziaWG netstack can keep Xray and Psiphon's upstream
+        // running while the Android VPN is attached or the tunnel reconnects.
+        it.psiphonEnabled && (it.configType == com.v2ray.ang.enums.EConfigType.AMNEZIAWG || SettingsManager.isUsingHevTun()) &&
+            plannedSocksPort in 1..65535
+    } == true
+    /** Reserves one Psiphon SOCKS port shared by Xray routing and the AWG gateway. */
+    @Synchronized
+    fun prepareAmneziaEgress(): Int {
+        if (plannedSocksPort !in 1..65535) plannedSocksPort = findFreePort()
+        return plannedSocksPort
+    }
+
+    @Synchronized
+    fun setAmneziaUpstream(port: Int) {
+        require(port in 1..65535)
+        upstreamHttpPort = port
+    }
+
+    fun selectedRegion(profile: ProfileItem): String = profile.psiphonRegion.orEmpty().ifBlank { "ANY" }.uppercase()
+
+    /** Adds the bootstrap HTTP inbound and, after Psiphon connects, its final SOCKS route. */
+    @Synchronized
+    fun prepareCoreConfig(service: Service, profile: ProfileItem, raw: String): String {
+        if (!profile.psiphonEnabled) return raw
+
+        val root = JsonParser.parseString(raw).asJsonObject
+        val inbounds = root.getAsJsonArray("inbounds") ?: JsonArray().also { root.add("inbounds", it) }
+        if (upstreamHttpPort !in 1..65535) {
+            upstreamHttpPort = findFreePort()
+        }
+        if (profile.psiphonEnabled && plannedSocksPort !in 1..65535) plannedSocksPort = findFreePort()
+        if (inbounds.none { it.isJsonObject && it.asJsonObject.get("tag")?.asString == UPSTREAM_TAG }) {
+            inbounds.add(JsonObject().apply {
+                addProperty("tag", UPSTREAM_TAG)
+                addProperty("listen", "127.0.0.1")
+                addProperty("port", upstreamHttpPort)
+                addProperty("protocol", "http")
+                add("settings", JsonObject().apply { addProperty("timeout", 0) })
+            })
+        }
+
+        val outbounds = root.getAsJsonArray("outbounds") ?: JsonArray().also { root.add("outbounds", it) }
+        // When Psiphon is enabled on WARP MASQUE, MASQUE is the upstream hop
+        // for Psiphon's HTTP bootstrap. Once Psiphon reports a live SOCKS
+        // listener, user TCP traffic must be routed to Psiphon so its exit IP
+        // is visible to websites. Keeping the old MASQUE catch-all here made
+        // Psiphon appear connected while every user request still exited via
+        // WARP.
+        val warpMasqueUpstream = profile.configType == EConfigType.WARP &&
+            WarpMasqueConfig.isDescription(profile.description)
+        if (warpMasqueUpstream) {
+            PingNgDiagnostics.record("Psiphon enabled on WARP MASQUE; Psiphon will be final TCP egress")
+        }
+        val isWarpPlus = WarpPlusConfig.isDescription(profile.description)
+        // WARP Plus is a generated two-hop chain. Do not let the first
+        // incidental outbound (for example a DNS or fallback entry) become
+        // Psiphon's upstream; the inner WARP tag is the only valid upstream
+        // for this profile.
+        val upstreamOutbound = if ((isWarpPlus || MasterDnsBridge.isProfile(profile)) && outbounds.any {
+                it.isJsonObject && it.asJsonObject.get("tag")?.asString == "proxy"
+            }) {
+            "proxy"
+        } else outbounds.firstOrNull {
+            it.isJsonObject && it.asJsonObject.get("tag")?.asString?.let(::isUsableOutbound) == true
+        }?.asJsonObject?.get("tag")?.asString ?: "proxy"
+
+        val routing = root.getAsJsonObject("routing") ?: JsonObject().also {
+            it.addProperty("domainStrategy", "AsIs")
+            it.add("rules", JsonArray())
+            root.add("routing", it)
+        }
+        val oldRules = routing.getAsJsonArray("rules") ?: JsonArray()
+        val rules = JsonArray()
+        rules.add(JsonObject().apply {
+            addProperty("type", "field")
+            add("inboundTag", JsonArray().also { it.add(UPSTREAM_TAG) })
+            addProperty("outboundTag", upstreamOutbound)
+        })
+        oldRules.forEach { rule ->
+            if (rule.isJsonObject && rule.asJsonObject.getAsJsonArray("inboundTag")?.any {
+                    it.asString == UPSTREAM_TAG
+                } == true) return@forEach
+            rules.add(rule)
+        }
+
+        val finalSocksPort = if (hasPreparedEgress(profile)) plannedSocksPort else activeSocksPort()
+        if (finalSocksPort in 1..65535 && (connected || hasPreparedEgress(profile))) {
+            if (outbounds.none { it.isJsonObject && it.asJsonObject.get("tag")?.asString == EGRESS_TAG }) {
+                outbounds.add(JsonObject().apply {
+                    addProperty("tag", EGRESS_TAG)
+                    addProperty("protocol", "socks")
+                    add("settings", JsonObject().apply {
+                        addProperty("version", "5")
+                        addProperty("udp", false)
+                        add("servers", JsonArray().also { servers ->
+                            servers.add(JsonObject().apply {
+                                addProperty("address", "127.0.0.1")
+                                addProperty("port", finalSocksPort)
+                            })
+                        })
+                    })
+                    // Keep the local Psiphon hop TCP-only and IPv4. This is
+                    // especially important for WARP Plus where the generated
+                    // chain may otherwise inherit an unsuitable UDP/IPv6
+                    // dial path from the WireGuard outbounds.
+                    add("streamSettings", JsonObject().apply {
+                        addProperty("network", "tcp")
+                        add("sockopt", JsonObject().apply {
+                            addProperty("domainStrategy", "UseIPv4")
+                        })
+                    })
+                })
+            }
+            val finalRules = JsonArray()
+            // The Psiphon HTTP bootstrap inbound must keep using the original
+            // proxy outbound. Put this explicit rule before the untagged TCP
+            // fallback below; otherwise that catch-all sends Psiphon's own
+            // server connections back into Psiphon's SOCKS listener and the
+            // tunnel can never finish connecting.
+            rules.firstOrNull()?.let { finalRules.add(it) }
+            // Xray's built-in DNS client also enters the routing table. The
+            // generic TCP catch-all below used to send its DoH requests to
+            // Psiphon itself (dns-module -> Psiphon SOCKS). During a Psiphon
+            // reconnect that created the closed-pipe errors seen in logs and
+            // broke fresh DNS lookups. Keep internal DoH on the first-hop
+            // outbound, just like Psiphon's own bootstrap traffic.
+            val dnsModuleTag = root.getAsJsonObject("dns")
+                ?.get("tag")?.takeIf { it.isJsonPrimitive }?.asString
+                ?.takeIf { it.isNotBlank() } ?: "dns-module"
+            if (dnsModuleTag != UPSTREAM_TAG && dnsModuleTag != EGRESS_TAG) {
+                finalRules.add(JsonObject().apply {
+                    addProperty("type", "field")
+                    add("inboundTag", JsonArray().also { it.add(dnsModuleTag) })
+                    addProperty("network", "tcp")
+                    addProperty("outboundTag", upstreamOutbound)
+                })
+                PingNgDiagnostics.record(
+                    "Psiphon internal DNS route: $dnsModuleTag -> $upstreamOutbound",
+                )
+            }
+            // Custom JSON files do not necessarily call their TUN/mixed inbound
+            // "tun". Route every user-facing inbound explicitly; otherwise the
+            // Psiphon switch appears enabled but traffic keeps using the old
+            // route.
+            val userInboundTags = inbounds.mapNotNull { inbound ->
+                inbound.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.get("tag")?.takeIf { it.isJsonPrimitive }?.asString
+                    ?.takeUnless { it == UPSTREAM_TAG }
+            }.distinct().ifEmpty { listOf("tun") }
+            // Keep DNS interception ahead of the UDP block. Previously all UDP
+            // went through the first-hop tunnel, so browsers using QUIC and
+            // other UDP clients exposed that tunnel's exit IP instead of
+            // Psiphon's. DNS/53 may keep using dns-out; other UDP fails closed.
+            val dnsOutboundTag = PsiphonRoutingPolicy.ensureDnsOutbound(outbounds)
+            val udpBlockTag = PsiphonRoutingPolicy.ensureUdpBlockOutbound(outbounds)
+            PsiphonRoutingPolicy.userUdpRules(dnsOutboundTag, udpBlockTag)
+                .forEach { finalRules.add(it) }
+            PingNgDiagnostics.record(
+                "Psiphon UDP policy: DNS/53 -> $dnsOutboundTag; other UDP -> $udpBlockTag",
+            )
+            finalRules.add(JsonObject().apply {
+                addProperty("type", "field")
+                add("inboundTag", JsonArray().also { tags -> userInboundTags.forEach(tags::add) })
+                addProperty("network", "tcp")
+                addProperty("outboundTag", EGRESS_TAG)
+            })
+            // Some generated or imported inbounds have no tag. Keep this
+            // fallback after the explicit Psiphon upstream rule above.
+            finalRules.add(JsonObject().apply {
+                addProperty("type", "field")
+                addProperty("network", "tcp")
+                addProperty("outboundTag", EGRESS_TAG)
+            })
+            rules.drop(1).forEach { finalRules.add(it) }
+            routing.add("rules", finalRules)
+            PingNgDiagnostics.record(
+                "Psiphon final route applied: TCP -> $EGRESS_TAG; DNS/53 -> $dnsOutboundTag; " +
+                    "other UDP -> $udpBlockTag; upstream -> $upstreamOutbound",
+            )
+        } else {
+            routing.add("rules", rules)
+        }
+        return root.toString()
+    }
+
+    @Synchronized
+    fun startAfterCoreConnected(service: Service, guid: String, profile: ProfileItem) {
+        startAfterCoreConnected(service, guid, profile, retryCount = 0)
+    }
+
+    @Synchronized
+    private fun startAfterCoreConnected(
+        service: Service,
+        guid: String,
+        profile: ProfileItem,
+        retryCount: Int,
+    ) {
+        if (!profile.psiphonEnabled) return
+        val now = SystemClock.elapsedRealtime()
+        if (PsiphonRuntimeStartPolicy.shouldReuseRuntime(
+                activeGuid = activeGuid,
+                requestedGuid = guid,
+                isRunning = isRunning(),
+                isConnected = connected,
+                startedAtMs = runtimeStartAtMs,
+                nowMs = now,
+            )
+        ) {
+            PingNgDiagnostics.record("Psiphon runtime start skipped; the same profile already has an active runtime")
+            return
+        }
+        if (!starting.compareAndSet(false, true)) {
+            val staleStart = runtimeStartAtMs <= 0L || now - runtimeStartAtMs >= PsiphonRuntimeStartPolicy.START_TIMEOUT_MS
+            if (activeGuid == guid && !staleStart) {
+                PingNgDiagnostics.record("Psiphon runtime start skipped; startup is still in progress")
+                return
+            }
+            starting.set(false)
+            if (!starting.compareAndSet(false, true)) {
+                PingNgDiagnostics.record("Psiphon runtime restart skipped; another start request is active")
+                return
+            }
+        }
+        if (isRunning() && activeGuid != guid) {
+            PingNgDiagnostics.record("Replacing stale Psiphon runtime for a different profile")
+        } else if (isRunning() && runtimeStartAtMs > 0L && now - runtimeStartAtMs >= PsiphonRuntimeStartPolicy.START_TIMEOUT_MS) {
+            PingNgDiagnostics.record("Restarting Psiphon runtime after startup timeout")
+        }
+        activeGuid = guid
+        statusContext = service.applicationContext
+        runtimeRunning = true
+        runtimeStartAtMs = now
+        connected = false
+        egressVerified = false
+        egressFailureHandled.set(false)
+        socksPort = 0
+        routeApplied.set(false)
+        registerRuntimeReceiver(service)
+        cancelStartWatchdog()
+        scheduleStartWatchdog(service, guid, profile, retryCount, now)
+        PingNgDiagnostics.record(
+            "Starting isolated Psiphon runtime for ${profile.remarks}; upstream HTTP=127.0.0.1:$upstreamHttpPort",
+        )
+        publishStatus(PsiphonStatus.CONNECTING, guid, service)
+        try {
+            val intent = Intent(service, com.v2ray.ang.service.PsiphonRuntimeService::class.java)
+                .setAction(AppConfig.PSIPHON_RUNTIME_START)
+                .putExtra(AppConfig.EXTRA_PSIPHON_GUID, guid)
+                .putExtra(AppConfig.EXTRA_PSIPHON_REGION, selectedRegion(profile))
+                .putExtra(AppConfig.EXTRA_PSIPHON_MODE, profile.psiphonMode.orEmpty().ifBlank { "auto" })
+                .putExtra(AppConfig.EXTRA_PSIPHON_CDN_IPS, profile.psiphonCdnIps.orEmpty())
+                .putExtra(AppConfig.EXTRA_PSIPHON_CDN_SNI, profile.psiphonCdnSni.orEmpty())
+                .putExtra(AppConfig.EXTRA_PSIPHON_CDN_SETS, profile.psiphonCdnSets.orEmpty())
+                .putExtra(AppConfig.EXTRA_PSIPHON_FORCE_LOCAL_UPSTREAM, profile.configType == com.v2ray.ang.enums.EConfigType.AMNEZIAWG)
+                .putExtra(AppConfig.EXTRA_PSIPHON_UPSTREAM_PORT, upstreamHttpPort)
+                .putExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, if (hasPreparedEgress(profile)) plannedSocksPort else 0)
+            ContextCompat.startForegroundService(service, intent)
+        } catch (e: Throwable) {
+            cancelStartWatchdog()
+            runtimeRunning = false
+            runtimeStartAtMs = 0L
+            starting.set(false)
+            val cause = unwrapInvocation(e)
+            PingNgDiagnostics.record("Psiphon process start failed", cause)
+            LogUtil.e(TAG, "Psiphon process start failed", cause)
+            publishStatus(PsiphonStatus.FAILED, guid, service)
+        }
+    }
+
+    @Synchronized
+    fun stop() {
+        cancelStartWatchdog()
+        val guid = activeGuid
+        val context = statusContext
+        runtimeRunning = false
+        runtimeStartAtMs = 0L
+        egressVerified = false
+        egressFailureHandled.set(false)
+        context?.let { unregisterRuntimeReceiver(it) }
+        context?.let {
+            val runtimeIntent = Intent(it, com.v2ray.ang.service.PsiphonRuntimeService::class.java)
+            runCatching {
+                val stopIntent = Intent(runtimeIntent)
+                    .setAction(AppConfig.PSIPHON_RUNTIME_STOP)
+                ContextCompat.startForegroundService(it, stopIntent)
+            }
+            // stopService is also needed when Android tears down the old
+            // instance before delivering the explicit stop command.
+            runCatching { it.stopService(runtimeIntent) }
+        }
+        val active = tunnel
+        tunnel = null
+        connected = false
+        routeApplied.set(false)
+        socksPort = 0
+        upstreamHttpPort = 0
+        plannedSocksPort = 0
+        starting.set(false)
+        if (active != null) {
+            try {
+                active.javaClass.getMethod("stop").invoke(active)
+            } catch (e: Throwable) {
+                LogUtil.e(TAG, "Psiphon stop failed", e)
+            }
+        }
+        publishStatus(PsiphonStatus.STOPPED, guid, context)
+        activeGuid = null
+        statusContext = null
+    }
+
+    /** Marks the Psiphon path ready only after a request has crossed its SOCKS egress. */
+    @Synchronized
+    fun onEgressProbeSucceeded() {
+        if (!connected || egressFailureHandled.get()) return
+        val state = PsiphonRuntimeStartPolicy.statusAfterEgressProbe(
+            transportConnected = connected,
+            probeSucceeded = true,
+        ) ?: return
+        egressVerified = true
+        activeGuid?.let { guid -> publishStatus(state, guid, statusContext) }
+        PingNgDiagnostics.record("Psiphon egress probe succeeded")
+    }
+
+    /** Stops a Psiphon route whose local SOCKS path cannot be verified. */
+    @Synchronized
+    fun onEgressProbeFailed() {
+        if (!PsiphonRuntimeStartPolicy.shouldStopAfterEgressFailure(
+                transportConnected = connected,
+                failureAlreadyHandled = egressFailureHandled.get(),
+            ) || !egressFailureHandled.compareAndSet(false, true)
+        ) return
+        egressVerified = false
+        connected = false
+        socksPort = 0
+        activeGuid?.let { guid -> publishStatus(PsiphonStatus.CONNECTING, guid, statusContext) }
+        // Keep implementation details in diagnostics only. The user-facing result is a clean
+        // disconnect so they can retry, not a SOCKS exception or an empty-detail test error.
+        PingNgDiagnostics.record("Psiphon SOCKS egress verification failed; stopping the VPN")
+        CoreServiceManager.onPsiphonEgressFailed()
+    }
+
+    private fun registerRuntimeReceiver(service: Service) {
+        if (receiverRegistered) return
+        ContextCompat.registerReceiver(
+            service.applicationContext,
+            runtimeReceiver,
+            IntentFilter(AppConfig.ACTION_PSIPHON_RUNTIME),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        receiverRegistered = true
+    }
+
+    private fun unregisterRuntimeReceiver(context: Context) {
+        if (!receiverRegistered) return
+        runCatching { context.applicationContext.unregisterReceiver(runtimeReceiver) }
+        receiverRegistered = false
+    }
+
+    private fun handleRuntimeEvent(intent: Intent) {
+        val guid = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_GUID)
+        if (guid.isNullOrBlank() || guid != activeGuid) return
+        val state = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_STATE).orEmpty()
+        val context = statusContext ?: return
+        when (state) {
+            PsiphonStatus.CONNECTING -> {
+                val wasConnected = connected
+                connected = false
+                egressVerified = false
+                egressFailureHandled.set(false)
+                if (wasConnected) {
+                    PingNgDiagnostics.record("Psiphon tunnel reconnecting; pausing connection probes")
+                    CoreServiceManager.onPsiphonConnecting()
+                }
+                publishStatus(PsiphonStatus.CONNECTING, guid, context)
+            }
+            PsiphonStatus.CONNECTED -> {
+                if (egressFailureHandled.get()) {
+                    PingNgDiagnostics.record("Ignored stale Psiphon CONNECTED event while stopping a failed egress")
+                    return
+                }
+                val reportedPort = intent.getIntExtra(AppConfig.EXTRA_PSIPHON_SOCKS_PORT, 0)
+                if (plannedSocksPort in 1..65535 && reportedPort != plannedSocksPort) {
+                    PingNgDiagnostics.record("Psiphon SOCKS port mismatch: expected $plannedSocksPort, got $reportedPort")
+                    CoreServiceManager.onPsiphonEgressFailed()
+                    return
+                }
+                // A reconnect on the same listener does not require another
+                // Xray reload. routeApplied stays true across CONNECTING, so
+                // use it to recognize that route as already installed.
+                val duplicateConnected = routeApplied.get() && socksPort == reportedPort &&
+                    reportedPort in 1..65535
+                socksPort = reportedPort
+                connected = socksPort in 1..65535
+                if (!duplicateConnected) egressVerified = false
+                starting.set(false)
+                cancelStartWatchdog()
+                PingNgDiagnostics.record("Psiphon is working; SOCKS=127.0.0.1:$socksPort")
+                publishStatus(
+                    if (egressVerified) PsiphonStatus.CONNECTED else PsiphonStatus.CONNECTING,
+                    guid,
+                    context,
+                )
+                // The runtime can emit CONNECTED more than once for the same
+                // SOCKS listener. Rebuilding Xray for every duplicate tears
+                // down active sockets and makes WARP Plus appear connected
+                // while every website request times out.
+                if (!duplicateConnected) routeApplied.set(false)
+                if (connected && !duplicateConnected && routeApplied.compareAndSet(false, true)) {
+                    CoreServiceManager.onPsiphonConnected()
+                } else if (connected && duplicateConnected) {
+                    CoreServiceManager.onPsiphonRecovered()
+                }
+            }
+            PsiphonStatus.FAILED -> {
+                val wasActive = connected || egressVerified
+                runtimeRunning = false
+                runtimeStartAtMs = 0L
+                connected = false
+                egressVerified = false
+                socksPort = 0
+                starting.set(false)
+                cancelStartWatchdog()
+                val message = intent.getStringExtra(AppConfig.EXTRA_PSIPHON_MESSAGE).orEmpty()
+                if (PsiphonRuntimeStartPolicy.shouldQuietlyDisconnectAfterRuntimeFailure(wasActive, message)) {
+                    PingNgDiagnostics.record("Psiphon SOCKS route failed; quietly disconnecting the VPN for a retry")
+                    CoreServiceManager.onPsiphonEgressFailed()
+                    return
+                }
+                PingNgDiagnostics.record("Psiphon runtime failed${message.takeIf { it.isNotBlank() }?.let { ": $it" } ?: ""}")
+                publishStatus(PsiphonStatus.FAILED, guid, context)
+                CoreServiceManager.onPsiphonFailed(message)
+            }
+            PsiphonStatus.STOPPED -> {
+                if (starting.get()) {
+                    PingNgDiagnostics.record("Ignored stale Psiphon STOPPED event while replacement startup is active")
+                    return
+                }
+                runtimeRunning = false
+                runtimeStartAtMs = 0L
+                connected = false
+                egressVerified = false
+                socksPort = 0
+                routeApplied.set(false)
+                starting.set(false)
+                cancelStartWatchdog()
+                publishStatus(PsiphonStatus.STOPPED, guid, context)
+                if (CoreServiceManager.isRunning()) CoreServiceManager.onPsiphonDisconnected()
+            }
+        }
+    }
+
+    private fun scheduleStartWatchdog(
+        service: Service,
+        guid: String,
+        profile: ProfileItem,
+        retryCount: Int,
+        startedAtMs: Long,
+    ) {
+        val watchdog = Runnable {
+            val timedOut = synchronized(this) {
+                if (activeGuid != guid || connected || runtimeStartAtMs != startedAtMs) {
+                    startWatchdogRunnable = null
+                    false
+                } else {
+                    startWatchdogRunnable = null
+                    runtimeRunning = false
+                    runtimeStartAtMs = 0L
+                    starting.set(false)
+                    socksPort = 0
+                    true
+                }
+            }
+            if (!timedOut) return@Runnable
+
+            PingNgDiagnostics.record("Psiphon runtime produced no connection event before startup timeout")
+            if (PsiphonRuntimeStartPolicy.shouldRetryTimedOutStart(retryCount)) {
+                PingNgDiagnostics.record(
+                    "Retrying Psiphon runtime start (${retryCount + 1}/${PsiphonRuntimeStartPolicy.MAX_START_RETRIES})",
+                )
+                startAfterCoreConnected(service, guid, profile, retryCount + 1)
+            } else {
+                val reason = "Psiphon startup timed out after ${retryCount + 1} attempts"
+                publishStatus(PsiphonStatus.FAILED, guid, service)
+                CoreServiceManager.onPsiphonFailed(reason)
+            }
+        }
+        startWatchdogRunnable = watchdog
+        startWatchdogHandler.postDelayed(
+            watchdog,
+            PsiphonRuntimeStartPolicy.START_TIMEOUT_MS + 1_000L,
+        )
+    }
+
+    @Synchronized
+    private fun cancelStartWatchdog() {
+        startWatchdogRunnable?.let(startWatchdogHandler::removeCallbacks)
+        startWatchdogRunnable = null
+    }
+
+    private fun startInternal(service: Service, guid: String, profile: ProfileItem) {
+        val runtimeDir = File(service.codeCacheDir, "pingng-psiphon-runtime").apply { mkdirs() }
+        val dexFile = materializeReadOnlyRuntimeDex(service, runtimeDir)
+        val runtimeNativeDir = materializeRuntimeNativeLibrary(service, runtimeDir)
+
+        val parent = PsiphonBridge::class.java.classLoader
+        // The gomobile runtime must be visible to the same class loader that owns
+        // psi.Psi. Otherwise Android can load the .so successfully but still report
+        // "No implementation found" for its Java native methods.
+        val runtimeLoader = PsiphonDexClassLoader(
+            dexFile.absolutePath,
+            runtimeDir.absolutePath,
+            runtimeNativeDir.absolutePath,
+            parent,
+        )
+        // The Psiphon DEX loads "gojni" from this private directory during
+        // go.Seq initialization. Keeping that file outside the APK's shared
+        // nativeLibraryDir prevents Android from binding it to Xray's copy.
+        Class.forName("go.Seq", true, runtimeLoader)
+            .getMethod("setContext", Context::class.java)
+            .invoke(null, service.applicationContext)
+        // Resolve the native binding through the same loader before the Go
+        // goroutine is created. This also gives FindClass a loader-associated
+        // reference on Android 15, where the previous runtime crashed with
+        // `CallStaticIntMethod received NULL jclass`.
+        Class.forName("psi.Psi", true, runtimeLoader)
+        PingNgDiagnostics.record("Psiphon gomobile runtime initialized")
+        val tunnelClass = runtimeLoader.loadClass("ca.psiphon.PsiphonTunnel")
+        val hostClass = runtimeLoader.loadClass("ca.psiphon.PsiphonTunnel\$HostService")
+        val config = buildConfig(service, profile)
+        val entries = service.assets.open(ENTRIES_ASSET).bufferedReader().use { it.readText() }
+
+        val host = Proxy.newProxyInstance(runtimeLoader, arrayOf(hostClass), InvocationHandler { proxy, method, args ->
+            when (method.name) {
+                "getContext" -> service
+                "getPsiphonConfig" -> config
+                "loadLibrary" -> {
+                    // PsiphonTunnel's default method calls System.loadLibrary from
+                    // the runtime DEX class loader. Keep the APK's private library
+                    // name while preserving that class-loader association.
+                    val requested = args?.firstOrNull()?.toString().orEmpty()
+                    if (requested == "gojni") {
+                        // Already loaded explicitly above under the runtime
+                        // loader. Do not load the colliding Xray libgojni.so.
+                        null
+                    } else {
+                        null
+                    }
+                }
+                "bindToDevice" -> null
+                "onListeningSocksProxyPort" -> {
+                    socksPort = (args?.firstOrNull() as? Int ?: 0).takeIf { it in 1..65535 } ?: socksPort
+                    if (socksPort in 1..65535) {
+                        LogUtil.i(TAG, "Psiphon SOCKS is ready on 127.0.0.1:$socksPort")
+                        PingNgDiagnostics.record("Psiphon SOCKS ready on 127.0.0.1:$socksPort")
+                    }
+                    null
+                }
+                "onConnected" -> {
+                    connected = true
+                    val region = selectedRegion(profile)
+                    LogUtil.i(TAG, "Psiphon is working; region=$region")
+                    PingNgDiagnostics.record("Psiphon is working; region=$region")
+                    publishStatus(PsiphonStatus.CONNECTED, guid, service)
+                    Thread {
+                        repeat(40) {
+                            if (tunnel == null || !connected) return@Thread
+                            if (socksPort in 1..65535 && routeApplied.compareAndSet(false, true)) {
+                                CoreServiceManager.onPsiphonConnected()
+                                return@Thread
+                            }
+                            Thread.sleep(250L)
+                        }
+                    }.start()
+                    null
+                }
+                "onUpstreamProxyError" -> {
+                    val message = args?.firstOrNull()?.toString().orEmpty()
+                    LogUtil.w(TAG, "Psiphon upstream proxy error: $message")
+                    PingNgDiagnostics.record("Psiphon upstream proxy error: $message")
+                    null
+                }
+                "onExiting" -> {
+                    connected = false
+                    socksPort = 0
+                    routeApplied.set(false)
+                    PingNgDiagnostics.record("Psiphon stopped")
+                    publishStatus(PsiphonStatus.STOPPED, guid, service)
+                    if (tunnel != null) Thread { CoreServiceManager.onPsiphonDisconnected() }.start()
+                    null
+                }
+                "onDiagnosticMessage" -> {
+                    LogUtil.d(TAG, args?.firstOrNull()?.toString().orEmpty())
+                    null
+                }
+                else -> defaultValue(method)
+            }
+        })
+
+        val instance = tunnelClass.getMethod("newPsiphonTunnel", hostClass).invoke(null, host)
+        instance.javaClass.getMethod("setVpnMode", Boolean::class.javaPrimitiveType!!).invoke(instance, false)
+        loader = runtimeLoader
+        tunnel = instance
+        val currentThread = Thread.currentThread()
+        val previousLoader = currentThread.contextClassLoader
+        currentThread.contextClassLoader = runtimeLoader
+        try {
+            instance.javaClass.getMethod("startTunneling", String::class.java).invoke(instance, entries)
+        } catch (e: Throwable) {
+            tunnel = null
+            connected = false
+            throw unwrapInvocation(e)
+        } finally {
+            currentThread.contextClassLoader = previousLoader
+        }
+        // Read the port after start; callbacks are asynchronous in tunnel-core.
+        Thread {
+            repeat(60) {
+                if (tunnel !== instance) return@Thread
+                val port = runCatching {
+                    instance.javaClass.getMethod("getLocalSocksProxyPort").invoke(instance) as Int
+                }.getOrDefault(0)
+                if (port in 1..65535) {
+                    socksPort = port
+                    return@Thread
+                }
+                Thread.sleep(250L)
+            }
+        }.start()
+    }
+
+    /**
+     * Copies the asset to an app-private optimized-code directory and removes
+     * write permission before DexClassLoader sees it. Android 14+ enforces this
+     * check and throws "Writable dex file ... is not allowed" otherwise.
+     */
+    private fun materializeReadOnlyRuntimeDex(service: Service, runtimeDir: File): File {
+        val dexFile = File(runtimeDir, RUNTIME_DEX_FILE)
+        if (!dexFile.isFile || dexFile.length() < 1024) {
+            service.assets.open(RUNTIME_DEX_ASSET).use { input ->
+                dexFile.outputStream().use { output -> input.copyTo(output) }
+            }
+        }
+        dexFile.setReadable(true, false)
+        dexFile.setWritable(false, false)
+        dexFile.setExecutable(false, false)
+        check(!dexFile.canWrite()) {
+            "Psiphon runtime DEX is writable: ${dexFile.absolutePath}"
+        }
+        return dexFile
+    }
+
+    /**
+     * Gives the generated gomobile DEX the library name it requests while
+     * keeping Psiphon's native runtime in its own ClassLoader directory.
+     */
+    private fun materializeRuntimeNativeLibrary(service: Service, runtimeDir: File): File {
+        val source = File(service.applicationInfo.nativeLibraryDir, NATIVE_NAME)
+        check(source.isFile) { "Psiphon native library not found: ${source.absolutePath}" }
+        val nativeDir = File(runtimeDir, "lib").apply { mkdirs() }
+        val target = File(nativeDir, "libgojni.so")
+        if (!target.isFile || target.length() != source.length()) {
+            source.copyTo(target, overwrite = true)
+        }
+        target.setReadable(true, false)
+        target.setWritable(false, false)
+        target.setExecutable(true, false)
+        check(target.isFile && target.canRead()) {
+            "Psiphon runtime library is not readable: ${target.absolutePath}"
+        }
+        return nativeDir
+    }
+
+    private fun buildConfig(service: Service, profile: ProfileItem): String {
+        val base = service.assets.open(CONFIG_ASSET).bufferedReader().use { it.readText() }
+        val root = JsonParser.parseString(base).asJsonObject
+        val region = selectedRegion(profile).trim().uppercase(Locale.ROOT)
+            .takeUnless { it.isBlank() || it == "ANY" || it == "AUTO" }.orEmpty()
+        root.addProperty("EgressRegion", region)
+        root.addProperty("TunnelWholeDevice", 0)
+        val configuredProxy = SettingsManager.getConnectHttpProxy()
+        val upstreamProxyUrl = configuredProxy?.asHttpUrl() ?: "http://127.0.0.1:$upstreamHttpPort"
+        root.addProperty("UpstreamProxyUrl", upstreamProxyUrl)
+        if (configuredProxy != null) {
+            PingNgDiagnostics.record(
+                "Connect through HTTP proxy: Psiphon upstream set to ${configuredProxy.host}:${configuredProxy.port}",
+            )
+        }
+        val dataRoot = File(service.filesDir, "pingng-psiphon").apply { mkdirs() }
+        val dataStore = File(dataRoot, "datastore").apply { mkdirs() }
+        val oslDirectory = File(service.filesDir, "osl").apply { mkdirs() }
+        root.addProperty("DataRootDirectory", dataRoot.absolutePath)
+        root.addProperty("DataStoreDirectory", dataStore.absolutePath)
+        root.addProperty("MigrateDataStoreDirectory", service.filesDir.absolutePath)
+        root.addProperty("MigrateObfuscatedServerListDownloadDirectory", oslDirectory.absolutePath)
+        root.addProperty("MigrateRemoteServerListDownloadFilename", File(service.filesDir, "remote_server_list").absolutePath)
+        root.addProperty("EstablishTunnelTimeoutSeconds", 0)
+        root.addProperty("UpstreamProxyAllowAllServerEntrySources", true)
+        applyTunnelProtocolMode(root, profile.psiphonMode.orEmpty())
+        PsiphonCdnFrontingConfig.apply(root, service, profile.psiphonMode.orEmpty(), profile.psiphonCdnIps.orEmpty(), profile.psiphonCdnSni.orEmpty(), profile.psiphonCdnSets.orEmpty())
+        return root.toString()
+    }
+
+    /** Restricts Psiphon to the selected shape when it is chained upstream. */
+    private fun applyTunnelProtocolMode(root: JsonObject, mode: String) {
+        val normalized = mode.trim().lowercase(Locale.ROOT)
+        val protocols = when (normalized) {
+            "cdn" -> CDN_TUNNEL_PROTOCOLS
+            "direct" -> CHAINED_TUNNEL_PROTOCOLS.filterNot { it.startsWith("FRONTED-") }
+            else -> CHAINED_TUNNEL_PROTOCOLS
+        }
+        root.add("LimitTunnelProtocols", JsonArray().also { values -> protocols.forEach(values::add) })
+        if (normalized == "direct" || normalized == "cdn") {
+            root.addProperty("DisableTactics", true)
+        }
+    }
+
+    private fun isUsableOutbound(tag: String): Boolean = tag !in setOf(
+        "direct", "block", "dns", "freedom", "blackhole", EGRESS_TAG
+    )
+
+    private fun findFreePort(): Int =
+        java.net.ServerSocket(0).use { it.localPort }
+
+    private fun defaultValue(method: Method): Any? = when (method.returnType) {
+        Boolean::class.javaPrimitiveType -> false
+        Int::class.javaPrimitiveType -> 0
+        Long::class.javaPrimitiveType -> 0L
+        Float::class.javaPrimitiveType -> 0f
+        Double::class.javaPrimitiveType -> 0.0
+        Byte::class.javaPrimitiveType -> 0.toByte()
+        Short::class.javaPrimitiveType -> 0.toShort()
+        Char::class.javaPrimitiveType -> '\u0000'
+        else -> null
+    }
+
+    private fun publishStatus(state: String, guid: String?, context: Context?) {
+        if (guid.isNullOrBlank() || context == null) return
+        MessageHelper.sendMsg2UI(context, AppConfig.MSG_PSIPHON_STATUS, PsiphonStatus(guid, state))
+    }
+
+    private fun unwrapInvocation(error: Throwable): Throwable {
+        val invocation = error as? InvocationTargetException ?: return error
+        return invocation.targetException?.let(::unwrapInvocation) ?: error
+    }
+
+    /** Keeps Psiphon's generated gomobile classes separate from Xray's copy of go.Seq. */
+    private class PsiphonDexClassLoader(
+        dexPath: String,
+        optimizedDirectory: String,
+        librarySearchPath: String?,
+        parent: ClassLoader?,
+    ) : DexClassLoader(dexPath, optimizedDirectory, librarySearchPath, parent) {
+        private fun belongsToPsiphon(name: String): Boolean =
+            name == "go" || name.startsWith("go.") ||
+                name == "psi" || name.startsWith("psi.") ||
+                name == "ca.psiphon" || name.startsWith("ca.psiphon.")
+
+        override fun loadClass(name: String, resolve: Boolean): Class<*> {
+            // getClassLoadingLock() is not available on the Android API level
+            // targeted by this project. The loader instance is sufficient as
+            // a stable lock because all Psiphon classes use this loader.
+            synchronized(this) {
+                var loaded = findLoadedClass(name)
+                if (loaded == null && belongsToPsiphon(name)) {
+                    loaded = runCatching { findClass(name) }.getOrNull()
+                }
+                if (loaded == null) loaded = super.loadClass(name, resolve)
+                if (resolve) resolveClass(loaded)
+                return loaded
+            }
+        }
+    }
+}
