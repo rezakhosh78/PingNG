@@ -40,6 +40,12 @@ jobs:
           ref: ${{ inputs.source_ref || github.ref }}
           fetch-depth: 0
 
+      - name: Set up Go 1.26.3
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.3'
+          check-latest: false
+
       - name: Locate or restore Gradle project root
         id: project
         shell: bash
