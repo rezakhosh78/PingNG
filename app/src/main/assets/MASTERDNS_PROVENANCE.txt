@@ -1,0 +1,6 @@
+MasterDnsVPN (MIT)
+Source: https://github.com/masterking32/MasterDnsVPN
+Bundled client: v2026.06.13.234407-7de2476
+Asset source: https://github.com/masterking32/MasterDnsVPN/releases/tag/v2026.06.13.234407-7de2476
+Architectures: Linux ARM64 -> arm64-v8a; ARMV7 -> armeabi-v7a; AMD64 -> x86_64; X86 -> x86.
+The executable is used as an independent local SOCKS5 process; no upstream source was modified.

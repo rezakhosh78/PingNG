@@ -1,0 +1,302 @@
+package com.v2ray.ang.ui.main
+
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
+import com.v2ray.ang.AngApplication
+import com.v2ray.ang.AppConfig
+import com.v2ray.ang.core.AwgEndpointScanState
+import com.v2ray.ang.R
+import com.v2ray.ang.dto.ConnectionTestResult
+import com.v2ray.ang.dto.PsiphonStatus
+import com.v2ray.ang.dto.RealPingResult
+import com.v2ray.ang.dto.TorStatus
+import com.v2ray.ang.dto.SubscriptionUpdateResult
+import com.v2ray.ang.dto.TestServiceMessage
+import com.v2ray.ang.dto.entities.ProfileItem
+import com.v2ray.ang.dto.entities.ServerAffiliationInfo
+import com.v2ray.ang.dto.entities.SubscriptionCache
+import com.v2ray.ang.dto.entities.SubscriptionItem
+import com.v2ray.ang.extension.serializable
+import com.v2ray.ang.handler.AngConfigManager
+import com.v2ray.ang.handler.AppLocaleManager
+import com.v2ray.ang.handler.MmkvManager
+import com.v2ray.ang.handler.SettingsManager
+import com.v2ray.ang.handler.SubscriptionUpdater
+import com.v2ray.ang.handler.belongsToSubscriptionGroup
+import com.v2ray.ang.helper.MessageHelper
+import com.v2ray.ang.util.LogUtil
+import com.v2ray.ang.util.Utils
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import java.util.concurrent.atomic.AtomicBoolean
+
+class MainRepository(
+    private val app: AngApplication
+) : MainDataSource {
+
+    private val localizedContext: Context
+        get() = AppLocaleManager.localizedContext(app)
+
+    private val closed = AtomicBoolean(false)
+
+    private val _mainServiceEvent = MutableSharedFlow<MainServiceEvent>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    override val mainServiceEvent: SharedFlow<MainServiceEvent> = _mainServiceEvent.asSharedFlow()
+
+    private val serviceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val safeIntent = intent ?: return
+            val event = when (safeIntent.getIntExtra("key", 0)) {
+                AppConfig.MSG_STATE_RUNNING -> MainServiceEvent.StateRunning
+                AppConfig.MSG_STATE_NOT_RUNNING -> MainServiceEvent.StateNotRunning
+                AppConfig.MSG_STATE_START_SUCCESS -> MainServiceEvent.StateStartSuccess
+                AppConfig.MSG_STATE_START_FAILURE -> MainServiceEvent.StateStartFailure(
+                    safeIntent.getStringExtra("content").orEmpty()
+                )
+
+                AppConfig.MSG_STATE_STOP_SUCCESS -> MainServiceEvent.StateStopSuccess
+                AppConfig.MSG_MEASURE_DELAY_RESULT -> safeIntent
+                    .serializable<ConnectionTestResult>("content")
+                    ?.let { MainServiceEvent.MeasureDelayResult(it) }
+
+                AppConfig.MSG_MEASURE_CONFIG_SUCCESS -> safeIntent
+                    .serializable<RealPingResult>("content")
+                    ?.let {
+                        MainServiceEvent.MeasureConfigSuccess(
+                            it,
+                            safeIntent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID).orEmpty(),
+                        )
+                    }
+                AppConfig.MSG_MEASURE_CONFIG_NOTIFY -> MainServiceEvent.MeasureConfigNotify(
+                    safeIntent.getStringExtra("content").orEmpty(),
+                    safeIntent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID).orEmpty(),
+                )
+                AppConfig.MSG_MASTERDNS_PROGRESS -> {
+                    val fields = safeIntent.getStringExtra("content").orEmpty().split('|')
+                    val completed = fields.getOrNull(1)?.toIntOrNull()
+                    val total = fields.getOrNull(2)?.toIntOrNull()
+                    val valid = fields.getOrNull(3)?.toIntOrNull() ?: if (fields.size == 3) 0 else null
+                    if (fields.size in 3..4 && completed != null && total != null && valid != null &&
+                        completed in 0..total && total > 0 && valid in 0..completed
+                    ) MainServiceEvent.MasterDnsProgress(fields[0], completed, total, valid) else null
+                }
+                AppConfig.MSG_SOAR_PROGRESS -> {
+                    val fields = safeIntent.getStringExtra("content").orEmpty().split('|')
+                    val completed = fields.getOrNull(1)?.toIntOrNull()
+                    val total = fields.getOrNull(2)?.toIntOrNull()
+                    val valid = fields.getOrNull(3)?.toIntOrNull()
+                    if (fields.size == 4 && completed != null && total != null && valid != null &&
+                        completed in 0..total && total > 0 && valid in 0..completed
+                    ) MainServiceEvent.SoarProgress(fields[0], completed, total, valid) else null
+                }
+
+                AppConfig.MSG_MEASURE_CONFIG_FINISH -> MainServiceEvent.MeasureConfigFinish(
+                    safeIntent.getStringExtra("content"),
+                    safeIntent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID).orEmpty(),
+                )
+                AppConfig.MSG_MEASURE_CONFIG_CANCEL -> MainServiceEvent.MeasureConfigCancelled(
+                    safeIntent.getStringExtra(MessageHelper.EXTRA_REQUEST_ID).orEmpty(),
+                )
+
+                AppConfig.MSG_PSIPHON_STATUS -> safeIntent
+                    .serializable<PsiphonStatus>("content")
+                    ?.let { MainServiceEvent.PsiphonStatusChanged(it) }
+
+                AppConfig.MSG_TOR_STATUS -> safeIntent
+                    .serializable<TorStatus>("content")
+                    ?.let { MainServiceEvent.TorStatusChanged(it) }
+
+                AppConfig.MSG_SUB_UPDATE_FINISH -> MainServiceEvent.SubscriptionUpdated(
+                    safeIntent.getStringExtra("content").orEmpty()
+                )
+
+                else -> null
+            }
+            val registeringMasque = AwgEndpointScanState.state.value.let {
+                it.running && it.message.startsWith("Obtaining MASQUE/H2 authorization")
+            }
+            if (registeringMasque && (event == MainServiceEvent.StateRunning ||
+                    event == MainServiceEvent.StateStartSuccess)) return
+            event?.let { _mainServiceEvent.tryEmit(it) }
+        }
+    }
+
+    init {
+        ContextCompat.registerReceiver(
+            app,
+            serviceReceiver,
+            IntentFilter(AppConfig.BROADCAST_ACTION_ACTIVITY),
+            Utils.receiverFlags()
+        )
+        MessageHelper.sendMsg2Service(app, AppConfig.MSG_REGISTER_CLIENT, "")
+    }
+
+    override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        runCatching {
+            MessageHelper.sendMsg2Service(app, AppConfig.MSG_UNREGISTER_CLIENT, "")
+        }.onFailure {
+            LogUtil.e(AppConfig.TAG, "Failed to unregister service client", it)
+        }
+        runCatching {
+            app.unregisterReceiver(serviceReceiver)
+        }.onFailure {
+            LogUtil.e(AppConfig.TAG, "Failed to unregister main service receiver", it)
+        }
+    }
+
+    override fun getSelectedSubscriptionId(): String =
+        MmkvManager.decodeSettingsString(AppConfig.CACHE_SUBSCRIPTION_ID, "").orEmpty()
+
+    override fun setSelectedSubscriptionId(id: String) {
+        MmkvManager.encodeSettings(AppConfig.CACHE_SUBSCRIPTION_ID, id)
+    }
+
+    override fun getSelectServer(): String? = MmkvManager.getSelectServer()
+
+    override fun setSelectServer(guid: String) = MmkvManager.setSelectServer(guid)
+
+    override fun getConfirmRemove(): Boolean =
+        MmkvManager.decodeSettingsBool(AppConfig.PREF_CONFIRM_REMOVE, false)
+
+    override fun getDoubleColumnDisplay(): Boolean =
+        MmkvManager.decodeSettingsBool(AppConfig.PREF_DOUBLE_COLUMN_DISPLAY, false)
+
+    override fun isGroupAllDisplayEnabled(): Boolean =
+        MmkvManager.decodeSettingsBool(AppConfig.PREF_GROUP_ALL_DISPLAY)
+
+    override fun getString(resId: Int): String = localizedContext.getString(resId)
+
+    override fun getString(resId: Int, vararg formatArgs: Any): String =
+        localizedContext.getString(resId, *formatArgs)
+
+    override fun getSubscriptions(): List<SubscriptionCache> {
+        val result = mutableListOf<SubscriptionCache>()
+        if (isGroupAllDisplayEnabled()) {
+            result += SubscriptionCache(
+                guid = "",
+                subscription = SubscriptionItem().apply {
+                    remarks = localizedContext.getString(R.string.filter_config_all)
+                }
+            )
+        }
+        result += MmkvManager.decodeSubscriptions()
+        return result
+    }
+
+    override fun getSubscriptionItem(id: String): SubscriptionItem? =
+        MmkvManager.decodeSubscription(id)
+
+    override fun getDefaultTrafficUsedBytes(): Long = MmkvManager.getDefaultTrafficUsedBytes()
+
+    override fun getServerGuidList(groupId: String): List<String> =
+        if (groupId.isEmpty()) {
+            MmkvManager.decodeAllServerList().filter { guid ->
+                MmkvManager.decodeServerConfig(guid)?.managedBy.isNullOrBlank()
+            }
+        } else {
+            MmkvManager.decodeServerList(groupId).filter { guid ->
+                MmkvManager.decodeServerConfig(guid)?.let { profile ->
+                    belongsToSubscriptionGroup(profile, groupId)
+                } == true
+            }
+        }
+
+    override fun getRawServerGuidList(groupId: String): List<String> =
+        if (groupId.isEmpty()) MmkvManager.decodeAllServerList()
+        else MmkvManager.decodeServerList(groupId)
+
+    override fun decodeServerConfig(guid: String): ProfileItem? =
+        MmkvManager.decodeServerConfig(guid)
+
+    override fun decodeAffiliationInfo(guid: String): ServerAffiliationInfo? =
+        MmkvManager.decodeServerAffiliationInfo(guid)
+
+    override fun encodeServerTestDelayMillis(guid: String, delayMillis: Long) =
+        MmkvManager.encodeServerTestDelayMillis(guid, delayMillis)
+
+    override fun encodeServerList(guids: List<String>, groupId: String) =
+        MmkvManager.encodeServerList(ArrayList(guids), groupId)
+
+    override fun removeServer(guid: String) = MmkvManager.removeServer(guid)
+
+    override fun removeAllServer(): Int = MmkvManager.removeAllServer()
+
+    override fun removeInvalidServerByGuid(guid: String): Int =
+        MmkvManager.removeInvalidServer(guid)
+
+    override fun removeInvalidServersInGroup(groupId: String): Int =
+        if (groupId.isEmpty()) {
+            MmkvManager.removeInvalidServer("")
+        } else {
+            getServerGuidList(groupId).sumOf(::removeInvalidServerByGuid)
+        }
+
+    override fun clearAllTestDelayResults(guids: List<String>) =
+        MmkvManager.clearAllTestDelayResults(guids)
+
+    override fun sortByTestResultsForSub(subId: String) {
+        AngConfigManager.sortByTestResultsForSub(subId)
+    }
+
+    override fun getSubsList(): List<String> = MmkvManager.decodeSubsList()
+
+    override suspend fun importBatchConfig(
+        server: String?,
+        subscriptionId: String,
+        updateUI: Boolean,
+        forceAmneziaWg: Boolean,
+    ): Pair<Int, Int> = AngConfigManager.importBatchConfig(
+        server, subscriptionId, updateUI, forceAmneziaWg,
+    )
+
+    override fun updateConfigViaSubAll(): SubscriptionUpdateResult =
+        AngConfigManager.updateConfigViaSubAll()
+
+    override fun updateConfigViaSub(subscriptionCache: SubscriptionCache): SubscriptionUpdateResult =
+        AngConfigManager.updateConfigViaSub(subscriptionCache)
+
+    override fun shareNonCustomConfigsToClipboard(guids: List<String>): Int =
+        AngConfigManager.shareNonCustomConfigsToClipboard(app, guids)
+
+    override fun share2QRCode(guid: String): android.graphics.Bitmap? =
+        AngConfigManager.share2QRCode(guid)
+
+    override fun share2Clipboard(guid: String): Boolean =
+        AngConfigManager.share2Clipboard(app, guid) == 0
+
+    override fun sendMsg2Service(msgId: Int, content: String) =
+        MessageHelper.sendMsg2Service(app, msgId, content)
+
+    override fun sendMsg2TestService(msg: TestServiceMessage) =
+        MessageHelper.sendMsg2TestService(app, msg)
+
+    override fun cancelAllPing() {
+        sendMsg2TestService(
+            TestServiceMessage(key = AppConfig.MSG_MEASURE_CONFIG_CANCEL)
+        )
+    }
+
+    override fun testCurrentServerRealPing() {
+        sendMsg2Service(AppConfig.MSG_MEASURE_DELAY, "")
+    }
+
+    override fun syncSubscriptions() {
+        // Refreshes are explicit. Cancel periodic jobs left by older builds so
+        // returning to the app cannot mutate the server list or its scroll state.
+        SubscriptionUpdater.cancelAll(app)
+    }
+
+    override fun initAssets() {
+        SettingsManager.initAssets(app, app.assets)
+    }
+}
