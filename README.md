@@ -35,6 +35,7 @@ PingNG is synced with v2rayNG 2.3.10 and keeps its familiar experience while add
 | MasterDNS profiles, Fast resolver cache, and live logs | — | ✅ |
 | DNSTT DNS tunnels and DNSTT-to-SSH profiles | — | ✅ |
 | AmneziaWG profiles | — | ✅ |
+| OpenVPN profiles | — | ✅ |
 | Psiphon over MasterDNS | — | ✅ |
 | Psiphon over DNSTT | — | ✅ |
 | Psiphon over VLESS | — | ✅ |

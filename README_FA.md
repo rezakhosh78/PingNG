@@ -35,6 +35,7 @@ PingNG با v2rayNG 2.3.10 همگام شده و در کنار تجربهٔ آش�
 | پروفایل‌های MasterDNS، کش ریزالور در حالت Fast و گزارش زنده | — | ✅ |
 | تونل‌های DNS با DNSTT و پروفایل DNSTT به SSH | — | ✅ |
 | پروفایل‌های AmneziaWG | — | ✅ |
+| OpenVPN profiles | — | ✅ |
 | Psiphon روی MasterDNS | — | ✅ |
 | Psiphon روی AmneziaWG | — | ✅ |
 | تنظیم و جست‌وجوی FinalMask برای پروفایل‌های WARP | — | ✅ |
