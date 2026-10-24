@@ -1,0 +1,108 @@
+package com.v2ray.ang.ui.main
+
+import com.v2ray.ang.dto.ConnectionTestResult
+import com.v2ray.ang.dto.GroupMapItem
+import com.v2ray.ang.dto.LocateTarget
+
+/** Locale-neutral state formatted only when it reaches the main UI. */
+sealed interface MainStatus {
+    data object Disconnected : MainStatus
+    data object Connected : MainStatus
+    data object Testing : MainStatus
+    data object WarpSearching : MainStatus
+    data class MasterDnsProgress(val completed: Int, val total: Int, val valid: Int = 0) : MainStatus
+    data class SoarProgress(val completed: Int, val total: Int, val valid: Int = 0) : MainStatus
+    data class TestProgress(val progress: String) : MainStatus
+    data class ConnectionTest(val result: ConnectionTestResult) : MainStatus
+}
+
+/**
+ * Main UI state
+ */
+data class MainUiState(
+    val groups: List<GroupMapItem> = emptyList(),
+    val selectedGroupId: String = "",
+    val selectedGuid: String? = null,
+    val isRunning: Boolean = false,
+    val isStarting: Boolean = false,
+    val isTesting: Boolean = false,
+    val testingGroupIds: Set<String> = emptySet(),
+    val status: MainStatus = MainStatus.Disconnected,
+    val psiphonStates: Map<String, String> = emptyMap(),
+    val torStates: Map<String, String> = emptyMap(),
+    val locateTarget: LocateTarget? = null,
+    val confirmRemove: Boolean = false,
+    val doubleColumnDisplay: Boolean = false,
+    val shareQRCodeBitmap: android.graphics.Bitmap? = null
+)
+
+/**
+ * All possible user interaction intents
+ */
+sealed interface MainAction {
+    data object Initialize : MainAction
+    data object RefreshGroups : MainAction
+    data object ToggleService : MainAction
+    data object StopService : MainAction
+    data object TestCurrentServer : MainAction
+    data object TestAllServers : MainAction
+    data object TestRealAllServers : MainAction
+    data class TestRealSubscription(val groupId: String) : MainAction
+    data class ConfigureDefaultTrafficGraph(val limitBytes: Long, val periodDays: Int) : MainAction
+    data object ResetDefaultTrafficGraph : MainAction
+    data class ConfigureSubscriptionTrafficGraph(
+        val subscriptionId: String,
+        val limitBytes: Long,
+        val periodDays: Int,
+    ) : MainAction
+    data class ResetSubscriptionTrafficGraph(val subscriptionId: String) : MainAction
+    data object CancelTesting : MainAction
+    data object RemoveAllServers : MainAction
+    data object RemoveDuplicateServers : MainAction
+    data object RemoveInvalidServers : MainAction
+    data object SortByTestResults : MainAction
+    data object UpdateSubscriptions : MainAction
+    data class UpdateSubscription(val groupId: String) : MainAction
+    data object ExportAll : MainAction
+
+    data object ImportQRcode : MainAction
+    data object ImportClipboard : MainAction
+    data object ImportConfigLocal : MainAction
+    data object ImportOpenVPN : MainAction
+    data object ImportAmneziaWG : MainAction
+    data object AddServerLess : MainAction
+    data object AddMasterDns : MainAction
+    data object AddDnstt : MainAction
+    data object AddSoar : MainAction
+    data object AddAwgWarp : MainAction
+    data object AddWarpMasque : MainAction
+    data object AddWarpWireGuard : MainAction
+    data object AddWarpInWarp : MainAction
+    data class ImportManually(val type: Int) : MainAction
+    data object RestartService : MainAction
+    data object LocateSelectedServer : MainAction
+
+    data class SelectGroup(val groupId: String) : MainAction
+    data class SelectServer(val guid: String) : MainAction
+    data class RemoveServer(val guid: String) : MainAction
+    data class EditServer(val guid: String, val profile: com.v2ray.ang.dto.entities.ProfileItem) : MainAction
+    data class SaveDesync(
+        val guid: String,
+        val profile: com.v2ray.ang.dto.entities.ProfileItem,
+        val desyncProfile: String,
+        val customArgs: String,
+    ) : MainAction
+    data class Search(val query: String) : MainAction
+    data class ShareQRCode(val guid: String) : MainAction
+    data class ShareClipboard(val guid: String) : MainAction
+    data class ShareFullContent(val guid: String) : MainAction
+    data class ExportFullConfig(val guid: String) : MainAction
+    data object DismissQRCodeDialog : MainAction
+
+    data class ImportBatchConfig(
+        val configText: String,
+        val forceAmneziaWg: Boolean = false,
+    ) : MainAction
+
+    data class LocateHandled(val target: LocateTarget) : MainAction
+}
