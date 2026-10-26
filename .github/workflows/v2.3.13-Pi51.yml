@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release tag (for example v2.3.13-Pi50)'
+        description: 'Release tag (for example v2.3.13-Pi51)'
         required: true
-        default: 'v2.3.13-Pi50'
+        default: 'v2.3.13-Pi51'
         type: string
       source_ref:
         description: 'Branch or tag to build; leave empty to use the ref selected above'
@@ -21,7 +21,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TITLE: 'PingNG v2.3.13-Pi50'
+  RELEASE_TITLE: 'PingNG v2.3.13-Pi51'
   ANDROID_PLATFORM: 'android-37.0'
   ANDROID_BUILD_TOOLS: '36.0.0'
 
@@ -277,7 +277,7 @@ jobs:
           set -euo pipefail
           notes_file="$RUNNER_TEMP/release-notes.md"
           cat > "$notes_file" <<EOF
-          ## PingNG v2.3.13-Pi50
+          ## PingNG v2.3.13-Pi51
 
           F-Droid flavor built with Android SDK 37 and signed with the repository release keystore.
 
