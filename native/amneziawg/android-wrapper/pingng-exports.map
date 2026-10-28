@@ -1,4 +1,0 @@
-{
-    global: Java_org_amnezia_awg_GoBackend_*;
-    local: *;
-};
