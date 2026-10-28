@@ -1,0 +1,87 @@
+--- a/internal/client/mtu.go
++++ b/internal/client/mtu.go
+@@ -14,7 +14,10 @@
+ 	"encoding/binary"
+ 	"errors"
+ 	"fmt"
++	"os"
+ 	"sort"
++	"strconv"
++	"strings"
+ 	"sync"
+ 	"sync/atomic"
+ 	"time"
+@@ -318,6 +321,13 @@
+ 	if c.balancer == nil {
+ 		return ErrNoValidConnections
+ 	}
++	if path := os.Getenv("PINGNG_MASTERDNS_MTU_CACHE_IN"); path != "" {
++		if err := c.restoreMTUCache(path); err == nil {
++			return nil
++		} else {
++			c.log.Warnf("Fast resolver cache unavailable; scanning once: %v", err)
++		}
++	}
+ 
+ 	scanConnections := c.balancer.AllConnections()
+ 	if len(scanConnections) == 0 {
+@@ -376,8 +386,59 @@
+ 	}
+ 
+ 	c.applySyncedMTUState(minUpload, minDownload, minUploadChars)
++	if path := os.Getenv("PINGNG_MASTERDNS_MTU_CACHE_OUT"); path != "" {
++		if err := writeMTUCache(path, validConns); err != nil {
++			c.log.Warnf("Could not save Fast resolver cache: %v", err)
++		}
++	}
+ 	c.appendMTUUsageSeparatorOnce()
+ 	c.logMTUCompletion(validConns)
++	return nil
++}
++
++// The caller guards this private cache with a hash of the profile and resolver list.
++// Each record includes MTUs, since an IP-only list still triggers the full scan.
++func writeMTUCache(path string, conns []Connection) error {
++	var data strings.Builder
++	data.WriteString("pingng-mtu-v1\n")
++	for _, conn := range conns {
++		if conn.UploadMTUBytes <= 0 || conn.DownloadMTUBytes <= 0 { continue }
++		fmt.Fprintf(&data, "%s %d %d\n", conn.Key, conn.UploadMTUBytes, conn.DownloadMTUBytes)
++	}
++	return os.WriteFile(path, []byte(data.String()), 0o600)
++}
++
++func (c *Client) restoreMTUCache(path string) error {
++	data, err := os.ReadFile(path)
++	if err != nil { return err }
++	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
++	if len(lines) < 2 || lines[0] != "pingng-mtu-v1" { return fmt.Errorf("unsupported or empty cache") }
++	known := make(map[string]Connection)
++	for _, conn := range c.balancer.AllConnections() { known[conn.Key] = conn }
++	type entry struct { key string; up, down int }
++	entries := make([]entry, 0, len(lines)-1)
++	var minUp, minDown, minChars int
++	for _, line := range lines[1:] {
++		parts := strings.Fields(line)
++		if len(parts) != 3 { return fmt.Errorf("malformed cache record") }
++		if _, ok := known[parts[0]]; !ok { return fmt.Errorf("resolver not in current profile") }
++		up, upErr := strconv.Atoi(parts[1]); down, downErr := strconv.Atoi(parts[2])
++		if upErr != nil || downErr != nil || up < 38 || down < 20 || up > 512 || down > 4096 {
++			return fmt.Errorf("invalid cached MTU")
++		}
++		chars := c.encodedCharsForPayload(up)
++		if chars <= 0 { return fmt.Errorf("invalid encoded MTU") }
++		entries = append(entries, entry{parts[0], up, down})
++		minUp = minPositive(minUp, up); minDown = minPositive(minDown, down)
++		minChars = minPositive(minChars, chars)
++	}
++	if len(entries) == 0 { return ErrNoValidConnections }
++	for _, item := range entries {
++		c.balancer.SetConnectionMTU(item.key, item.up, c.encodedCharsForPayload(item.up), item.down)
++		c.balancer.SetConnectionValidity(item.key, true)
++	}
++	c.applySyncedMTUState(minUp, minDown, minChars)
++	c.log.Infof("Fast: loaded %d saved resolver MTUs; initial scan skipped", len(entries))
+ 	return nil
+ }
+ 
