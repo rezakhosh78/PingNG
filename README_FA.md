@@ -17,6 +17,8 @@
 </div>
 
 ---
+## حمایت
+https://nowpayments.io/donation/pingplas
 
 ## 🌟 چرا PingNG؟
 
