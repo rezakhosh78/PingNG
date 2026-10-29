@@ -17,6 +17,8 @@ Control connection behavior per profile, configure WARP tunnels, customize TLS, 
 </div>
 
 ---
+## Support
+https://nowpayments.io/donation/pingplas
 
 ## 🌟 Why PingNG?
 
