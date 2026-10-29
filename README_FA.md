@@ -18,7 +18,12 @@
 
 ---
 ## حمایت
+TRON:
+TUnX9wBWzhD2AK9GqB9FJekKaxCvYJNh18
+
+Nowpayment:
 https://nowpayments.io/donation/pingplas
+
 
 ## 🌟 چرا PingNG؟
 
