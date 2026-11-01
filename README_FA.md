@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🚀 PingNG
+<img src="PingNG-black.png" alt="PingNG" width="120" />
+
+# PingNG
 
 ### نسخه‌ای از v2rayNG با موتور بومی Desync، WARP، هستهٔ Oberon، تونل‌های DNS و Psiphon
 
@@ -10,7 +12,12 @@
 ![Kotlin](https://img.shields.io/badge/Language-Kotlin-7F52FF?logo=kotlin&logoColor=white)
 ![Root](https://img.shields.io/badge/Root-Not%20Required-2EA44F)
 ![Desync](https://img.shields.io/badge/Desync-Native-0066CC)
-![Xray](https://img.shields.io/badge/Xray--core-26.9.30-blue)
+![Psiphon](https://img.shields.io/badge/Psiphon-Supported-4177B6)
+![Tor](https://img.shields.io/badge/Tor-Supported-7D4698)
+![WARP](https://img.shields.io/badge/WARP-Supported-F38020)
+![DNSTT](https://img.shields.io/badge/DNSTT-Supported-6554C0)
+![MasterDNS](https://img.shields.io/badge/MasterDNS-Supported-009688)
+[![Xray](https://img.shields.io/github/v/release/XTLS/Xray-core?label=Xray-core&color=blue)](https://github.com/XTLS/Xray-core/releases/latest)
 
 [English](README.md) · **فارسی**
 
@@ -173,7 +180,7 @@ Desync مخصوص هر پروفایل برای کانفیگ‌های پشتیب�
 - تنظیمات Desync برای هر کانفیگ ذخیره و در مسیر اتصال انتخاب‌شده اعمال می‌شوند.
 - نام گزینه‌ها بدون تغییر پرچم‌های اجرایی به روش‌های بومی نگاشت می‌شوند.
 - انتخاب تصادفی Fake SNI از طریق لاگ‌های زمان اجرا بررسی شده است.
-- نسخهٔ Xray-core روی **26.9.30** تنظیم شده است.
+- نشان نسخهٔ Xray-core در سربرگ، آخرین انتشار رسمی مخزن [XTLS/Xray-core](https://github.com/XTLS/Xray-core/releases/latest) را نمایش می‌دهد؛ نسخهٔ هستهٔ داخل هر بیلد به فایل اجرایی بسته‌بندی‌شده در همان بیلد بستگی دارد.
 
 پیش از انتشار، آزمایش روی نسخه‌های مختلف اندروید، دستگاه‌های گوناگون و شرایط متفاوت شبکه توصیه می‌شود.
 
