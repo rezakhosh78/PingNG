@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🚀 PingNG
+<img src="PingNG-black(1).png" alt="PingNG" width="120" />
+
+# PingNG
 
 ### A v2rayNG fork with native Desync, WARP, the Oberon core, DNS tunnels, and Psiphon and Tor
 
@@ -10,7 +12,10 @@ Control connection behavior per profile, configure WARP tunnels, customize TLS, 
 ![Kotlin](https://img.shields.io/badge/Language-Kotlin-7F52FF?logo=kotlin&logoColor=white)
 ![Root](https://img.shields.io/badge/Root-Not%20Required-2EA44F)
 ![Desync](https://img.shields.io/badge/Desync-Native-0066CC)
-![Xray](https://img.shields.io/badge/Xray--core-26.9.30-blue)
+![Psiphon](https://img.shields.io/badge/Psiphon-Supported-4177B6)
+![Tor](https://img.shields.io/badge/Tor-Supported-7D4698)
+![WARP](https://img.shields.io/badge/WARP-Supported-F38020)
+[![Xray](https://img.shields.io/github/v/release/XTLS/Xray-core?label=Xray-core&color=blue)](https://github.com/XTLS/Xray-core/releases/latest)
 
 **English** · [فارسی](README_FA.md)
 
@@ -178,7 +183,7 @@ Per-profile Desync is available for supported TCP/TLS configurations, including:
 - Desync settings are stored per configuration and applied to the selected connection path.
 - Display names map to the native methods without changing their runtime flags.
 - Random Fake SNI selection has been confirmed through runtime logs.
-- Xray-core is set to **26.9.30**.
+- The Xray-core badge in the header displays the latest official release from [XTLS/Xray-core](https://github.com/XTLS/Xray-core/releases/latest); the core bundled in each app build depends on the binary included in that build.
 
 Testing on multiple Android versions, device vendors, and network conditions is recommended before release.
 
