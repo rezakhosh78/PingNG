@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="PingNG-black(1).png" alt="PingNG" width="120" />
+<img src="PingNG-black.png" alt="PingNG" width="120" />
 
 # PingNG
 
