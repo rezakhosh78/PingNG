@@ -33,7 +33,7 @@ https://nowpayments.io/donation/pingplas
 
 ## 🌟 Why PingNG?
 
-PingNG is synced with v2rayNG 2.3.10 and keeps its familiar experience while adding profile-aware Desync, WARP tunnels, AmneziaWG, MasterDNS, DNSTT, and Psiphon routing options. Settings are stored with the relevant profile and applied when it connects.
+PingNG is synced with v2rayNG and keeps its familiar experience while adding profile-aware Desync, WARP tunnels, AmneziaWG, MasterDNS, DNSTT, and Psiphon routing options. Settings are stored with the relevant profile and applied when it connects.
 
 ### At a glance
 
