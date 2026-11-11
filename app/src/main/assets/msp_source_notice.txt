@@ -1,0 +1,10 @@
+SIMORGH RKh-MSP engine integration
+
+The MSP scanner and local proxy implementation in
+com.rkh.vpn.service.SimurghPublicVpnService is sourced from the supplied
+SIMORGH V2.0.1 source. PingNG keeps that scanner implementation and routes it
+through a PingNG UI/connection adapter. The adapter redacts discovered IPv4
+addresses from MSP log output and notification text.
+
+Supporting files retain their original com.rkh.vpn package names. See the
+SIMORGH source archive for its complete license and third-party notices.
