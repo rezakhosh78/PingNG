@@ -186,7 +186,7 @@ Desync مخصوص هر پروفایل برای کانفیگ‌های پشتیب�
 
 ## 🙏 قدردانی
 
-- بر پایهٔ [2dust/v2rayNG](https://github.com/2dust/v2rayNG) و PattNG.
+- استفاده از [2dust/v2rayNG](https://github.com/2dust/v2rayNG), [WarpScout](https://github.com/vernette/warpscout), [usque](https://github.com/Abobo7/usque-android), [PattNG](https://github.com/patterniha/PattNG). 
 - توسعه و رابط کاربری PingNG: **ReZa Kh**.
 - بهبودهای TLS با الهام از مشارکت‌های جامعهٔ v2rayNG انجام شده‌اند.
 
