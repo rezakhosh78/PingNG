@@ -191,7 +191,7 @@ Testing on multiple Android versions, device vendors, and network conditions is 
 
 ## 🙏 Credits
 
-- Based on [2dust/v2rayNG](https://github.com/2dust/v2rayNG) and PattNG.
+- Useed [2dust/v2rayNG](https://github.com/2dust/v2rayNG),[WarpScout]([https://github.com/2dust/v2rayNG](https://github.com/vernette/warpscout), [usque](https://github.com/2dust/v2rayNG](https://github.com/Abobo7/usque-android), PattNG .
 - PingNG development and interface: **ReZa Kh**.
 - TLS improvements were inspired by contributions from the v2rayNG community.
 
