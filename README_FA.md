@@ -42,6 +42,7 @@ PingNG با v2rayNG 2.3.10 همگام شده و در کنار تجربهٔ آش�
 |---|:---:|:---:|
 | Desync بومی اندروید | — | ✅ |
 | تنظیمات Desync برای هر پروفایل | — | ✅ |
+| MSP CORE | — | ✅ |
 | WARP Plus (Outer + Inner) | — | ✅ |
 | WARP WireGuard | — | ✅ |
 | WARP روی AmneziaWG با هستهٔ Oberon | — | ✅ |

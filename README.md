@@ -40,8 +40,9 @@ PingNG is synced with v2rayNG and keeps its familiar experience while adding pro
 | Feature | v2rayNG | PingNG |
 |---|:---:|:---:|
 | Native Android Desync | — | ✅ |
-| Per-profile Desync settings | — | ✅ |
+| Desync settings | — | ✅ |
 | WARP Plus (Outer + Inner) | — | ✅ |
+| MSP CORE | — | ✅ |
 | WARP WireGuard | — | ✅ |
 | WARP over AmneziaWG with the Oberon core | — | ✅ |
 | WARP MASQUE/H2 | — | ✅ |
